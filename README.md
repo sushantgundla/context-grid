@@ -95,7 +95,13 @@ traceback.
 | ✅ | Span → chunk resolution with coverage / IoU / containment policies |
 | ✅ | Split-gold detection and union coverage |
 | ✅ | Character-level precision, recall and F1 |
-| ⬜ | Parsers, chunkers, embedders, indexes, rerankers |
+| ✅ | Portable ground truth: gold anchors that survive a change of parser |
+| ✅ | Plugin protocols, registry, lazy extras, spec strings (`recursive:512,overlap=64`) |
+| ✅ | Conformance suites, with proof they catch broken plugins |
+| ✅ | Parsers: plain text, Markdown (no dependencies) |
+| ✅ | Chunkers: fixed-token, recursive, sentence-window, structural |
+| ✅ | Tokenizers: regex and character, each declaring whether it is exact |
+| ⬜ | PDF parsers, embedders, indexes, rerankers |
 | ⬜ | The grid runner, caching, cost model |
 | ⬜ | Eval-set generation and review |
 | ⬜ | ranx metrics, significance testing |

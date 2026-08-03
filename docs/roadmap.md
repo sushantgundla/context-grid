@@ -33,7 +33,7 @@ This roadmap is the response to them.
 
 ---
 
-## M0 — The offset spine *(day 1)*
+## M0 — The offset spine ✅ *shipped*
 
 **Why first.** Every number the SDK will ever print depends on the span algebra. A mistake here is
 unrecoverable once results are published.
@@ -57,7 +57,7 @@ unrecoverable once results are published.
 
 ---
 
-## M1 — Plugin architecture and conformance
+## M1 — Plugin architecture and conformance ✅ *shipped*
 
 **Build**
 - `core/protocols.py` — `Parser`, `Chunker`, `Embedder`, `Index`, `Reranker`, `Generator`
@@ -75,15 +75,40 @@ unrecoverable once results are published.
 | Index | Exact search returns true nearest neighbours. ANN reports its recall against exact (`E5`) |
 | Reranker | Order-invariant to input order. Deterministic |
 
-**Exit** — a deliberately broken toy plugin per family fails its suite for the right reason.
+**Exit** — a deliberately broken toy plugin per family fails its suite for the right reason. ✅
+
+**What actually shipped.** Protocols for `Parser`, `Chunker` and `Tokenizer`; a registry with
+lazy imports and spec strings (`recursive:512,overlap=64`); two zero-dependency parsers (text,
+Markdown); four chunkers (fixed, recursive, sentence-window, structural); two tokenizers.
+Conformance suites for parsers and chunkers, plus `test_conformance_catches_bugs.py`, which
+builds six deliberately broken plugins and asserts each invariant catches its bug — an
+off-by-one parser, a silently normalising parser, a table-losing parser, a gappy chunker, a
+chunker that rewrites text while claiming exact offsets, and one with colliding ids.
+
+**Two things the build changed.**
+
+1. **Gold anchors (new).** Ground truth as character spans compares *chunkers* perfectly well,
+   because they all cut up the same text. It cannot survive a change of *parser*, because two
+   parsers produce different text — and the parser axis is the headline feature. So ground
+   truth now has two forms: a portable `GoldAnchor` (a quoted passage plus a page hint) and a
+   resolved `GoldSpan`. Anchors resolve to spans against each parse. The pleasing part is that
+   a parser mangling a table so the quote no longer appears is itself the measurement — the
+   anchor fails to resolve, and a parser that loses the evidence cannot retrieve it. The
+   resolver lands in M2; the types are in place.
+2. **A no-silent-loss invariant.** Every chunker must cover every non-whitespace character of
+   the document unless it declares that it samples on purpose. Text in no chunk is evidence no
+   retriever can ever return, and it shows up on a leaderboard as nothing more than slightly
+   worse recall.
 
 ---
 
 ## M2 — Corpus, one parser, three chunkers
 
-**Build** — `corpus/` loader and fingerprint (`A1`–`A5`), `parse/pymupdf.py` (`B1`, `B2`),
-`chunk/` fixed-token, recursive, sentence-window (`C1`–`C3`), tokenizer-normalised sizing (`C14`),
-`cache/` content-addressed store with the tokenizer in the chunk key
+**Build** — `corpus/` loader and fingerprint (`A1`–`A5`); `parse/pymupdf.py` and
+`parse/pdfplumber.py` (`B1`, `B2`); **the anchor resolver** — locating a quoted passage in a
+parse by exact then whitespace-normalised match, and warning when a parser has lost it
+entirely; `cache/` content-addressed store with the tokenizer in the chunk key.
+Chunkers and tokenizer-normalised sizing arrived early, in M1.
 
 **Test** — conformance suites pass; golden files for parse and chunk output on committed fixtures;
 cache hit/miss behaviour asserted explicitly

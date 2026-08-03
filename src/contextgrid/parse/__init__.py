@@ -1,1 +1,68 @@
-"""Placeholder package - see docs/roadmap.md."""
+"""Parsers, and the registry of them.
+
+The parser defines the text every character offset downstream refers to, which is why it is
+an axis on the grid rather than a setting. Two parsers over the same PDF produce different
+text, different chunks and different retrieval -- and nothing else in the field measures that
+end to end.
+
+Zero-dependency parsers are registered eagerly. Everything needing a PDF engine or a layout
+model is registered lazily, so `import contextgrid` stays cheap and a missing dependency
+produces an install instruction rather than a traceback.
+"""
+
+from __future__ import annotations
+
+from contextgrid.core.protocols import Parser
+from contextgrid.core.registry import Registry
+from contextgrid.parse.text import MarkdownParser, TextParser
+
+PARSERS: Registry[Parser] = Registry(family="parser")
+
+PARSERS.register("text", doc="Plain text, split into paragraphs. No dependencies.")(TextParser)
+PARSERS.register(
+    "markdown", doc="Markdown with headings, code, lists and tables. No dependencies."
+)(MarkdownParser)
+
+# Registered before they are written. Asking for one today raises MissingExtraError naming
+# the extra to install, which is the honest answer until the module lands in M2.
+PARSERS.register_lazy(
+    "pymupdf",
+    module="contextgrid.parse.pymupdf",
+    attr="PyMuPDFParser",
+    extra="parse",
+    package="pymupdf",
+    doc="Fast PDF text extraction. The speed baseline.",
+)
+PARSERS.register_lazy(
+    "pdfplumber",
+    module="contextgrid.parse.pdfplumber",
+    attr="PDFPlumberParser",
+    extra="parse",
+    package="pdfplumber",
+    doc="Table-aware PDF extraction.",
+)
+PARSERS.register_lazy(
+    "docling",
+    module="contextgrid.parse.docling",
+    attr="DoclingParser",
+    extra="parse-ml",
+    package="docling",
+    doc="Layout-model PDF extraction with strong table handling.",
+)
+PARSERS.register_lazy(
+    "unstructured",
+    module="contextgrid.parse.unstructured",
+    attr="UnstructuredParser",
+    extra="parse-ml",
+    package="unstructured",
+    shorthand="strategy",
+    doc="Unstructured, with fast and hi_res strategies.",
+)
+
+
+def get_parser(spec: str | Parser) -> Parser:
+    """Resolve a parser from a spec string, or pass an instance through."""
+    return PARSERS.create(spec) if isinstance(spec, str) else spec
+
+
+__all__ = ["PARSERS", "MarkdownParser", "TextParser", "get_parser"]

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "context-grid"
-version = "0.0.1"
+version = "0.0.2"
 description = "A lab for grounding pipelines: sweep parser x chunker x embedder x index x reranker on your own documents, scored on quality, latency and cost."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -58,7 +58,13 @@ source = ["src/contextgrid"]
 branch = true
 
 [tool.coverage.report]
-exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    # Protocol method bodies are `...` and are never executed by definition.
+    "^\\s*\\.\\.\\.$",
+]
 
 [tool.ruff]
 line-length = 100

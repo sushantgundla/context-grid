@@ -10,6 +10,7 @@ a valid thing to do at all.
 
 from __future__ import annotations
 
+from contextgrid.chunk import CHUNKERS, ChunkerError, get_chunker
 from contextgrid.core.errors import (
     ContextGridError,
     DocumentError,
@@ -18,14 +19,24 @@ from contextgrid.core.errors import (
     ResolutionError,
     SpanError,
 )
+from contextgrid.core.protocols import Chunker, Parser, Tokenizer
+from contextgrid.core.registry import Registry, UnknownPluginError
 from contextgrid.core.types import (
+    Block,
+    BlockKind,
     Chunk,
+    ChunkSet,
     Document,
     EvalItem,
     EvalSet,
+    GoldAnchor,
     GoldSpan,
+    MediaType,
+    ParsedDocument,
+    QuestionType,
     RelevanceLabel,
     RetrievedChunk,
+    SourceFile,
     Span,
     coverage_fraction,
     covered_length,
@@ -34,6 +45,7 @@ from contextgrid.core.types import (
     total_length,
 )
 from contextgrid.core.warnings import GridWarning, Severity, WarningCode, WarningLog
+from contextgrid.parse import PARSERS, get_parser
 from contextgrid.score.resolve import (
     GoldResolution,
     Resolution,
@@ -45,30 +57,48 @@ from contextgrid.score.resolve import (
     gold_coverage_by_chunk,
     retrieved_character_count,
 )
+from contextgrid.tokens import TOKENIZERS, get_tokenizer
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 __all__ = [
+    "CHUNKERS",
+    "PARSERS",
+    "TOKENIZERS",
+    "Block",
+    "BlockKind",
     "Chunk",
+    "ChunkSet",
+    "Chunker",
+    "ChunkerError",
     "ContextGridError",
     "Document",
     "DocumentError",
     "EvalItem",
     "EvalSet",
     "EvalSetError",
+    "GoldAnchor",
     "GoldResolution",
     "GoldSpan",
     "GridWarning",
+    "MediaType",
     "MissingExtraError",
+    "ParsedDocument",
+    "Parser",
+    "QuestionType",
+    "Registry",
     "RelevanceLabel",
     "Resolution",
     "ResolutionError",
     "ResolutionPolicy",
     "RetrievedChunk",
     "Severity",
+    "SourceFile",
     "Span",
     "SpanError",
     "SpanResolver",
+    "Tokenizer",
+    "UnknownPluginError",
     "WarningCode",
     "WarningLog",
     "__version__",
@@ -77,6 +107,9 @@ __all__ = [
     "character_recall",
     "coverage_fraction",
     "covered_length",
+    "get_chunker",
+    "get_parser",
+    "get_tokenizer",
     "gold_coverage_by_chunk",
     "intersection_length",
     "merge_spans",
