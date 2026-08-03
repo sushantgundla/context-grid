@@ -101,7 +101,10 @@ traceback.
 | ✅ | Parsers: plain text, Markdown (no dependencies) |
 | ✅ | Chunkers: fixed-token, recursive, sentence-window, structural |
 | ✅ | Tokenizers: regex and character, each declaring whether it is exact |
-| ⬜ | PDF parsers, embedders, indexes, rerankers |
+| ✅ | PDF parsers: PyMuPDF and pdfplumber, with exact offsets and heading inference |
+| ✅ | Corpus loading, and a fingerprint that suggests which axes will matter |
+| ✅ | The anchor resolver — one eval set, re-resolved against every parser |
+| ⬜ | Embedders, indexes, rerankers |
 | ⬜ | The grid runner, caching, cost model |
 | ⬜ | Eval-set generation and review |
 | ⬜ | ranx metrics, significance testing |

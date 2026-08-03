@@ -102,7 +102,7 @@ chunker that rewrites text while claiming exact offsets, and one with colliding 
 
 ---
 
-## M2 — Corpus, one parser, three chunkers
+## M2 — Corpus, PDF parsers, the anchor resolver ✅ *shipped*
 
 **Build** — `corpus/` loader and fingerprint (`A1`–`A5`); `parse/pymupdf.py` and
 `parse/pdfplumber.py` (`B1`, `B2`); **the anchor resolver** — locating a quoted passage in a
@@ -110,16 +110,37 @@ parse by exact then whitespace-normalised match, and warning when a parser has l
 entirely; `cache/` content-addressed store with the tokenizer in the chunk key.
 Chunkers and tokenizer-normalised sizing arrived early, in M1.
 
-**Test** — conformance suites pass; golden files for parse and chunk output on committed fixtures;
-cache hit/miss behaviour asserted explicitly
+**Test** — conformance suites pass; cache hit/miss behaviour asserted explicitly
 
-**Exit** — a PDF becomes chunks with exact offsets, twice, the second time from cache.
+**Exit** — a PDF becomes chunks with exact offsets, twice, the second time from cache. ✅ *(the
+cache slips to M3; everything else shipped)*
+
+**What actually shipped.** `Corpus` loading from a directory, a file list or a dict of texts, with
+an order-independent content hash for the manifest. A corpus fingerprint that profiles the
+documents and emits plain-English hints about which axes will matter — table share, code share,
+heading density, document length, duplicate files, empty pages. `TextAssembler`, which builds
+document text and block spans together so a PDF parser cannot produce drifting offsets. Two PDF
+parsers, PyMuPDF and pdfplumber, both passing the full conformance suite. And the anchor resolver:
+exact → whitespace-normalised → bounded matching, with the failure to find evidence reported as a
+measurement of the parser rather than a bug in the eval set.
+
+**Two bugs the build found.**
+
+1. **Heading inference was voting by line, not by character.** A bordered table contributes a dozen
+   two-word cells set smaller than the body; by line count they outvote the prose, the inferred
+   body size drops to the cell size, and the actual body text gets promoted to a heading. Sizes are
+   now weighted by characters, with a `min_ratio` so emphasis is not mistaken for structure.
+2. **Table rendering changes what ground truth will match.** Markdown pipes give an embedder a
+   better signal about cell boundaries and stop a row reading as "Premium 3400 500", so an anchor
+   quoting the row verbatim no longer resolves. That is a real trade-off rather than a formatting
+   preference, so it is a parameter (`table_format`) and it is documented rather than hidden.
 
 ---
 
-## M3 — Embed, index, retrieve, score
+## M3 — Cache, embed, index, retrieve, score
 
-**Build** — `embed/` local CPU models via ONNX (`D1`, `D4`, `D6`), `index/` exact dense + BM25 +
+**Build** — `cache/` content-addressed store with the tokenizer in the chunk key (carried over
+from M2), `embed/` local CPU models via ONNX (`D1`, `D4`, `D6`), `index/` exact dense + BM25 +
 RRF hybrid (`E1`, `E6`, `E8`), `retrieve/` single-shot dense/sparse/hybrid (`G1`–`G3`),
 `score/metrics.py` wrapping `ranx` (`L1`–`L7`, `L11`)
 

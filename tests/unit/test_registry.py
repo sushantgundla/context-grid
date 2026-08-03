@@ -198,12 +198,18 @@ def test_a_missing_extra_names_the_install_command() -> None:
     assert "docling" in message
 
 
-def test_unwritten_parsers_are_registered_and_report_their_extra() -> None:
-    """The PDF parsers land in a later milestone. Until then, asking for one should say
-    which extra to install rather than raising ModuleNotFoundError."""
+def test_a_lazily_registered_parser_loads_once_its_extra_is_installed() -> None:
+    """Registration is by module path, so nothing heavy is imported until it is asked for."""
     assert "pymupdf" in PARSERS
-    with pytest.raises(MissingExtraError, match=r"context-grid\[parse\]"):
-        PARSERS.create("pymupdf")
+    assert PARSERS.create("pymupdf").name == "pymupdf"
+
+
+def test_a_parser_whose_module_does_not_exist_yet_reports_its_extra() -> None:
+    """Docling lands in a later milestone. Until then, asking for it should say which extra
+    to install rather than raising ModuleNotFoundError from four frames down."""
+    assert "docling" in PARSERS
+    with pytest.raises(MissingExtraError, match=r"context-grid\[parse-ml\]"):
+        PARSERS.create("docling")
 
 
 def test_registry_is_iterable_over_registrations(registry: Registry[Widget]) -> None:

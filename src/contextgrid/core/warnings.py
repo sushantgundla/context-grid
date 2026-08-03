@@ -51,6 +51,14 @@ class WarningCode(str, Enum):
     APPROXIMATE_RESOLUTION = "approximate_resolution"
     SMALL_EVAL_SET = "small_eval_set"
 
+    # -- anchoring ground truth to a parse -----------------------------------
+    ANCHOR_NOT_FOUND = "anchor_not_found"
+    ANCHOR_NORMALISED = "anchor_normalised"
+    ANCHOR_BOUNDED = "anchor_bounded"
+    ANCHOR_AMBIGUOUS = "anchor_ambiguous"
+    ANCHOR_OCCURRENCE_MISSING = "anchor_occurrence_missing"
+    NO_PARSE_FOR_SOURCE = "no_parse_for_source"
+
     # -- runs ----------------------------------------------------------------
     BUDGET_REACHED = "budget_reached"
     CACHE_MISS_STORM = "cache_miss_storm"

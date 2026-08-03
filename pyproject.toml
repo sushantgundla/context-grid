@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "context-grid"
-version = "0.0.2"
+version = "0.0.3"
 description = "A lab for grounding pipelines: sweep parser x chunker x embedder x index x reranker on your own documents, scored on quality, latency and cost."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,12 +29,18 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+parse = [
+    "pymupdf>=1.24",
+    "pdfplumber>=0.11",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "hypothesis>=6.100",
     "mypy>=1.10",
     "ruff>=0.5",
+    "pymupdf>=1.24",
+    "pdfplumber>=0.11",
 ]
 
 [project.urls]

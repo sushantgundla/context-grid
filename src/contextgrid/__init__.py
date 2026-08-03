@@ -45,7 +45,20 @@ from contextgrid.core.types import (
     total_length,
 )
 from contextgrid.core.warnings import GridWarning, Severity, WarningCode, WarningLog
+from contextgrid.corpus import (
+    Corpus,
+    CorpusError,
+    CorpusFingerprint,
+    fingerprint,
+    fingerprint_sources,
+)
 from contextgrid.parse import PARSERS, get_parser
+from contextgrid.score.anchor import (
+    AnchorMatch,
+    AnchorResolver,
+    MatchStrategy,
+    collapse_whitespace,
+)
 from contextgrid.score.resolve import (
     GoldResolution,
     Resolution,
@@ -59,12 +72,14 @@ from contextgrid.score.resolve import (
 )
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 __all__ = [
     "CHUNKERS",
     "PARSERS",
     "TOKENIZERS",
+    "AnchorMatch",
+    "AnchorResolver",
     "Block",
     "BlockKind",
     "Chunk",
@@ -72,6 +87,9 @@ __all__ = [
     "Chunker",
     "ChunkerError",
     "ContextGridError",
+    "Corpus",
+    "CorpusError",
+    "CorpusFingerprint",
     "Document",
     "DocumentError",
     "EvalItem",
@@ -81,6 +99,7 @@ __all__ = [
     "GoldResolution",
     "GoldSpan",
     "GridWarning",
+    "MatchStrategy",
     "MediaType",
     "MissingExtraError",
     "ParsedDocument",
@@ -105,8 +124,11 @@ __all__ = [
     "character_f1",
     "character_precision",
     "character_recall",
+    "collapse_whitespace",
     "coverage_fraction",
     "covered_length",
+    "fingerprint",
+    "fingerprint_sources",
     "get_chunker",
     "get_parser",
     "get_tokenizer",

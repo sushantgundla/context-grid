@@ -13,6 +13,9 @@ from contextgrid.chunk import (
 from contextgrid.core.documents import MediaType, SourceFile
 from contextgrid.core.protocols import Chunker, Parser
 from contextgrid.parse import MarkdownParser, TextParser
+from contextgrid.parse.pdfplumber import PDFPlumberParser
+from contextgrid.parse.pymupdf import PyMuPDFParser
+from tests.pdf_fixtures import contract_pdf, mixed_pdf, prose_pdf, scanned_pdf
 
 # ---------------------------------------------------------------------------
 # sample documents
@@ -101,6 +104,10 @@ def source(name: str, text: str, media_type: MediaType = MediaType.MARKDOWN) -> 
     )
 
 
+def pdf(name: str, data: bytes) -> SourceFile:
+    return SourceFile(id=name, media_type=MediaType.PDF, path=f"{name}.pdf", raw=data)
+
+
 SAMPLE_SOURCES: list[SourceFile] = [
     source("contract", CONTRACT),
     source("api-docs", API_DOCS),
@@ -109,6 +116,16 @@ SAMPLE_SOURCES: list[SourceFile] = [
     source("whitespace", WHITESPACE_ONLY, MediaType.TEXT),
     source("empty", EMPTY, MediaType.TEXT),
 ]
+
+#: The same content as a PDF, so the parser axis has something to disagree about.
+PDF_SOURCES: list[SourceFile] = [
+    pdf("contract-pdf", contract_pdf()),
+    pdf("prose-pdf", prose_pdf()),
+    pdf("scanned-pdf", scanned_pdf()),
+    pdf("mixed-pdf", mixed_pdf()),
+]
+
+ALL_SOURCES: list[SourceFile] = [*SAMPLE_SOURCES, *PDF_SOURCES]
 
 #: Documents with actual content, for tests that need something to chunk.
 CONTENTFUL_SOURCES = [s for s in SAMPLE_SOURCES if s.id not in {"whitespace", "empty"}]
@@ -137,7 +154,12 @@ class ChunkerCase:
         return self.label
 
 
-ALL_PARSERS: list[Parser] = [TextParser(), MarkdownParser()]
+ALL_PARSERS: list[Parser] = [
+    TextParser(),
+    MarkdownParser(),
+    PyMuPDFParser(),
+    PDFPlumberParser(),
+]
 
 ALL_CHUNKERS: list[ChunkerCase] = [
     ChunkerCase("fixed:64", FixedTokenChunker(size=64, overlap=8)),
