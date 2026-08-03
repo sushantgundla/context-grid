@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Type check
+        run: mypy
+
+      # Unit and property tests only. Anything touching a model or the network is marked
+      # `integration` and stays out of the default run.
+      - name: Test
+        run: pytest -q --cov --cov-report=term-missing
+
+      # The span algebra and the resolver are where a bug would be invisible in every
+      # number the tool prints, so they are held to a higher bar than the rest.
+      - name: Coverage gate on the scoring core
+        run: |
+          coverage report --include="src/contextgrid/core/*,src/contextgrid/score/*" --fail-under=95

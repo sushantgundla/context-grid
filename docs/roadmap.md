@@ -1,0 +1,227 @@
+# context-grid — Build Roadmap
+
+**Date:** 2026-08-03 · Companion to [design.md](./design.md)
+
+Feature IDs (`B4`, `K6`, `L13`…) refer to the catalogue in the blog repo at
+`docs/prd/rag-retrieval-lab-features.md`.
+
+---
+
+## 0. The re-cut priorities
+
+A sanity check of the catalogue's ~75 P0 features against an SDK-first release found six problems.
+This roadmap is the response to them.
+
+| # | Finding | Response |
+|---|---|---|
+| 1 | ~20 "P0" features are UI, not SDK — parser diff view (`B3`), boundary overlay (`C19`), recommendation card (`N11`), demo mode (`Q12`), permalinks (`P1`,`P2`), all 12 screens | Split into **SDK-P0** and **App-P0**. App work starts at M9, after the SDK is real |
+| 2 | Even without UI, ~55 P0s is 2–3 months, not a first release | **v0.1 is 18 features.** Everything else is sequenced behind it |
+| 3 | The critical path is offsets, not metrics. `B4` needs `K6` needs `B2` | **M0 is the offset spine.** Nothing ships before it is proven |
+| 4 | `C14` (per-tokenizer sizing) and `M5` (content-hash cache) collide — a cache key without the tokenizer serves the wrong chunks | Tokenizer is part of the chunk cache key from M2. Designed in, not patched |
+| 5 | `D6` (truncation warning) has no home in a library | **Structured warnings channel** in M0's core types. Every result object carries `.warnings` |
+| 6 | Nothing in the catalogue covers "did this plugin behave correctly?" across ~40 plugins | **Conformance suites** are a first-class deliverable, introduced in M1 |
+
+## 1. Release plan
+
+| Version | Milestones | What it means |
+|---|---|---|
+| **v0.1** — private | M0–M3 | The scorer works and is proven. One real pipeline runs end to end |
+| **v0.2** — private | M4–M5 | Grids actually sweep. Cost and caching are real |
+| **v0.3** — **first public release** | M6–M8 | Eval sets, significance, exports, CLI, validation against LegalBench-RAG |
+| **v0.4** | M9 | The blog UI at `/lab`, consuming the SDK |
+| **v0.5+** | M10–M12 | Generation, the wide field, distribution |
+
+---
+
+## M0 — The offset spine *(day 1)*
+
+**Why first.** Every number the SDK will ever print depends on the span algebra. A mistake here is
+unrecoverable once results are published.
+
+**Build**
+- `core/types.py` — `Span` with the full overlap algebra, `Document`, `Chunk`, `GoldSpan`,
+  `EvalItem`, `EvalSet`, `RelevanceLabel`
+- `core/warnings.py` — structured warnings channel (`D6`, `B14`)
+- `core/errors.py` — including `MissingExtraError`
+- `score/resolve.py` — `SpanResolver` with `coverage` / `iou` / `containment` policies, per-chunk
+  qrels and union coverage (`K6`)
+
+**Test**
+- Unit tests on the span algebra, including every boundary case: touching, nested, identical,
+  zero-length, adjacent
+- Hypothesis property tests: IoU symmetric and in [0,1], coverage in [0,1], resolution invariant to
+  chunk ordering, union coverage monotone as the retrieved set grows, split gold reassembles
+- `mypy --strict` clean, `ruff` clean
+
+**Exit** — property tests pass on 1000+ generated cases; 100% coverage on `score/resolve.py`.
+
+---
+
+## M1 — Plugin architecture and conformance
+
+**Build**
+- `core/protocols.py` — `Parser`, `Chunker`, `Embedder`, `Index`, `Reranker`, `Generator`
+- `core/registry.py` — name-based registration, entry-point discovery, `MissingExtraError` on
+  absent extras
+- `tests/conformance/` — one parameterised suite per protocol
+
+**Conformance rules, per family**
+
+| Family | Must satisfy |
+|---|---|
+| Parser | Offsets round-trip: `doc.text[block.span]` equals `block.text` when `offsets_exact`. Deterministic. Empty input safe |
+| Chunker | Same offset round-trip. Chunks cover the document without gaps unless declared. Overlap declared honestly. Deterministic |
+| Embedder | Deterministic. Normalised when it claims to be. Correct query/document asymmetry (`D4`). Raises the truncation warning (`D6`) |
+| Index | Exact search returns true nearest neighbours. ANN reports its recall against exact (`E5`) |
+| Reranker | Order-invariant to input order. Deterministic |
+
+**Exit** — a deliberately broken toy plugin per family fails its suite for the right reason.
+
+---
+
+## M2 — Corpus, one parser, three chunkers
+
+**Build** — `corpus/` loader and fingerprint (`A1`–`A5`), `parse/pymupdf.py` (`B1`, `B2`),
+`chunk/` fixed-token, recursive, sentence-window (`C1`–`C3`), tokenizer-normalised sizing (`C14`),
+`cache/` content-addressed store with the tokenizer in the chunk key
+
+**Test** — conformance suites pass; golden files for parse and chunk output on committed fixtures;
+cache hit/miss behaviour asserted explicitly
+
+**Exit** — a PDF becomes chunks with exact offsets, twice, the second time from cache.
+
+---
+
+## M3 — Embed, index, retrieve, score
+
+**Build** — `embed/` local CPU models via ONNX (`D1`, `D4`, `D6`), `index/` exact dense + BM25 +
+RRF hybrid (`E1`, `E6`, `E8`), `retrieve/` single-shot dense/sparse/hybrid (`G1`–`G3`),
+`score/metrics.py` wrapping `ranx` (`L1`–`L7`, `L11`)
+
+**Test** — metrics cross-checked against hand-computed values on a tiny fixture; hybrid fusion
+checked against `ranx` directly
+
+**Exit** — **v0.1.** One corpus, one eval set, one config, a real Recall@5. The first honest number.
+
+---
+
+## M4 — The grid
+
+**Build** — `grid/matrix.py` (axis expansion, live config count), sweep modes full-factorial / OFAT
+/ staged, `grid/runner.py` with prefix reuse, cancel and resume, `report/results.py` with the
+leaderboard, `report/manifest.py` (`P4`)
+
+**Test** — prefix reuse asserted: sweeping 20 rerankers embeds exactly once; manifest hash stable
+across identical runs and different across changed params; resume produces identical results
+
+**Exit** — a 20-config OFAT sweep completes under 10 minutes on 4 CPU cores.
+
+---
+
+## M5 — Cost and performance
+
+**Build** — `cost/` pricing tables and model (`M1`, `M2`), pre-run estimate and hard budget cap
+(`M3`, `M4`), staged latency breakdown (`L18`), index build time and size (`L19`, `E20`),
+cache-saving readout (`M6`), Pareto computation (`M7`)
+
+**Test** — cost model against frozen pricing fixtures; budget cap actually halts a run; latency
+attribution sums to wall-clock within tolerance
+
+**Exit** — **v0.2.** Every config carries dollars and milliseconds beside its quality.
+
+---
+
+## M6 — Eval sets
+
+**Build** — LLM question generation (`K1`), the four filters plus the non-discriminating filter
+(`K2`–`K5`), graded and multiple gold spans (`K7`, `K8`), question-type tagging (`K10`), import
+including LegalBench-RAG format (`K11`), terminal review queue (`K9`), eval-set quality score
+(`K12`), versioning (`K17`)
+
+**Test** — each filter has a fixture that must be rejected and one that must survive; import
+round-trips; review queue state machine unit-tested without a terminal
+
+**Exit** — 100 questions generated, filtered and hand-reviewed in under 15 minutes.
+
+---
+
+## M7 — Credibility
+
+**Build** — bootstrap confidence intervals (`L12`), paired significance testing via `ranx` (`L13`),
+"not distinguishable" as a first-class result state (`L14`), character-level precision and recall
+(`L8`), chunk attribution rate (`L9`), per-question-type slicing (`L15`), axis-effect view (`N5`),
+config diff (`N4`), failure taxonomy classification (`N2`)
+
+**Test** — significance testing validated against known-different and known-identical synthetic
+runs; character metrics hand-verified on fixtures
+
+**Exit** — the SDK can say "these two configs are not distinguishable (n=87)" and be right.
+
+---
+
+## M8 — Ship it
+
+**Build** — second and third parsers, pdfplumber and Docling (`B1`), the parser→retrieval
+attribution report (`B4`), semantic and structural chunkers (`C4`, `C5`), a local cross-encoder
+reranker with the candidate-depth sweep (`H2`, `H5`), config and code export (`P3`, `P5`), run
+bundle (`P7`), CLI (`P11`), Docker Compose self-host (`P14`), LegalBench-RAG validation suite (`P9`)
+
+**Test** — nightly validation run must reproduce published LegalBench-RAG numbers within tolerance;
+CLI smoke tests; a clean-room `pip install context-grid` in a fresh venv
+
+**Exit** — **v0.3, first public release.** README, docs site, PyPI, announcement post.
+
+---
+
+## M9 — The blog UI
+
+**Build** — FastAPI wrapper over the SDK; Next.js `/lab` on the existing site; demo mode with
+precomputed runs (`Q12`); parser diff view (`B3`, `Q8`); chunk boundaries drawn on the page
+(`C19`, `N7`); per-query inspector (`Q6`); permalinks with OG images (`P1`, `P2`); recommendation
+card (`N11`); methodology and validation pages (`P8`, `P9`)
+
+**Exit** — **v0.4.** A visitor reaches a real insight in under ten seconds, with no keys.
+
+---
+
+## M10 — Generation
+
+Generator axis (`J1`), prompt template axis (`J2`), faithfulness, relevance and citation accuracy
+(`J3`–`J5`), abstention (`J6`), the retrieval→generation lift chart (`J9`), context assembly:
+ordering, budget, compression (`I1`–`I3`, `I8`).
+
+**Exit** — the SDK answers "does better retrieval actually produce a better answer?"
+
+---
+
+## M11 — The wide field
+
+Quantization axis and its cost/recall frontier (`E10`–`E14`) · hosted embedders, rerankers and
+parsers via BYOK (`B6`, `D3`, `H3`) · query transforms (`F2`–`F6`) · advanced chunkers: contextual,
+late, proposition, code/AST (`C7`, `C9`–`C11`) · GraphRAG as an index type (`E22`, `G11`, `G12`) ·
+agentic and corrective retrieval (`G8`–`G10`) · ColPali page-image retrieval (`B12`, `G13`) ·
+query-side adapters with mined hard negatives (`D14`, `D15`) · semantic cache simulation
+(`M10`, `M11`) · poisoning robustness (`O4`, `O5`).
+
+Each is independent. Order by what makes the best post.
+
+---
+
+## M12 — Distribution
+
+CI regression gate with manifest diff (`P12`) · GitHub Action (`P13`) · community leaderboard
+(`P15`) · spin out `span-eval` as a standalone package (`K19`).
+
+---
+
+## Cross-cutting standards
+
+**Every PR:** `ruff`, `mypy --strict`, `pytest`, conformance suites, coverage gate (90% on `core/`
+and `score/`, 75% elsewhere). No network in unit tests — anything calling a model or API is marked
+`integration`.
+
+**Every plugin added:** registered by name, declares its extra, passes its conformance suite,
+declares `offsets_exact` honestly, reports its own cost and latency, and has a golden-file test.
+
+**Every metric added:** a hand-computed fixture proving it, and a docstring stating what it does
+*not* tell you.
