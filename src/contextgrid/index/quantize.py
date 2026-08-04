@@ -284,7 +284,9 @@ class QuantizedDenseIndex:
         if not self._ids:
             return []
 
-        query = np.asarray(vector, dtype=np.float32).reshape(1, -1)
+        # Annotated rather than inferred: reshape gives a two-dimensional shape type and
+        # `normalise` returns an any-dimensional one, so the reassignment below would narrow.
+        query: Vectors = np.asarray(vector, dtype=np.float32).reshape(1, -1)
         if self.metric == "cosine":
             query = normalise(query)
 
