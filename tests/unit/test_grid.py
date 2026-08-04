@@ -297,7 +297,9 @@ def test_the_summary_is_plain_english(corpus: Corpus, evalset: EvalSet) -> None:
     )
     summary = results.summary("recall@5")
     assert "scored best on recall@5" in summary
-    assert "significance-tested" in summary  # it refuses to overclaim on a small set
+    # It runs a real paired test rather than hedging, and on five questions the honest
+    # answer is almost always that the two cannot be told apart.
+    assert "not distinguishable" in summary or "beats" in summary
 
 
 def test_an_empty_result_set_says_so() -> None:

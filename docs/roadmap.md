@@ -230,7 +230,7 @@ unresolved-evidence filter rejected the entire set. The fix is a second property
 
 ---
 
-## M7 — Credibility
+## M7 — Credibility ✅ *shipped*
 
 **Build** — bootstrap confidence intervals (`L12`), paired significance testing via `ranx` (`L13`),
 "not distinguishable" as a first-class result state (`L14`), character-level precision and recall
@@ -240,7 +240,25 @@ config diff (`N4`), failure taxonomy classification (`N2`)
 **Test** — significance testing validated against known-different and known-identical synthetic
 runs; character metrics hand-verified on fixtures
 
-**Exit** — the SDK can say "these two configs are not distinguishable (n=87)" and be right.
+**Exit** — the SDK can say "these two configs are not distinguishable (n=87)" and be right. ✅
+
+**What shipped.** Bootstrap confidence intervals on every configuration. Paired significance
+testing by randomisation, which is the right test here because both configurations always run
+on identical questions -- each question acts as its own control, removing the large variance
+that comes from some questions simply being harder. Character-level precision and recall wired
+into the leaderboard. Per-question-type slicing. And the Seven Failure Points taxonomy, applied
+automatically, so a score becomes a list of things to try.
+
+`distinguishable` deliberately requires *both* a small p-value and a confidence interval that
+stays on one side of zero. Two weak signals agreeing is a better basis for a decision than
+either alone.
+
+**One thing the build got wrong first.** The "not distinguishable" verdict stitched a phrase
+into a shared template and produced "About many more than questions would be needed". There are
+three genuinely different situations -- identical on every question, tied on average while
+disagreeing, and a real gap too small for this many questions -- and each needs its own
+sentence. Broken grammar in a statistical caveat is worse than no caveat: it makes a reader
+stop trusting everything around it.
 
 ---
 

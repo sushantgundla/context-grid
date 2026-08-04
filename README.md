@@ -114,8 +114,9 @@ traceback.
 | ✅ | Leaderboard, Pareto frontier, axis effects, config diff, plain-English summary |
 | ✅ | Eval sets: draft from a corpus, filter, classify, review, score their own power |
 | ✅ | Import from JSONL, CSV, BEIR and LegalBench-RAG |
+| ✅ | Bootstrap confidence intervals and paired significance testing |
+| ✅ | Character-level precision, per-question-type slicing, failure diagnosis |
 | ⬜ | Real embedding models via ONNX, rerankers |
-| ⬜ | Confidence intervals and paired significance testing |
 | ⬜ | CLI, run manifest, exports |
 
 Full plan: [docs/roadmap.md](docs/roadmap.md) · Design: [docs/design.md](docs/design.md)

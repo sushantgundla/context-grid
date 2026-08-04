@@ -14,7 +14,15 @@ from typing import Any
 
 from contextgrid.core.warnings import WarningLog
 from contextgrid.cost.model import CostBreakdown
+from contextgrid.diagnose.taxonomy import FailureReport
 from contextgrid.pipeline import Config, Timings
+from contextgrid.score.significance import (
+    Comparison,
+    Interval,
+    SignificanceError,
+    bootstrap_interval,
+)
+from contextgrid.score.significance import compare as compare_scores
 
 
 @dataclass(slots=True)
@@ -32,6 +40,18 @@ class RunResult:
     unresolved_gold: int = 0
     run: dict[str, list[str]] = field(default_factory=dict)
     per_query: dict[str, float] = field(default_factory=dict)
+    by_type: dict[str, dict[str, float]] = field(default_factory=dict)
+    failures: FailureReport | None = None
+
+    def interval(self, *, confidence: float = 0.95, seed: int = 0) -> Interval | None:
+        """A confidence interval on the headline metric.
+
+        A single number with no interval is an opinion. This is what turns 0.71 into
+        "0.71, and it could plausibly be anywhere from 0.63 to 0.79".
+        """
+        if not self.per_query:
+            return None
+        return bootstrap_interval(list(self.per_query.values()), confidence=confidence, seed=seed)
 
     @property
     def label(self) -> str:
@@ -51,6 +71,10 @@ class RunResult:
         row["p95_ms"] = self.timings.percentile(0.95)
         row["cost_per_1k"] = self.cost.query_usd_per_1k
         row["chunks"] = self.chunk_count
+        interval = self.interval()
+        if interval is not None:
+            row["ci_low"] = interval.low
+            row["ci_high"] = interval.high
         return row
 
 
@@ -152,6 +176,58 @@ class Results:
             "differences": disagreed,
         }
 
+    def significance(
+        self,
+        left: str,
+        right: str,
+        *,
+        metric: str = "recall@5",
+        alpha: float = 0.05,
+        seed: int = 0,
+    ) -> Comparison:
+        """Whether two configurations actually differ, tested question by question.
+
+        Both ran on the same questions, so this is a paired test -- each question acts as its
+        own control, which removes the large variance that comes from some questions simply
+        being harder than others.
+        """
+        first, second = self.get(left), self.get(right)
+        if first is None or second is None:
+            missing = left if first is None else right
+            raise KeyError(f"no run labelled {missing!r}")
+
+        return compare_scores(
+            first.per_query,
+            second.per_query,
+            left=left,
+            right=right,
+            metric=metric,
+            alpha=alpha,
+            seed=seed,
+        )
+
+    def is_the_winner_real(
+        self, metric: str = "recall@5", *, alpha: float = 0.05, seed: int = 0
+    ) -> Comparison | None:
+        """Test the top configuration against the runner-up.
+
+        The question a leaderboard implicitly answers and never actually checks.
+        """
+        ranked = sorted(self.runs, key=lambda r: -r.metric(metric))
+        if len(ranked) < 2:
+            return None
+        return self.significance(
+            ranked[0].label, ranked[1].label, metric=metric, alpha=alpha, seed=seed
+        )
+
+    def by_type(self, metric: str = "recall@5") -> dict[str, dict[str, float]]:
+        """Each configuration's score on each kind of question.
+
+        Where the interesting results live. A chunker can win overall and lose badly on
+        every question about a table, and one number per configuration will never show it.
+        """
+        return {run.label: run.by_type.get(metric, {}) for run in self.runs if run.by_type}
+
     def summary(self, metric: str = "recall@5") -> str:
         """The result in one plain-English paragraph.
 
@@ -173,13 +249,17 @@ class Results:
         ]
 
         if len(ranked) > 1:
-            runner_up = ranked[1]
-            gap = winner.metric(metric) - runner_up.metric(metric)
-            lines.append(
-                f"That is {gap:+.3f} against {runner_up.label}. With "
-                f"{winner.scored_queries} questions, treat a gap this size as suggestive "
-                "rather than settled until it has been significance-tested."
-            )
+            try:
+                verdict = self.is_the_winner_real(metric)
+            except (KeyError, SignificanceError):
+                # A configuration that answered no questions cannot be tested against one
+                # that did. Falling back to the bare gap is better than losing the summary.
+                verdict = None
+            if verdict is not None:
+                lines.append(verdict.verdict())
+            else:
+                gap = winner.metric(metric) - ranked[1].metric(metric)
+                lines.append(f"That is {gap:+.3f} against {ranked[1].label}.")
 
         latency = _readable_ms(winner.timings.percentile(0.95))
         if winner.cost.query_usd_per_1k:
@@ -196,6 +276,9 @@ class Results:
                 "in this parse at all, so those questions were unanswerable whatever the "
                 "retriever did."
             )
+
+        if winner.failures is not None and winner.failures.failures():
+            lines.append(winner.failures.summary())
 
         if not self.warnings.is_sound:
             lines.append(

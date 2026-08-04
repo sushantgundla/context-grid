@@ -54,6 +54,7 @@ from contextgrid.corpus import (
     fingerprint_sources,
 )
 from contextgrid.cost import PRICES, CostBreakdown, CostModel, Pricing
+from contextgrid.diagnose import Diagnosis, FailurePoint, FailureReport, diagnose
 from contextgrid.embed import EMBEDDERS, Embedder, get_embedder
 from contextgrid.evalset import (
     Classifier,
@@ -98,9 +99,16 @@ from contextgrid.score.resolve import (
     gold_coverage_by_chunk,
     retrieved_character_count,
 )
+from contextgrid.score.significance import (
+    Comparison,
+    Interval,
+    bootstrap_interval,
+    paired_bootstrap,
+    randomisation_test,
+)
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "CHUNKERS",
@@ -122,6 +130,7 @@ __all__ = [
     "Chunker",
     "ChunkerError",
     "Classifier",
+    "Comparison",
     "Config",
     "ContextGridError",
     "Corpus",
@@ -129,6 +138,7 @@ __all__ = [
     "CorpusFingerprint",
     "CostBreakdown",
     "CostModel",
+    "Diagnosis",
     "DiskCache",
     "Document",
     "DocumentError",
@@ -137,6 +147,8 @@ __all__ = [
     "EvalSet",
     "EvalSetError",
     "EvalSetQuality",
+    "FailurePoint",
+    "FailureReport",
     "FilterChain",
     "FilterResult",
     "GoldAnchor",
@@ -144,6 +156,7 @@ __all__ = [
     "GoldSpan",
     "GridWarning",
     "Index",
+    "Interval",
     "KeywordProbeGenerator",
     "LLMQuestionGenerator",
     "Lab",
@@ -183,6 +196,7 @@ __all__ = [
     "__version__",
     "assess",
     "available_metrics",
+    "bootstrap_interval",
     "character_f1",
     "character_precision",
     "character_recall",
@@ -190,6 +204,7 @@ __all__ = [
     "coverage_fraction",
     "covered_length",
     "default_filters",
+    "diagnose",
     "estimate_cost",
     "evaluate",
     "fingerprint",
@@ -203,7 +218,9 @@ __all__ = [
     "intersection_length",
     "matrix",
     "merge_spans",
+    "paired_bootstrap",
     "per_query",
+    "randomisation_test",
     "read_beir",
     "read_csv",
     "read_jsonl",

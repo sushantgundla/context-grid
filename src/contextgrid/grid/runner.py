@@ -9,7 +9,7 @@ statistics are reported afterwards so that claim can be checked rather than beli
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,12 +18,13 @@ from contextgrid.core.evalset import EvalSet
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
 from contextgrid.cost.model import CostModel
+from contextgrid.diagnose.taxonomy import diagnose
 from contextgrid.grid.matrix import AXIS_ORDER, Matrix, SweepMode
 from contextgrid.pipeline import Config, build, build_qrels, resolve_evalset
 from contextgrid.report.results import Results, RunResult
 from contextgrid.score.anchor import AnchorResolver
 from contextgrid.score.metrics import DEFAULT_KS, evaluate, per_query
-from contextgrid.score.resolve import SpanResolver
+from contextgrid.score.resolve import SpanResolver, character_precision, character_recall
 
 Progress = Callable[[int, int, Config], None]
 
@@ -60,6 +61,17 @@ class Runner:
         run = pipeline.run_queries(resolved)
         metrics = evaluate(qrels, run, ks=self.ks)
 
+        metric_name, _, k_text = self.headline.partition("@")
+        headline_k = int(k_text or 5)
+        scores = per_query(qrels, run, metric_name, headline_k)
+
+        # Character-level precision is the honest check on chunk-level recall. A config
+        # returning enormous chunks can score recall@5 of 1.0 while filling the context
+        # window with text that has nothing to do with the question.
+        metrics.update(_character_metrics(resolved, run, pipeline.chunk_by_id(), headline_k))
+        by_type = _slice_by_type(resolved, scores, self.headline)
+        failures = diagnose(resolved, qrels, run, k=headline_k)
+
         warnings = WarningLog()
         warnings.extend(pipeline.warnings)
         warnings.extend(anchor_log)
@@ -77,7 +89,6 @@ class Runner:
             )
 
         elapsed = time.perf_counter() - started
-        metric_name, _, k_text = self.headline.partition("@")
         cost = self.cost_model.estimate(
             embedder=config.embedder,
             index_tokens=pipeline.embed_tokens,
@@ -96,7 +107,9 @@ class Runner:
             scored_queries=len(qrels),
             unresolved_gold=unresolved,
             run=run,
-            per_query=per_query(qrels, run, metric_name, int(k_text or 5)),
+            per_query=scores,
+            by_type=by_type,
+            failures=failures,
         )
 
     # -- a whole matrix ------------------------------------------------------
@@ -219,6 +232,50 @@ class Runner:
         results.warnings.extend(self.cost_model.warnings)
         results.meta["final"] = current.as_dict()
         return results
+
+
+def _character_metrics(
+    evalset: EvalSet,
+    run: Mapping[str, Sequence[str]],
+    chunks: Mapping[str, Any],
+    k: int,
+) -> dict[str, float]:
+    """Character-level precision and recall over the retrieved context.
+
+    Chunk-level recall can be 1.0 while character precision is 0.04, which means the right
+    evidence arrived buried in twenty-five times its weight in irrelevant text. Every
+    generation call then pays for that, and no chunk-level metric shows it.
+    """
+    precisions: list[float] = []
+    recalls: list[float] = []
+
+    for item in evalset:
+        if not item.is_answerable:
+            continue
+        retrieved = [chunks[cid] for cid in list(run.get(item.id, ()))[:k] if cid in chunks]
+        precisions.append(character_precision(item, retrieved))
+        recalls.append(character_recall(item, retrieved))
+
+    if not precisions:
+        return {}
+    return {
+        f"char_precision@{k}": sum(precisions) / len(precisions),
+        f"char_recall@{k}": sum(recalls) / len(recalls),
+    }
+
+
+def _slice_by_type(
+    evalset: EvalSet, scores: Mapping[str, float], metric: str
+) -> dict[str, dict[str, float]]:
+    """The headline metric, split by kind of question."""
+    grouped: dict[str, list[float]] = {}
+    for item in evalset:
+        if item.id not in scores:
+            continue
+        grouped.setdefault(item.qtype or "unlabelled", []).append(scores[item.id])
+    if not grouped:
+        return {}
+    return {metric: {label: sum(v) / len(v) for label, v in sorted(grouped.items())}}
 
 
 def _mean_query_tokens(evalset: EvalSet) -> float:
