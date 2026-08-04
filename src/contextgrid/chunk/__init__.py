@@ -10,6 +10,11 @@ from __future__ import annotations
 from contextgrid.chunk.base import ChunkBuilder, ChunkerError, chunk_id
 from contextgrid.chunk.fixed import FixedTokenChunker
 from contextgrid.chunk.recursive import DEFAULT_SEPARATORS, RecursiveChunker
+from contextgrid.chunk.semantic import (
+    SemanticChunker,
+    profile_summary,
+    similarity_profile,
+)
 from contextgrid.chunk.sentence import SentenceWindowChunker, sentence_ranges
 from contextgrid.chunk.structural import StructuralChunker
 from contextgrid.core.protocols import Chunker
@@ -29,6 +34,9 @@ CHUNKERS.register("sentence", shorthand="window", doc="A sliding window of whole
 CHUNKERS.register(
     "structural", shorthand="max_size", doc="One chunk per section, bounded by size."
 )(StructuralChunker)
+CHUNKERS.register(
+    "semantic", shorthand="percentile", doc="Cut where consecutive sentences change topic."
+)(SemanticChunker)
 
 
 def get_chunker(spec: str | Chunker) -> Chunker:
@@ -43,9 +51,12 @@ __all__ = [
     "ChunkerError",
     "FixedTokenChunker",
     "RecursiveChunker",
+    "SemanticChunker",
     "SentenceWindowChunker",
     "StructuralChunker",
     "chunk_id",
     "get_chunker",
+    "profile_summary",
     "sentence_ranges",
+    "similarity_profile",
 ]

@@ -11,7 +11,7 @@ a valid thing to do at all.
 from __future__ import annotations
 
 from contextgrid.cache import Cache, CacheStats, DiskCache, MemoryCache, NullCache
-from contextgrid.chunk import CHUNKERS, ChunkerError, get_chunker
+from contextgrid.chunk import CHUNKERS, ChunkerError, SemanticChunker, get_chunker
 from contextgrid.core.errors import (
     ContextGridError,
     DocumentError,
@@ -120,8 +120,9 @@ from contextgrid.score.significance import (
     randomisation_test,
 )
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
+from contextgrid.validate import ValidationResult, load_benchmark, self_check, validate
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "CHUNKERS",
@@ -197,6 +198,7 @@ __all__ = [
     "ReviewQueue",
     "RunResult",
     "Runner",
+    "SemanticChunker",
     "Severity",
     "SourceFile",
     "Span",
@@ -206,6 +208,7 @@ __all__ = [
     "Timings",
     "Tokenizer",
     "UnknownPluginError",
+    "ValidationResult",
     "Verdict",
     "WarningCode",
     "WarningLog",
@@ -238,6 +241,7 @@ __all__ = [
     "get_tokenizer",
     "gold_coverage_by_chunk",
     "intersection_length",
+    "load_benchmark",
     "matrix",
     "merge_spans",
     "paired_bootstrap",
@@ -250,7 +254,9 @@ __all__ = [
     "results_to_json",
     "results_to_markdown",
     "retrieved_character_count",
+    "self_check",
     "total_length",
+    "validate",
     "write_bundle",
     "write_csv",
     "write_jsonl",

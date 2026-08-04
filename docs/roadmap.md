@@ -262,7 +262,7 @@ stop trusting everything around it.
 
 ---
 
-## M8 — Ship it 🔨 *mostly shipped*
+## M8 — Ship it ✅ *shipped*
 
 **Build** — second and third parsers, pdfplumber and Docling (`B1`), the parser→retrieval
 attribution report (`B4`), semantic and structural chunkers (`C4`, `C5`), a local cross-encoder
@@ -286,8 +286,19 @@ same run as no reranker at all, and candidate depth means nothing without someth
 Left alone, both would run identical configurations under different names and credit an axis
 with differences it did not cause.
 
-**Still open.** Real embedding models and cross-encoders via ONNX, the LegalBench-RAG
-validation suite, and the Docker self-host path.
+**Also shipped.** Semantic chunking, cutting on a percentile of *this document's own*
+similarity drops rather than an absolute threshold -- 0.7 is a big drop for one embedding
+model and noise for another, so a fixed value would silently mean something different on
+every arm of a sweep. It comes with a similarity profile that says when a document was too
+flat for the strategy to have anything to work with, which is worth knowing before believing
+its score.
+
+The LegalBench-RAG validation harness, which checks the corpus matches the annotations before
+scoring anything, then compares our numbers with the published ones. And a Docker self-host
+path, since the default install runs locally and talks to nothing.
+
+**Still open.** Real embedding models and cross-encoders via ONNX -- registered lazily, so
+asking for one today names the extra to install rather than failing obscurely.
 
 ---
 

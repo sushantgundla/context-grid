@@ -119,8 +119,11 @@ traceback.
 | ✅ | Rerankers, and the candidate-depth axis most advice omits |
 | ✅ | Run manifest, config/code/report exports, result bundles |
 | ✅ | A CLI: `contextgrid profile`, `sweep`, `evalset`, `plugins`, `diff` |
+| ✅ | Semantic chunking, on a percentile of the document's own similarity drops |
+| ✅ | LegalBench-RAG validation harness — `contextgrid validate` |
+| ✅ | Docker self-host: documents never leave the machine |
 | ⬜ | Real embedding models and cross-encoders via ONNX |
-| ⬜ | LegalBench-RAG validation, Docker self-host |
+| ⬜ | Generation panel, GraphRAG, agentic retrieval, quantization |
 
 Full plan: [docs/roadmap.md](docs/roadmap.md) · Design: [docs/design.md](docs/design.md)
 
@@ -152,6 +155,31 @@ Unit tests never touch the network. Three things get more than ordinary care:
   reference implementation, on randomly generated judgements and runs. The core installs with
   numpy and nothing else, so the metrics are implemented here rather than delegated — and
   "our numbers match ranx on a thousand random cases" is a stronger claim than "we used ranx".
+
+## Checking it rather than trusting it
+
+Every number here depends on the span resolver, and the resolver is the one part with no
+external reference to check against — nobody else stores ground truth as character spans.
+
+Except [LegalBench-RAG](https://arxiv.org/abs/2408.10343), which does exactly that. So:
+
+```bash
+contextgrid validate ./legalbench-rag.json ./corpus --recall-at-10 0.72
+```
+
+It checks first that the gold spans point at real text in the documents as loaded — a
+mismatch there is a loading problem and invalidates everything after it — then scores the
+benchmark with a deliberately plain configuration and compares against the published number.
+The point is to check the *scorer*, not to win the benchmark.
+
+## Self-hosting
+
+Everything in the default install runs locally and talks to nothing, which is the honest
+answer to "can I run this on documents I cannot upload anywhere?".
+
+```bash
+docker compose run --rm contextgrid sweep /data/documents /data/evalset.jsonl --bundle /data/results
+```
 
 ## Licence
 

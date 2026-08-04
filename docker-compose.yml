@@ -1,0 +1,14 @@
+# Self-hosted context-grid.
+#
+#   docker compose run --rm contextgrid profile /data/documents
+#   docker compose run --rm contextgrid sweep /data/documents /data/evalset.jsonl \
+#       --chunker recursive:512 --chunker structural:512 --bundle /data/results
+#
+# Nothing here reaches the network. Put your documents in ./data and they stay there.
+
+services:
+  contextgrid:
+    build: .
+    volumes:
+      - ./data:/data
+    working_dir: /data

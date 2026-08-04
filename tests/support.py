@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from contextgrid.chunk import (
     FixedTokenChunker,
     RecursiveChunker,
+    SemanticChunker,
     SentenceWindowChunker,
     StructuralChunker,
 )
@@ -175,4 +176,6 @@ ALL_CHUNKERS: list[ChunkerCase] = [
     ),
     ChunkerCase("structural:64", StructuralChunker(max_size=64, min_size=8)),
     ChunkerCase("structural:128/tables-whole", StructuralChunker(max_size=128, min_size=0)),
+    ChunkerCase("semantic:80", SemanticChunker(percentile=80.0, max_size=128)),
+    ChunkerCase("semantic:50/hash", SemanticChunker(percentile=50.0, embedder="hash:64")),
 ]

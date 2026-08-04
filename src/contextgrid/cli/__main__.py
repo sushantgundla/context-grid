@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         "plugins": _plugins,
         "evalset": _evalset,
         "diff": _diff,
+        "validate": _validate,
     }[args.command]
 
     try:
@@ -72,6 +73,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     evalset = sub.add_parser("evalset", help="Inspect an eval set and what it can support.")
     evalset.add_argument("path", type=Path)
+
+    check = sub.add_parser("validate", help="Check the scorer against a published benchmark.")
+    check.add_argument("benchmark", type=Path, help="A LegalBench-RAG JSON file.")
+    check.add_argument("corpus", type=Path, help="The documents its spans point into.")
+    check.add_argument("--limit", type=int, default=None)
+    check.add_argument(
+        "--recall-at-10", type=float, default=None, help="The published number to compare with."
+    )
 
     diff = sub.add_parser("diff", help="Say what changed between two run manifests.")
     diff.add_argument("before", type=Path)
@@ -182,6 +191,24 @@ def _evalset(args: argparse.Namespace) -> int:
     print(f"types: {type_distribution(evalset)}")
     for warning in quality.warnings():
         print(f"  - {warning.message}")
+    return 0
+
+
+def _validate(args: argparse.Namespace) -> int:
+    from contextgrid.validate import load_benchmark, self_check, validate
+
+    corpus, evalset = load_benchmark(args.benchmark, args.corpus, limit=args.limit)
+
+    # Whether the corpus matches the annotations comes first. If it does not, nothing after
+    # it means anything, and the cause is loading rather than retrieval.
+    check = self_check(corpus, evalset)
+    print(check["verdict"])
+    if check["in_range_rate"] < 0.95:
+        return 1
+
+    print()
+    reference = {"recall@10": args.recall_at_10} if args.recall_at_10 is not None else None
+    print(validate(corpus, evalset, reference=reference).report())
     return 0
 
 

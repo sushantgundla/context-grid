@@ -17,3 +17,5 @@ coverage.xml
 .vscode/
 *.lance/
 .contextgrid-cache/
+data/*
+!data/.gitkeep

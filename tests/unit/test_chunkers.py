@@ -15,10 +15,13 @@ from contextgrid.chunk import (
     ChunkerError,
     FixedTokenChunker,
     RecursiveChunker,
+    SemanticChunker,
     SentenceWindowChunker,
     StructuralChunker,
     get_chunker,
+    profile_summary,
     sentence_ranges,
+    similarity_profile,
 )
 from contextgrid.core.documents import BlockKind
 from contextgrid.parse import MarkdownParser
@@ -279,7 +282,7 @@ def test_keep_heading_path_prepends_and_admits_it_is_no_longer_a_slice() -> None
 
 
 def test_registry_knows_every_chunker() -> None:
-    assert CHUNKERS.names() == ["fixed", "recursive", "sentence", "structural"]
+    assert CHUNKERS.names() == ["fixed", "recursive", "semantic", "sentence", "structural"]
 
 
 def test_spec_strings_build_configured_chunkers() -> None:
@@ -298,3 +301,91 @@ def test_shorthand_differs_per_chunker() -> None:
     assert CHUNKERS.parse_spec("fixed:512") == ("fixed", {"size": 512})
     assert CHUNKERS.parse_spec("sentence:4") == ("sentence", {"window": 4})
     assert CHUNKERS.parse_spec("structural:800") == ("structural", {"max_size": 800})
+
+
+# ---------------------------------------------------------------------------
+# semantic
+# ---------------------------------------------------------------------------
+
+
+def test_semantic_cuts_where_the_topic_changes() -> None:
+    """Three sentences about notice, then three about API keys. The boundary belongs in
+    the middle, not at an arbitrary token count."""
+    document = parse(
+        "The notice period is thirty days. Notice must be written. Notice goes to Schedule A. "
+        "The API key goes in a header. The header is X-Api-Key. Requests without it return 401."
+    )
+    chunks = SemanticChunker(percentile=80.0, embedder="tfidf").chunk(document)
+    assert len(chunks) > 1
+    assert "notice" in chunks[0].text.lower()
+
+
+def test_semantic_percentile_controls_how_many_boundaries() -> None:
+    """A percentile of this document's own drops, not an absolute similarity -- 0.7 is a big
+    drop for one embedding model and noise for another."""
+    document = parse(" ".join(f"Sentence {i} is about topic {i // 2}." for i in range(20)))
+    aggressive = SemanticChunker(percentile=20.0).chunk(document)
+    conservative = SemanticChunker(percentile=95.0).chunk(document)
+    assert len(aggressive) >= len(conservative)
+
+
+def test_semantic_respects_its_size_backstop() -> None:
+    """Similarity can run for pages without a real break, and a chunk nothing fits in the
+    context window is worse than one cut slightly early."""
+    # Sentences deliberately do not end in a bare number: the sentence splitter reads
+    # "continues in sentence 4." as a numbered clause, which would give one long sentence.
+    document = parse(
+        " ".join(f"The same topic continues here at point {i} of many." for i in range(60))
+    )
+    chunks = SemanticChunker(percentile=99.0, max_size=40).chunk(document)
+    assert len(chunks) > 1
+    for chunk in chunks[:-1]:
+        assert chunk.token_counts["regex"] <= 55  # the backstop, plus the sentence it was in
+
+
+def test_semantic_on_a_single_sentence_gives_one_chunk() -> None:
+    chunks = SemanticChunker().chunk(parse("Only one sentence here."))
+    assert len(chunks) == 1
+
+
+def test_semantic_on_an_empty_document_gives_nothing() -> None:
+    assert SemanticChunker().chunk(parse("   ")) == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"percentile": 0}, "between 0 and 100"),
+        ({"percentile": 100}, "between 0 and 100"),
+        ({"buffer_size": -1}, "buffer_size must be >= 0"),
+        ({"max_size": 0}, "max_size must be positive"),
+    ],
+)
+def test_semantic_rejects_nonsense_configuration(kwargs: dict[str, object], message: str) -> None:
+    with pytest.raises(ChunkerError, match=message):
+        SemanticChunker(**kwargs)  # type: ignore[arg-type]
+
+
+def test_the_similarity_profile_says_when_there_was_nothing_to_cut_on() -> None:
+    """A flat profile means the boundaries are essentially arbitrary, which is worth knowing
+    before believing the score that comes out of them."""
+    identical = parse(" ".join(["The same sentence repeated."] * 12))
+    chunker = SemanticChunker()
+    assert "close to arbitrary" in profile_summary(similarity_profile(chunker, identical))
+
+
+def test_the_similarity_profile_says_when_there_were_real_shifts() -> None:
+    varied = parse(
+        "Notice is thirty days. Notice is written. "
+        "The API key is a header. Requests return 401. "
+        "Fees are payable monthly. Invoices are due in 30 days."
+    )
+    chunker = SemanticChunker()
+    assert "real topic shifts" in profile_summary(similarity_profile(chunker, varied))
+
+
+def test_semantic_is_registered_and_configurable_by_spec() -> None:
+    chunker = get_chunker("semantic:75,max_size=256")
+    assert isinstance(chunker, SemanticChunker)
+    assert chunker.percentile == 75
+    assert chunker.max_size == 256
