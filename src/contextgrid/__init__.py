@@ -56,7 +56,17 @@ from contextgrid.corpus import (
 )
 from contextgrid.cost import PRICES, CostBreakdown, CostModel, Pricing
 from contextgrid.diagnose import Diagnosis, FailurePoint, FailureReport, diagnose
-from contextgrid.embed import EMBEDDERS, Embedder, get_embedder
+from contextgrid.embed import (
+    EMBEDDERS,
+    AdaptedEmbedder,
+    Embedder,
+    LinearAdapter,
+    Triplet,
+    fit_adapter,
+    get_embedder,
+    mine_triplets,
+    split_triplets,
+)
 from contextgrid.evalset import (
     Classifier,
     EvalSetQuality,
@@ -152,7 +162,7 @@ from contextgrid.transform import (
 )
 from contextgrid.validate import ValidationResult, load_benchmark, self_check, validate
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "CHUNKERS",
@@ -164,6 +174,7 @@ __all__ = [
     "RERANKERS",
     "TOKENIZERS",
     "TRANSFORMS",
+    "AdaptedEmbedder",
     "AnchorMatch",
     "AnchorResolver",
     "Answer",
@@ -217,6 +228,7 @@ __all__ = [
     "LLMGenerator",
     "LLMQuestionGenerator",
     "Lab",
+    "LinearAdapter",
     "Manifest",
     "MatchStrategy",
     "Matrix",
@@ -257,6 +269,7 @@ __all__ = [
     "Timings",
     "Tokenizer",
     "TransformedQuery",
+    "Triplet",
     "UnknownPluginError",
     "ValidationResult",
     "Verdict",
@@ -282,6 +295,7 @@ __all__ = [
     "explain_diff",
     "fingerprint",
     "fingerprint_sources",
+    "fit_adapter",
     "format_leaderboard",
     "get_chunker",
     "get_embedder",
@@ -296,6 +310,7 @@ __all__ = [
     "load_benchmark",
     "matrix",
     "merge_spans",
+    "mine_triplets",
     "paired_bootstrap",
     "per_query",
     "randomisation_test",
@@ -309,6 +324,7 @@ __all__ = [
     "retrieved_character_count",
     "score_answer",
     "self_check",
+    "split_triplets",
     "tokens_sent",
     "total_length",
     "validate",

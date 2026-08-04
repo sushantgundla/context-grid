@@ -127,7 +127,8 @@ traceback.
 | ⬜ | Real embedding models and cross-encoders via ONNX |
 | ✅ | Quantization: scalar, product and binary, with the rescoring pass that makes them work |
 | ✅ | Query transforms: HyDE, multi-query, decomposition, step-back — with their cost attributed |
-| ⬜ | GraphRAG, agentic retrieval, query-side adapters |
+| ✅ | Query-side adapters, trained on the eval set you already built |
+| ⬜ | GraphRAG, agentic retrieval, semantic cache simulation |
 
 Full plan: [docs/roadmap.md](docs/roadmap.md) · Design: [docs/design.md](docs/design.md)
 

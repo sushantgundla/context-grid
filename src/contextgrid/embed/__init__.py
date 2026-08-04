@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from contextgrid.core.registry import Registry
+from contextgrid.embed.adapter import (
+    AdaptedEmbedder,
+    AdapterError,
+    AdapterReport,
+    LinearAdapter,
+    Triplet,
+    fit_adapter,
+    mine_triplets,
+    split_triplets,
+)
 from contextgrid.embed.base import (
     Embedder,
     EmbeddingResult,
@@ -57,13 +67,21 @@ def get_embedder(spec: str | Embedder) -> Embedder:
 
 __all__ = [
     "EMBEDDERS",
+    "AdaptedEmbedder",
+    "AdapterError",
+    "AdapterReport",
     "Embedder",
     "EmbeddingResult",
     "HashEmbedder",
+    "LinearAdapter",
     "TfidfEmbedder",
     "TokenCountEmbedder",
+    "Triplet",
     "Vectors",
+    "fit_adapter",
     "get_embedder",
+    "mine_triplets",
     "normalise",
+    "split_triplets",
     "truncate",
 ]
