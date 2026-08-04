@@ -125,7 +125,8 @@ traceback.
 | ✅ | Context assembly: ordering, token budget, deduplication |
 | ✅ | Generation panel: groundedness, citation accuracy, abstention, the lift chart |
 | ⬜ | Real embedding models and cross-encoders via ONNX |
-| ⬜ | GraphRAG, agentic retrieval, quantization axis |
+| ✅ | Quantization: scalar, product and binary, with the rescoring pass that makes them work |
+| ⬜ | GraphRAG, agentic retrieval, query transforms |
 
 Full plan: [docs/roadmap.md](docs/roadmap.md) · Design: [docs/design.md](docs/design.md)
 

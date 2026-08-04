@@ -11,6 +11,16 @@ from contextgrid.index.hybrid import (
     reciprocal_rank_fusion,
     weighted_fusion,
 )
+from contextgrid.index.quantize import (
+    BinaryCodec,
+    CompressionReport,
+    ProductCodec,
+    Quantization,
+    QuantizationError,
+    QuantizedDenseIndex,
+    ScalarCodec,
+    recall_against_exact,
+)
 from contextgrid.index.sparse import BM25Index
 
 INDEXES: Registry[Index] = Registry(family="index")
@@ -19,6 +29,11 @@ INDEXES.register("dense", shorthand="metric", doc="Exact dense search. The refer
     ExactDenseIndex
 )
 INDEXES.register("bm25", shorthand="k1", doc="Okapi BM25. No model, no vectors.")(BM25Index)
+INDEXES.register(
+    "quantized",
+    shorthand="scheme",
+    doc="Compressed dense search: scalar, product or binary, with optional rescoring.",
+)(QuantizedDenseIndex)
 
 
 def _hybrid(
@@ -54,13 +69,21 @@ def get_index(spec: str | Index) -> Index:
 __all__ = [
     "INDEXES",
     "BM25Index",
+    "BinaryCodec",
+    "CompressionReport",
     "ExactDenseIndex",
     "FusionError",
     "HybridIndex",
     "Index",
     "IndexBuildError",
+    "ProductCodec",
+    "Quantization",
+    "QuantizationError",
+    "QuantizedDenseIndex",
+    "ScalarCodec",
     "Scored",
     "get_index",
+    "recall_against_exact",
     "reciprocal_rank_fusion",
     "top_k",
     "weighted_fusion",

@@ -87,7 +87,14 @@ from contextgrid.generate import (
     score_answer,
 )
 from contextgrid.grid import Matrix, Runner, SweepMode, estimate_cost, matrix
-from contextgrid.index import INDEXES, Index, get_index
+from contextgrid.index import (
+    INDEXES,
+    Index,
+    Quantization,
+    QuantizedDenseIndex,
+    get_index,
+    recall_against_exact,
+)
 from contextgrid.lab import Lab
 from contextgrid.parse import PARSERS, get_parser
 from contextgrid.pipeline import BuiltPipeline, Config, Timings
@@ -133,7 +140,7 @@ from contextgrid.score.significance import (
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
 from contextgrid.validate import ValidationResult, load_benchmark, self_check, validate
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "CHUNKERS",
@@ -205,6 +212,8 @@ __all__ = [
     "ParsedDocument",
     "Parser",
     "Pricing",
+    "Quantization",
+    "QuantizedDenseIndex",
     "QuestionType",
     "RecordingLLM",
     "Registry",
@@ -272,6 +281,7 @@ __all__ = [
     "read_csv",
     "read_jsonl",
     "read_legalbench_rag",
+    "recall_against_exact",
     "results_to_json",
     "results_to_markdown",
     "retrieved_character_count",
