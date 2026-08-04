@@ -179,3 +179,57 @@ ALL_CHUNKERS: list[ChunkerCase] = [
     ChunkerCase("semantic:80", SemanticChunker(percentile=80.0, max_size=128)),
     ChunkerCase("semantic:50/hash", SemanticChunker(percentile=50.0, embedder="hash:64")),
 ]
+
+
+def _library_chunkers() -> list[ChunkerCase]:
+    """The adopted libraries, when their extra is installed.
+
+    They go through exactly the same conformance suite as the hand-written ones. That is the
+    point of adopting them this way: a library that cannot round-trip character offsets cannot
+    be scored against span gold, and finding that out here is far better than finding it out
+    from a leaderboard that is quietly wrong.
+    """
+    cases: list[ChunkerCase] = []
+
+    try:
+        from contextgrid.chunk.chonkie import (
+            ChonkieRecursiveChunker,
+            ChonkieSentenceChunker,
+            ChonkieTokenChunker,
+        )
+    except ImportError:  # pragma: no cover - depends on which extras are installed
+        pass
+    else:
+        cases += [
+            ChunkerCase("chonkie:token:64", ChonkieTokenChunker(size=64)),
+            ChunkerCase("chonkie:recursive:64", ChonkieRecursiveChunker(size=64)),
+            ChunkerCase("chonkie:sentence:64", ChonkieSentenceChunker(size=64)),
+        ]
+
+    try:
+        from contextgrid.chunk.langchain import (
+            LangChainCharacterChunker,
+            LangChainMarkdownChunker,
+            LangChainRecursiveChunker,
+        )
+    except ImportError:  # pragma: no cover - depends on which extras are installed
+        pass
+    else:
+        # LangChain strips whitespace from its chunks and discards the separators it splits on,
+        # so a boundary can swallow real characters. `covers_everything` is false where that
+        # happens, and the suite records it rather than pretending otherwise -- text a chunker
+        # drops is evidence no retriever can ever find.
+        cases += [
+            ChunkerCase("langchain:recursive:64", LangChainRecursiveChunker(size=64, overlap=8)),
+            ChunkerCase(
+                "langchain:character:64",
+                LangChainCharacterChunker(size=64, overlap=8),
+                covers_everything=False,
+            ),
+            ChunkerCase("langchain:markdown:64", LangChainMarkdownChunker(size=64, overlap=8)),
+        ]
+
+    return cases
+
+
+ALL_CHUNKERS += _library_chunkers()

@@ -38,6 +38,62 @@ CHUNKERS.register(
     "semantic", shorthand="percentile", doc="Cut where consecutive sentences change topic."
 )(SemanticChunker)
 
+# Library chunkers. Registered lazily so `pip install context-grid` stays one dependency and
+# `import contextgrid` stays cheap; asking for one without the extra raises MissingExtraError
+# naming what to install.
+#
+# The five above are ours and are offset-exact by construction. These are what people actually
+# deploy. Having all three sources on one axis -- ours, chonkie's, LangChain's -- is the
+# comparison this package exists to make, and the reason none of them was reimplemented.
+_CHONKIE = (
+    ("chonkie:token", "ChonkieTokenChunker", "size", "Fixed token windows, chonkie's."),
+    (
+        "chonkie:recursive",
+        "ChonkieRecursiveChunker",
+        "size",
+        "Chonkie's recursive splitter. The head-to-head against ours.",
+    ),
+    ("chonkie:sentence", "ChonkieSentenceChunker", "size", "Whole sentences, chonkie's."),
+    (
+        "chonkie:code",
+        "ChonkieCodeChunker",
+        "size",
+        "Splits on the syntax tree. Nothing hand-written comes close.",
+    ),
+)
+
+for _name, _attr, _shorthand, _doc in _CHONKIE:
+    CHUNKERS.register_lazy(
+        _name,
+        module="contextgrid.chunk.chonkie",
+        attr=_attr,
+        extra="chunk",
+        package="chonkie",
+        shorthand=_shorthand,
+        doc=_doc,
+    )
+
+_LANGCHAIN = (
+    (
+        "langchain:recursive",
+        "LangChainRecursiveChunker",
+        "What most deployed systems are actually running.",
+    ),
+    ("langchain:character", "LangChainCharacterChunker", "One separator only. The naive baseline."),
+    ("langchain:markdown", "LangChainMarkdownChunker", "Recursive, Markdown boundaries first."),
+)
+
+for _name, _attr, _doc in _LANGCHAIN:
+    CHUNKERS.register_lazy(
+        _name,
+        module="contextgrid.chunk.langchain",
+        attr=_attr,
+        extra="chunk",
+        package="langchain-text-splitters",
+        shorthand="size",
+        doc=_doc,
+    )
+
 
 def get_chunker(spec: str | Chunker) -> Chunker:
     """Resolve a chunker from a spec like `recursive:512,overlap=64`, or pass one through."""

@@ -86,9 +86,39 @@ put it in the core — a config-driven tool whose config format is optional is s
 
 ---
 
-## Dimension 1 — Chunkers
+## Dimension 1 — Chunkers ✅ done
 
-**Today.** Six hand-written: fixed, recursive, sentence, structural, semantic. All preserve
+**Shipped.** chonkie (token, recursive, sentence, code) and langchain-text-splitters
+(recursive, character, markdown) sit alongside the five hand-written ones, twelve arms on one
+axis, all behind `pip install 'context-grid[chunk]'`. Nothing new to learn:
+`chunker: [recursive:512, chonkie:recursive:512, langchain:recursive:512]` in the YAML.
+
+Four things came out of doing it that were not obvious beforehand:
+
+* **chonkie's offsets are exact.** Verified rather than assumed, and re-checked on every
+  document at runtime. It was the open question in the table below and the answer is good.
+* **LangChain's offsets are not.** It reports `start_index: -1` for roughly one chunk in eight
+  on our fixtures — always tables — because it rebuilds each chunk by rejoining the pieces it
+  split and then cannot find the result in the source. The content *is* still a literal slice,
+  so the adapter locates and verifies the offset itself. Taking the -1 at face value would
+  have dropped those chunks.
+* **Both libraries measure size in the wrong unit by default** — chonkie in characters,
+  LangChain in `len`. Left alone, `chonkie:recursive:512` would have meant 512 characters
+  while `recursive:512` meant 512 tokens, and the axis would quietly have become a units
+  comparison. Both adapters push our tokenizer down.
+* **Plugin names needed namespacing**, so the registry now resolves the longest registered
+  name rather than splitting on the first colon: `chonkie:recursive:512` is the plugin
+  `chonkie:recursive` at size 512, not a plugin called `chonkie`.
+
+All twelve pass the same conformance suite. First measurement, on the demo corpus at 192
+tokens: chonkie's recursive 0.863 against our 0.849 and LangChain's 0.849 — and at 96 tokens
+plain `fixed` beats all three. Which is exactly the sort of thing that is worth knowing and
+nobody publishes.
+
+**Not adopted:** semchunk (one strategy, covered) and llama-index node parsers (heavy, and its
+`Node` type would need its own adapter for little gain over the two above).
+
+**Originally.** Six hand-written: fixed, recursive, sentence, structural, semantic. All preserve
 exact offsets. All are mine, which means the tool compares my chunkers rather than the ones
 people deploy.
 

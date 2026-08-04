@@ -93,10 +93,46 @@ def render(
 
 
 def _axis(name: str, chosen: list[str], registry: object) -> str:
-    """One axis line, plus a comment listing everything else available."""
-    available = sorted(getattr(registry, "names", lambda: [])())
-    rest = [plugin for plugin in available if plugin not in chosen]
+    """One axis line, plus a comment listing everything else this installation can run."""
+    already = {value.split(":", 1)[0] if ":" in value else value for value in chosen}
+    # `recursive:512` is already on the line; listing `recursive` again under "also available"
+    # reads as a second, different plugin.
+    rest = [plugin for plugin in _installed(registry) if plugin not in already]
+
     line = f"  {name}: [{', '.join(chosen)}]"
-    if not rest:
-        return line
-    return f"{line}\n  # also available: {', '.join(rest)}"
+    return line if not rest else f"{line}\n{_wrapped('also available: ' + ', '.join(rest))}"
+
+
+def _installed(registry: object) -> list[str]:
+    """The plugins whose dependencies are actually present.
+
+    Every optional plugin is registered whether or not its package is installed, so the
+    registry alone would advertise chunkers that raise on first use. Somebody's first contact
+    with the tool should not be an ImportError from a file the tool wrote for them.
+    """
+    entries = list(getattr(registry, "__iter__", list)())
+    names: list[str] = []
+    for entry in entries:
+        package = getattr(entry, "package", None) or getattr(entry, "module", None)
+        if package and not _importable(str(package).split(".")[0].replace("-", "_")):
+            continue
+        names.append(str(entry.name))
+    return sorted(names)
+
+
+def _importable(module: str) -> bool:
+    from importlib.util import find_spec
+
+    try:
+        return find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _wrapped(text: str, width: int = 88) -> str:
+    """Comment lines wrapped, because a 200-character line in a config nobody can read."""
+    import textwrap
+
+    return "\n".join(
+        f"  # {line}" for line in textwrap.wrap(text, width=width, subsequent_indent="  ")
+    )

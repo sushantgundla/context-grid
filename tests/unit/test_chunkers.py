@@ -282,7 +282,28 @@ def test_keep_heading_path_prepends_and_admits_it_is_no_longer_a_slice() -> None
 
 
 def test_registry_knows_every_chunker() -> None:
-    assert CHUNKERS.names() == ["fixed", "recursive", "semantic", "sentence", "structural"]
+    """The five written here, plus the libraries, registered lazily behind `[chunk]`."""
+    assert CHUNKERS.names() == [
+        "chonkie:code",
+        "chonkie:recursive",
+        "chonkie:sentence",
+        "chonkie:token",
+        "fixed",
+        "langchain:character",
+        "langchain:markdown",
+        "langchain:recursive",
+        "recursive",
+        "semantic",
+        "sentence",
+        "structural",
+    ]
+
+
+def test_a_namespaced_name_is_not_mistaken_for_a_parameter() -> None:
+    """`chonkie:recursive:512` is the plugin `chonkie:recursive` at size 512, not a plugin
+    called `chonkie` -- and splitting on the first colon would read it the second way."""
+    assert CHUNKERS.parse_spec("chonkie:recursive:512") == ("chonkie:recursive", {"size": 512})
+    assert CHUNKERS.parse_spec("chonkie:recursive") == ("chonkie:recursive", {})
 
 
 def test_spec_strings_build_configured_chunkers() -> None:

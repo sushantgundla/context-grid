@@ -166,8 +166,7 @@ class Registry(Generic[T]):
 
     def parse_spec(self, spec: str) -> tuple[str, dict[str, Any]]:
         """Split a spec string into a plugin name and its parameters."""
-        name, _, tail = spec.partition(":")
-        name = name.strip()
+        name, tail = self._split_name(spec)
         if not name:
             raise ContextGridError(f"{spec!r} is not a valid {self.family} spec: no name")
 
@@ -190,6 +189,37 @@ class Registry(Generic[T]):
                     )
                 )
         return name, params
+
+    def _split_name(self, spec: str) -> tuple[str, str]:
+        """Separate the plugin name from its parameters.
+
+        Splitting on the first colon is not enough, because plugin names are namespaced by the
+        library they come from: `chonkie:recursive:512` is the plugin `chonkie:recursive` with
+        `size=512`, not a plugin called `chonkie`. So take the *longest* registered name the
+        spec starts with.
+
+        Unregistered names fall back to the first segment, which keeps the "no chunker named
+        'foo'" error pointing at the part the user actually got wrong.
+        """
+        candidate = spec.strip()
+        if candidate in self._entries:
+            return candidate, ""
+
+        # Slice after the colon that ended the match, not after the name's own length -- the
+        # two differ whenever there is whitespace around the colon.
+        head = ""
+        tail_from = 0
+        for position, character in enumerate(candidate):
+            if character != ":":
+                continue
+            prefix = candidate[:position].strip()
+            if prefix in self._entries:
+                head, tail_from = prefix, position + 1
+        if head:
+            return head, candidate[tail_from:]
+
+        name, _, tail = candidate.partition(":")
+        return name.strip(), tail
 
     def names(self) -> list[str]:
         return sorted(self._entries)

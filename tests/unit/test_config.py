@@ -343,16 +343,32 @@ def test_the_generated_starter_config_parses() -> None:
 
 
 def test_the_starter_config_only_offers_plugins_that_are_installed() -> None:
-    """Listing an extra that is not installed sends people to an ImportError instead of a
-    result."""
-    from contextgrid.chunk import CHUNKERS
+    """Every optional plugin is registered whether or not its package is present, so listing
+    the registry wholesale would advertise chunkers that raise on first use. Somebody's first
+    contact with the tool should not be an ImportError from a file the tool wrote for them."""
+    from contextgrid.chunk import get_chunker
 
-    text = render()
-    installed = set(CHUNKERS.names())
-    for line in text.splitlines():
-        if line.strip().startswith("# also available:") and "recursive" in line:
-            offered = {p.strip() for p in line.split(":", 1)[1].split(",")}
-            assert offered <= installed
+    for line in render().splitlines():
+        if not line.strip().startswith("# also available:") or "recursive" not in line:
+            continue
+        for name in line.split("available:", 1)[1].split(","):
+            if name.strip():
+                get_chunker(name.strip())  # raises if the package is missing
+
+
+def test_the_starter_config_does_not_list_a_plugin_it_already_chose() -> None:
+    """`recursive:512` is on the chunker line; repeating `recursive` underneath reads as a
+    second, different plugin."""
+    for line in render().splitlines():
+        if not (line.strip().startswith("# also available:") and "chonkie" in line):
+            continue
+        assert " recursive," not in line
+        assert not line.rstrip().endswith(" recursive")
+
+
+def test_comment_lines_in_the_starter_config_stay_readable() -> None:
+    for line in render().splitlines():
+        assert len(line) <= 100, line
 
 
 def test_the_starter_config_carries_the_paths_it_was_given(tmp_path: Path) -> None:
