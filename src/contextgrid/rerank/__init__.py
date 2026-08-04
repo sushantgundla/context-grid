@@ -9,6 +9,7 @@ from contextgrid.rerank.base import (
     NoReranker,
     Reranker,
 )
+from contextgrid.rerank.remote import LiteLLMReranker, RerankerError, TEIReranker
 
 RERANKERS: Registry[Reranker] = Registry(family="reranker")
 
@@ -22,29 +23,23 @@ RERANKERS.register(
     "mmr", shorthand="diversity", doc="Maximal marginal relevance. Fixes a top-5 of near-copies."
 )(MMRReranker)
 
-# Cross-encoders arrive with the extra that provides them.
-for _name, _attr, _doc in [
-    ("bge-reranker-base", "BgeRerankerBase", "BAAI bge-reranker-base cross-encoder."),
-    ("bge-reranker-v2-m3", "BgeRerankerV2M3", "BAAI bge-reranker-v2-m3. Multilingual."),
-    ("mxbai-rerank-base", "MxbaiRerankBase", "mixedbread mxbai-rerank-base."),
-]:
-    RERANKERS.register_lazy(
-        _name,
-        module="contextgrid.rerank.cross_encoder",
-        attr=_attr,
-        extra="rerank",
-        package="sentence-transformers",
-        doc=_doc,
-    )
+# Cross-encoders. The same two backends as the embedders: a TEI server for local models, and
+# litellm for hosted ones. TEI needs no dependency at all -- it is reached over urllib -- so
+# it is registered eagerly.
+RERANKERS.register(
+    "tei-rerank",
+    shorthand="model",
+    doc="A cross-encoder on a local TEI server. No key, no network, no extra dependency.",
+)(TEIReranker)
 
 RERANKERS.register_lazy(
-    "cohere-rerank",
-    module="contextgrid.rerank.cohere",
-    attr="CohereRerank",
+    "litellm-rerank",
+    module="contextgrid.rerank.remote",
+    attr="LiteLLMReranker",
     extra="llm",
-    package="cohere",
+    package="litellm",
     shorthand="model",
-    doc="Cohere Rerank (bring your own key).",
+    doc="A hosted reranker through litellm: Cohere, Jina, Voyage, AWS.",
 )
 
 
@@ -58,8 +53,11 @@ def get_reranker(spec: str | Reranker | None) -> Reranker:
 __all__ = [
     "RERANKERS",
     "LexicalOverlapReranker",
+    "LiteLLMReranker",
     "MMRReranker",
     "NoReranker",
     "Reranker",
+    "RerankerError",
+    "TEIReranker",
     "get_reranker",
 ]

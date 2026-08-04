@@ -224,9 +224,35 @@ MinerU after, for the CJK and complex-layout case.
 
 ---
 
-## Dimension 5 — Rerankers
+## Dimension 5 — Rerankers ✅ done
 
-**Today.** Identity, lexical overlap, MMR. All hand-written. The cross-encoders are registered
+**Shipped.** As predicted, it fell straight out of dimension 2 — the same two backends:
+
+    reranker: [null, tei-rerank:bge-reranker-base, litellm-rerank:cohere/rerank-english-v3.0]
+    candidates: [10, 50, 100]
+
+TEI's `/rerank` needs no extra dependency, same as its `/embed`. One caveat worth knowing:
+**a TEI process serves one model**, so reranking needs its own server on its own port. The
+natural assumption is the opposite and the failure is an unhelpful 400, so the error says so.
+
+Two things the adapter insists on:
+
+* **Every candidate comes back or the run fails.** A backend that silently returns fewer
+  results than it was given — a passage too long, a batch capped, `top_n` defaulting to five —
+  drops documents from the ranking, and on a leaderboard that is indistinguishable from the
+  reranker judging them irrelevant. Completely different claim. The litellm call explicitly
+  asks for `top_n = len(passages)` for exactly this reason.
+* **Ties keep the retriever's order.** Without a stable tie-break a rerun reshuffles
+  equally-scored passages and a diff reports a change that did not happen.
+
+`candidates` remains the axis that actually matters and the one every reranking blog post
+omits: over the top 10 a reranker can only reorder what was already found; over the top 100 it
+can rescue what ranked 47th.
+
+**Not adopted:** sentence-transformers (torch again) and AnswerAI `rerankers` — worth
+revisiting later for ColBERT and RankGPT, which no server exposes.
+
+**Originally.** Identity, lexical overlap, MMR. All hand-written. The cross-encoders are registered
 and unimplemented, which means the reranker axis currently compares three things nobody deploys.
 
 | Candidate | For | Against |
