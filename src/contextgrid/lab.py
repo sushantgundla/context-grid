@@ -153,10 +153,20 @@ class Lab:
         chunker: str | Sequence[str] = "recursive:512",
         embedder: str | Sequence[str | None] | None = "tfidf",
         index: str | Sequence[str] = "dense",
+        reranker: str | Sequence[str | None] | None = None,
+        candidates: int | Sequence[int] = 50,
         k: int = 10,
     ) -> Matrix:
         """Set the axes. Any of them takes a single value or a list."""
-        self._matrix = matrix(parser=parser, chunker=chunker, embedder=embedder, index=index, k=k)
+        self._matrix = matrix(
+            parser=parser,
+            chunker=chunker,
+            embedder=embedder,
+            index=index,
+            reranker=reranker,
+            candidates=candidates,
+            k=k,
+        )
         return self._matrix
 
     @property

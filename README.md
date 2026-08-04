@@ -116,8 +116,11 @@ traceback.
 | ✅ | Import from JSONL, CSV, BEIR and LegalBench-RAG |
 | ✅ | Bootstrap confidence intervals and paired significance testing |
 | ✅ | Character-level precision, per-question-type slicing, failure diagnosis |
-| ⬜ | Real embedding models via ONNX, rerankers |
-| ⬜ | CLI, run manifest, exports |
+| ✅ | Rerankers, and the candidate-depth axis most advice omits |
+| ✅ | Run manifest, config/code/report exports, result bundles |
+| ✅ | A CLI: `contextgrid profile`, `sweep`, `evalset`, `plugins`, `diff` |
+| ⬜ | Real embedding models and cross-encoders via ONNX |
+| ⬜ | LegalBench-RAG validation, Docker self-host |
 
 Full plan: [docs/roadmap.md](docs/roadmap.md) · Design: [docs/design.md](docs/design.md)
 

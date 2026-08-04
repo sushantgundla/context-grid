@@ -33,7 +33,7 @@ from contextgrid.pipeline import Config
 #: Deliberate rather than alphabetical. The parser decides what text exists at all, so
 #: choosing it first is the only ordering where the later choices are being made about the
 #: real corpus. Reranking comes last because it operates on whatever the rest produced.
-AXIS_ORDER: tuple[str, ...] = ("parser", "chunker", "embedder", "index")
+AXIS_ORDER: tuple[str, ...] = ("parser", "chunker", "embedder", "index", "reranker", "candidates")
 
 
 #: Written out with a real multiplication sign, because "2 x 3" reads as a variable.
@@ -58,6 +58,8 @@ class Matrix:
     chunker: tuple[str, ...] = ("recursive:512",)
     embedder: tuple[str | None, ...] = ("tfidf",)
     index: tuple[str, ...] = ("dense",)
+    reranker: tuple[str | None, ...] = (None,)
+    candidates: tuple[int, ...] = (50,)
     k: int = 10
     meta: dict[str, Any] = field(default_factory=dict)
 
@@ -90,6 +92,8 @@ class Matrix:
             chunker=self.chunker[0],
             embedder=self.embedder[0],
             index=self.index[0],
+            reranker=self.reranker[0],
+            candidates=self.candidates[0],
             k=self.k,
         )
 
@@ -120,8 +124,15 @@ class Matrix:
 
     def _factorial(self) -> list[Config]:
         return [
-            Config(parser=p, chunker=c, embedder=e, index=i, k=self.k)
-            for p, c, e, i in product(self.parser, self.chunker, self.embedder, self.index)
+            Config(parser=p, chunker=c, embedder=e, index=i, reranker=r, candidates=d, k=self.k)
+            for p, c, e, i, r, d in product(
+                self.parser,
+                self.chunker,
+                self.embedder,
+                self.index,
+                self.reranker,
+                self.candidates,
+            )
         ]
 
     def _ofat(self) -> list[Config]:
@@ -160,6 +171,16 @@ def canonicalise(config: Config) -> Config:
     sweep -- and worse, they poison the embedder axis effect, which would average three
     identical BM25 scores into the embedder's record as though it had earned them.
     """
+    # "none" is the identity reranker, so it is the same configuration as no reranker at all.
+    if config.reranker == "none":
+        config = config.with_(reranker=None)
+
+    # Candidate depth only means anything when something reranks the candidates. Without a
+    # reranker, sweeping it would run identical configurations under different names and
+    # credit the depth axis with differences it did not cause.
+    if config.reranker is None and config.candidates != 50:
+        config = config.with_(candidates=50)
+
     if config.embedder is None:
         return config
     try:
@@ -191,6 +212,8 @@ def matrix(
     chunker: str | Sequence[str] = "recursive:512",
     embedder: str | Sequence[str | None] | None = "tfidf",
     index: str | Sequence[str] = "dense",
+    reranker: str | Sequence[str | None] | None = None,
+    candidates: int | Sequence[int] = 50,
     k: int = 10,
 ) -> Matrix:
     """Build a matrix, accepting a single value or a list on any axis.
@@ -203,11 +226,13 @@ def matrix(
         chunker=_as_tuple(chunker),
         embedder=_as_tuple(embedder),
         index=_as_tuple(index),
+        reranker=_as_tuple(reranker),
+        candidates=_as_tuple(candidates),
         k=k,
     )
 
 
 def _as_tuple(value: Any) -> tuple[Any, ...]:
-    if value is None or isinstance(value, str):
+    if value is None or isinstance(value, (str, int)):
         return (value,)
     return tuple(value)

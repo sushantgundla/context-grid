@@ -31,6 +31,7 @@ from contextgrid.corpus import Corpus
 from contextgrid.embed import Embedder, get_embedder
 from contextgrid.index.base import Index
 from contextgrid.parse import get_parser
+from contextgrid.rerank import Reranker, get_reranker
 from contextgrid.score.anchor import AnchorResolver
 from contextgrid.score.resolve import SpanResolver
 
@@ -47,7 +48,12 @@ class Config:
     chunker: str = "recursive:512"
     embedder: str | None = "tfidf"
     index: str = "dense"
+    reranker: str | None = None
     k: int = 10
+    #: How many results the retriever hands the reranker. The parameter most reranking
+    #: advice omits, and where most of the effect lives: over the top 10 a reranker can only
+    #: reorder what was already found, over the top 100 it can rescue what ranked 47th.
+    candidates: int = 50
 
     @property
     def label(self) -> str:
@@ -56,6 +62,8 @@ class Config:
         if self.embedder:
             parts.append(self.embedder)
         parts.append(self.index)
+        if self.reranker:
+            parts.append(f"{self.reranker}@{self.candidates}")
         return " · ".join(parts)
 
     def as_dict(self) -> dict[str, Any]:
@@ -64,7 +72,9 @@ class Config:
             "chunker": self.chunker,
             "embedder": self.embedder,
             "index": self.index,
+            "reranker": self.reranker,
             "k": self.k,
+            "candidates": self.candidates,
         }
 
     def with_(self, **changes: Any) -> Config:
@@ -123,14 +133,28 @@ class BuiltPipeline:
     warnings: WarningLog
     index_bytes: int = 0
     embed_tokens: int = 0
+    reranker: Reranker | None = None
 
     def search(self, query: str, k: int | None = None) -> list[str]:
-        """Chunk ids for one query, best first."""
+        """Chunk ids for one query, best first.
+
+        With a reranker, the retriever is asked for `candidates` results and the reranker
+        cuts them down to `k`. Without one, the retriever is asked for `k` directly -- so the
+        no-reranker arm never pays for candidates it would have thrown away.
+        """
         limit = k or self.config.k
         vector = None
         if self.embedder is not None and self.index.needs_vectors:
             vector = self.embedder.embed_queries([query]).vectors[0]
-        return [scored.chunk_id for scored in self.index.search(query, vector, limit)]
+
+        if self.reranker is None:
+            return [scored.chunk_id for scored in self.index.search(query, vector, limit)]
+
+        depth = max(self.config.candidates, limit)
+        retrieved = self.index.search(query, vector, depth)
+        by_id = self.chunk_by_id()
+        candidates = [by_id[scored.chunk_id] for scored in retrieved if scored.chunk_id in by_id]
+        return [scored.chunk_id for scored in self.reranker.rerank(query, candidates, limit)]
 
     def run_queries(self, evalset: EvalSet, k: int | None = None) -> dict[str, list[str]]:
         """Answer every question, recording how long each one took."""
@@ -188,6 +212,7 @@ def build(
         warnings=warnings,
         index_bytes=index.size_bytes(),
         embed_tokens=embed_tokens,
+        reranker=get_reranker(config.reranker) if config.reranker else None,
     )
 
 

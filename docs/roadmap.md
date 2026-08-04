@@ -262,7 +262,7 @@ stop trusting everything around it.
 
 ---
 
-## M8 — Ship it
+## M8 — Ship it 🔨 *mostly shipped*
 
 **Build** — second and third parsers, pdfplumber and Docling (`B1`), the parser→retrieval
 attribution report (`B4`), semantic and structural chunkers (`C4`, `C5`), a local cross-encoder
@@ -273,6 +273,21 @@ bundle (`P7`), CLI (`P11`), Docker Compose self-host (`P14`), LegalBench-RAG val
 CLI smoke tests; a clean-room `pip install context-grid` in a fresh venv
 
 **Exit** — **v0.3, first public release.** README, docs site, PyPI, announcement post.
+
+**Shipped so far (v0.4).** Rerankers as a real axis -- identity, lexical overlap and MMR --
+plus `candidates`, the depth parameter most reranking advice omits and where most of the
+effect lives. A run manifest that hashes everything which could change a number, and a diff
+that names the suspect when one does. Config, Python, JSON and Markdown exports, and a bundle
+a sceptic can re-derive every number from. A CLI with `profile`, `sweep`, `evalset`, `plugins`
+and `diff`.
+
+Two canonicalisation gaps the build found: `reranker="none"` is the identity and therefore the
+same run as no reranker at all, and candidate depth means nothing without something to rerank.
+Left alone, both would run identical configurations under different names and credit an axis
+with differences it did not cause.
+
+**Still open.** Real embedding models and cross-encoders via ONNX, the LegalBench-RAG
+validation suite, and the Docker self-host path.
 
 ---
 

@@ -80,7 +80,20 @@ from contextgrid.index import INDEXES, Index, get_index
 from contextgrid.lab import Lab
 from contextgrid.parse import PARSERS, get_parser
 from contextgrid.pipeline import BuiltPipeline, Config, Timings
-from contextgrid.report import Results, RunResult
+from contextgrid.report import (
+    Manifest,
+    Results,
+    RunResult,
+    build_manifest,
+    config_to_python,
+    config_to_yaml,
+    explain_diff,
+    format_leaderboard,
+    results_to_json,
+    results_to_markdown,
+    write_bundle,
+)
+from contextgrid.rerank import RERANKERS, Reranker, get_reranker
 from contextgrid.score.anchor import (
     AnchorMatch,
     AnchorResolver,
@@ -108,7 +121,7 @@ from contextgrid.score.significance import (
 )
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "CHUNKERS",
@@ -117,6 +130,7 @@ __all__ = [
     "INDEXES",
     "PARSERS",
     "PRICES",
+    "RERANKERS",
     "TOKENIZERS",
     "AnchorMatch",
     "AnchorResolver",
@@ -160,6 +174,7 @@ __all__ = [
     "KeywordProbeGenerator",
     "LLMQuestionGenerator",
     "Lab",
+    "Manifest",
     "MatchStrategy",
     "Matrix",
     "MediaType",
@@ -173,6 +188,7 @@ __all__ = [
     "RecordingLLM",
     "Registry",
     "RelevanceLabel",
+    "Reranker",
     "Resolution",
     "ResolutionError",
     "ResolutionPolicy",
@@ -197,22 +213,28 @@ __all__ = [
     "assess",
     "available_metrics",
     "bootstrap_interval",
+    "build_manifest",
     "character_f1",
     "character_precision",
     "character_recall",
     "collapse_whitespace",
+    "config_to_python",
+    "config_to_yaml",
     "coverage_fraction",
     "covered_length",
     "default_filters",
     "diagnose",
     "estimate_cost",
     "evaluate",
+    "explain_diff",
     "fingerprint",
     "fingerprint_sources",
+    "format_leaderboard",
     "get_chunker",
     "get_embedder",
     "get_index",
     "get_parser",
+    "get_reranker",
     "get_tokenizer",
     "gold_coverage_by_chunk",
     "intersection_length",
@@ -225,8 +247,11 @@ __all__ = [
     "read_csv",
     "read_jsonl",
     "read_legalbench_rag",
+    "results_to_json",
+    "results_to_markdown",
     "retrieved_character_count",
     "total_length",
+    "write_bundle",
     "write_csv",
     "write_jsonl",
 ]

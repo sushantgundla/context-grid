@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "context-grid"
-version = "0.3.0"
+version = "0.4.0"
 description = "A lab for grounding pipelines: sweep parser x chunker x embedder x index x reranker on your own documents, scored on quality, latency and cost."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,6 +45,9 @@ dev = [
     "pdfplumber>=0.11",
     "ranx>=0.3.20",
 ]
+
+[project.scripts]
+contextgrid = "contextgrid.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/sushantgundla/context-grid"

@@ -52,10 +52,24 @@ def test_a_single_value_does_not_need_wrapping_in_a_list() -> None:
 
 
 def test_the_shape_is_the_multiplication_written_out() -> None:
-    assert (
-        matrix(chunker=["a", "b"], index=["dense", "bm25", "hybrid"]).shape()
-        == "1 \u00d7 2 \u00d7 1 \u00d7 3 = 6"
-    )
+    shape = matrix(chunker=["a", "b"], index=["dense", "bm25", "hybrid"]).shape()
+    assert shape.startswith("1 \u00d7 2 \u00d7 1 \u00d7 3")
+    assert shape.endswith("= 6")
+
+
+def test_the_identity_reranker_is_the_same_run_as_no_reranker() -> None:
+    """ "none" is the identity, so `reranker=["none", "lexical"]` is two arms, not three --
+    and sweeping candidate depth under it would credit the depth axis with differences it
+    did not cause."""
+    configs = matrix(reranker=["none", "lexical"], candidates=[5, 20, 50]).expand("factorial")
+    assert len(configs) == 4  # one for no reranking, three depths for the lexical one
+    assert sum(1 for c in configs if c.reranker is None) == 1
+
+
+def test_candidate_depth_is_a_real_axis_when_something_reranks() -> None:
+    """The parameter most reranking advice omits, and where most of the effect lives."""
+    configs = matrix(reranker="lexical", candidates=[10, 100]).expand("factorial")
+    assert sorted(c.candidates for c in configs) == [10, 100]
 
 
 def test_an_empty_axis_is_refused() -> None:
@@ -102,7 +116,7 @@ def test_stage_configs_vary_one_axis_and_fix_the_rest() -> None:
 
 def test_an_unknown_axis_is_refused() -> None:
     with pytest.raises(MatrixError, match="unknown axis"):
-        matrix().stage_configs("reranker", Config())
+        matrix().stage_configs("temperature", Config())
 
 
 # ---------------------------------------------------------------------------
