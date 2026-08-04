@@ -122,8 +122,10 @@ traceback.
 | ✅ | Semantic chunking, on a percentile of the document's own similarity drops |
 | ✅ | LegalBench-RAG validation harness — `contextgrid validate` |
 | ✅ | Docker self-host: documents never leave the machine |
+| ✅ | Context assembly: ordering, token budget, deduplication |
+| ✅ | Generation panel: groundedness, citation accuracy, abstention, the lift chart |
 | ⬜ | Real embedding models and cross-encoders via ONNX |
-| ⬜ | Generation panel, GraphRAG, agentic retrieval, quantization |
+| ⬜ | GraphRAG, agentic retrieval, quantization axis |
 
 Full plan: [docs/roadmap.md](docs/roadmap.md) · Design: [docs/design.md](docs/design.md)
 
@@ -155,6 +157,24 @@ Unit tests never touch the network. Three things get more than ordinary care:
   reference implementation, on randomly generated judgements and runs. The core installs with
   numpy and nothing else, so the metrics are implemented here rather than delegated — and
   "our numbers match ranx on a thousand random cases" is a stronger claim than "we used ranx".
+
+### Did the retrieval gain reach the answer?
+
+Retrieval stays the default view, because generation noise swamps retrieval signal. But
+retrieval is a means, and a tool that never checks whether its gains survive is asking to be
+trusted about the one thing it did not measure.
+
+```python
+print(cg.lift(retrieval_score=0.80, answer_score=0.70, baseline_answer=0.70))
+# Retrieval scored 0.800, and answer quality is unchanged against the baseline.
+# The generator was finding the answer either way, so this retrieval gain bought nothing.
+```
+
+The generation panel scores three things without needing a second model to judge:
+groundedness (is the answer in the context, or invented?), citation accuracy, and
+**abstention** — when the evidence is absent, does the system say so instead of guessing?
+That last one is almost never measured, and a system that confidently answers questions its
+corpus cannot support is worse than one that scores lower and declines.
 
 ## Checking it rather than trusting it
 

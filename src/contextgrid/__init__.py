@@ -10,6 +10,7 @@ a valid thing to do at all.
 
 from __future__ import annotations
 
+from contextgrid.assemble import AssembledContext, ContextAssembler, Ordering, tokens_sent
 from contextgrid.cache import Cache, CacheStats, DiskCache, MemoryCache, NullCache
 from contextgrid.chunk import CHUNKERS, ChunkerError, SemanticChunker, get_chunker
 from contextgrid.core.errors import (
@@ -75,6 +76,16 @@ from contextgrid.evalset import (
     write_csv,
     write_jsonl,
 )
+from contextgrid.generate import (
+    Answer,
+    AnswerScore,
+    ExtractiveGenerator,
+    GenerationReport,
+    Generator,
+    LLMGenerator,
+    lift,
+    score_answer,
+)
 from contextgrid.grid import Matrix, Runner, SweepMode, estimate_cost, matrix
 from contextgrid.index import INDEXES, Index, get_index
 from contextgrid.lab import Lab
@@ -122,7 +133,7 @@ from contextgrid.score.significance import (
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
 from contextgrid.validate import ValidationResult, load_benchmark, self_check, validate
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "CHUNKERS",
@@ -135,6 +146,9 @@ __all__ = [
     "TOKENIZERS",
     "AnchorMatch",
     "AnchorResolver",
+    "Answer",
+    "AnswerScore",
+    "AssembledContext",
     "Block",
     "BlockKind",
     "BuiltPipeline",
@@ -147,6 +161,7 @@ __all__ = [
     "Classifier",
     "Comparison",
     "Config",
+    "ContextAssembler",
     "ContextGridError",
     "Corpus",
     "CorpusError",
@@ -162,10 +177,13 @@ __all__ = [
     "EvalSet",
     "EvalSetError",
     "EvalSetQuality",
+    "ExtractiveGenerator",
     "FailurePoint",
     "FailureReport",
     "FilterChain",
     "FilterResult",
+    "GenerationReport",
+    "Generator",
     "GoldAnchor",
     "GoldResolution",
     "GoldSpan",
@@ -173,6 +191,7 @@ __all__ = [
     "Index",
     "Interval",
     "KeywordProbeGenerator",
+    "LLMGenerator",
     "LLMQuestionGenerator",
     "Lab",
     "Manifest",
@@ -182,6 +201,7 @@ __all__ = [
     "MemoryCache",
     "MissingExtraError",
     "NullCache",
+    "Ordering",
     "ParsedDocument",
     "Parser",
     "Pricing",
@@ -241,6 +261,7 @@ __all__ = [
     "get_tokenizer",
     "gold_coverage_by_chunk",
     "intersection_length",
+    "lift",
     "load_benchmark",
     "matrix",
     "merge_spans",
@@ -254,7 +275,9 @@ __all__ = [
     "results_to_json",
     "results_to_markdown",
     "retrieved_character_count",
+    "score_answer",
     "self_check",
+    "tokens_sent",
     "total_length",
     "validate",
     "write_bundle",

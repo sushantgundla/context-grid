@@ -313,13 +313,30 @@ card (`N11`); methodology and validation pages (`P8`, `P9`)
 
 ---
 
-## M10 — Generation
+## M10 — Generation ✅ *shipped*
 
 Generator axis (`J1`), prompt template axis (`J2`), faithfulness, relevance and citation accuracy
 (`J3`–`J5`), abstention (`J6`), the retrieval→generation lift chart (`J9`), context assembly:
 ordering, budget, compression (`I1`–`I3`, `I8`).
 
-**Exit** — the SDK answers "does better retrieval actually produce a better answer?"
+**Exit** — the SDK answers "does better retrieval actually produce a better answer?" ✅
+
+**What shipped.** Context assembly as a real layer: four orderings including the
+"lost in the middle" fold, a token budget that drops whole chunks rather than truncating one
+(half a passage reads as a complete one, and a model given half an answer gives half an answer
+back), and deduplication of overlapping chunks. Generation with the prompt template as a
+sweepable axis, plus an extractive generator that is the ceiling retrieval alone can reach --
+scoring against it separates "the retriever found the evidence" from "the generator did
+something useful with it".
+
+Answers are scored lexically rather than by an LLM judge. A judge is more sensitive and
+introduces a second model whose biases nobody has measured, into a tool whose entire premise
+is that unmeasured assumptions are the problem.
+
+Abstention is scored as a success when it is correct. A system that declines because the
+corpus cannot support an answer is behaving well, and marking that as a zero teaches exactly
+the wrong lesson -- which is why systems that confidently answer unanswerable questions keep
+shipping.
 
 ---
 
