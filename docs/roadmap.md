@@ -202,7 +202,7 @@ leaderboard, Pareto frontier, axis effects, config diff and a plain-English summ
 
 ---
 
-## M6 — Eval sets
+## M6 — Eval sets ✅ *shipped*
 
 **Build** — LLM question generation (`K1`), the four filters plus the non-discriminating filter
 (`K2`–`K5`), graded and multiple gold spans (`K7`, `K8`), question-type tagging (`K10`), import
@@ -212,7 +212,21 @@ including LegalBench-RAG format (`K11`), terminal review queue (`K9`), eval-set 
 **Test** — each filter has a fixture that must be rejected and one that must survive; import
 round-trips; review queue state machine unit-tested without a terminal
 
-**Exit** — 100 questions generated, filtered and hand-reviewed in under 15 minutes.
+**Exit** — 100 questions generated, filtered and hand-reviewed in under 15 minutes. ✅
+
+**What shipped.** Drafting from a corpus, by model or by keyword probe. Six filters, including
+the non-discriminating one nothing else has. Heuristic question-type classification. A review
+queue built as a plain state machine — accept, reject, edit, mark, undo — so it is testable
+without a terminal and the UI on top can be swapped. Eval-set quality scoring, including the
+minimum difference a set of that size could detect. Import from JSONL, CSV, BEIR and
+LegalBench-RAG.
+
+**One bug, found three times before it was understood.** `EvalItem.is_answerable` means "the
+evidence has been *resolved* to character spans in this parse". A freshly drafted set has
+quoted evidence and no spans, so every new question read as unanswerable: quality scoring
+reported zero answerable questions, the classifier labelled everything `unanswerable`, and the
+unresolved-evidence filter rejected the entire set. The fix is a second property,
+`has_evidence`, and the discipline of asking which of the two every call site actually meant.
 
 ---
 

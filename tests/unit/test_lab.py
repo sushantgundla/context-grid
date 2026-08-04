@@ -153,3 +153,61 @@ def test_costing_a_hosted_model_puts_it_on_the_same_chart_as_a_local_one() -> No
     token and not free to run."""
     lab = Lab({"contract.md": CONTRACT}, machine_usd_per_hour=0.10)
     assert lab.cost_model.machine_usd_per_hour == 0.10
+
+
+# ---------------------------------------------------------------------------
+# the ground-truth loop, through the front door
+# ---------------------------------------------------------------------------
+
+
+def test_drafting_filtering_and_reviewing_an_eval_set(lab: Lab) -> None:
+    """The loop the PRD calls the heart of the product: draft, filter, review."""
+    drafted = lab.draft_evalset(chunker="sentence:2", sample=6)
+    assert drafted.count > 0
+    assert all(item.is_portable for item in drafted.evalset)
+    assert all(item.qtype for item in drafted.evalset)
+
+    filtered = lab.filter_evalset(drafted.evalset)
+    assert filtered.kept_count <= drafted.count
+
+    queue = lab.review(filtered.as_evalset(drafted.evalset))
+    assert len(queue) == filtered.kept_count
+    queue.accept()
+    assert queue.reviewed == 1
+
+
+def test_a_draft_says_it_is_not_ground_truth_yet(lab: Lab) -> None:
+    drafted = lab.draft_evalset(chunker="sentence:2", sample=4)
+    assert any("not ground truth yet" in w.message for w in drafted.warnings)
+
+
+def test_drafting_with_a_model_asks_for_quoted_evidence(lab: Lab) -> None:
+    import json
+
+    from contextgrid.evalset import RecordingLLM
+
+    reply = json.dumps(
+        [{"question": "How long is the notice period?", "quote": "thirty days", "answer": "30d"}]
+    )
+    llm = RecordingLLM(default=reply)
+    drafted = lab.draft_evalset(llm=llm, chunker="sentence:2", sample=2)
+
+    assert drafted.count > 0
+    assert drafted.evalset.items[0].anchors[0].quote == "thirty days"
+    assert "Copy it verbatim" in llm.prompts[0]
+
+
+def test_assessing_an_eval_set_reports_what_it_can_support(lab: Lab, evalset: EvalSet) -> None:
+    quality = lab.assess(evalset)
+    assert quality.size == 5
+    assert quality.is_portable
+    assert not quality.can_support(0.05)  # five questions cannot settle a small difference
+
+
+def test_the_review_queue_produces_a_new_version(lab: Lab, evalset: EvalSet) -> None:
+    queue = lab.review(evalset)
+    queue.accept()
+    queue.reject("answerable without the corpus")
+    reviewed = queue.result(evalset)
+    assert len(reviewed) == 4
+    assert reviewed.version == evalset.version + 1

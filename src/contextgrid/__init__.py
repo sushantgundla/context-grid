@@ -55,6 +55,25 @@ from contextgrid.corpus import (
 )
 from contextgrid.cost import PRICES, CostBreakdown, CostModel, Pricing
 from contextgrid.embed import EMBEDDERS, Embedder, get_embedder
+from contextgrid.evalset import (
+    Classifier,
+    EvalSetQuality,
+    FilterChain,
+    FilterResult,
+    KeywordProbeGenerator,
+    LLMQuestionGenerator,
+    RecordingLLM,
+    ReviewQueue,
+    Verdict,
+    assess,
+    default_filters,
+    read_beir,
+    read_csv,
+    read_jsonl,
+    read_legalbench_rag,
+    write_csv,
+    write_jsonl,
+)
 from contextgrid.grid import Matrix, Runner, SweepMode, estimate_cost, matrix
 from contextgrid.index import INDEXES, Index, get_index
 from contextgrid.lab import Lab
@@ -81,7 +100,7 @@ from contextgrid.score.resolve import (
 )
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "CHUNKERS",
@@ -102,6 +121,7 @@ __all__ = [
     "ChunkSet",
     "Chunker",
     "ChunkerError",
+    "Classifier",
     "Config",
     "ContextGridError",
     "Corpus",
@@ -116,11 +136,16 @@ __all__ = [
     "EvalItem",
     "EvalSet",
     "EvalSetError",
+    "EvalSetQuality",
+    "FilterChain",
+    "FilterResult",
     "GoldAnchor",
     "GoldResolution",
     "GoldSpan",
     "GridWarning",
     "Index",
+    "KeywordProbeGenerator",
+    "LLMQuestionGenerator",
     "Lab",
     "MatchStrategy",
     "Matrix",
@@ -132,6 +157,7 @@ __all__ = [
     "Parser",
     "Pricing",
     "QuestionType",
+    "RecordingLLM",
     "Registry",
     "RelevanceLabel",
     "Resolution",
@@ -139,6 +165,7 @@ __all__ = [
     "ResolutionPolicy",
     "Results",
     "RetrievedChunk",
+    "ReviewQueue",
     "RunResult",
     "Runner",
     "Severity",
@@ -150,9 +177,11 @@ __all__ = [
     "Timings",
     "Tokenizer",
     "UnknownPluginError",
+    "Verdict",
     "WarningCode",
     "WarningLog",
     "__version__",
+    "assess",
     "available_metrics",
     "character_f1",
     "character_precision",
@@ -160,6 +189,7 @@ __all__ = [
     "collapse_whitespace",
     "coverage_fraction",
     "covered_length",
+    "default_filters",
     "estimate_cost",
     "evaluate",
     "fingerprint",
@@ -174,6 +204,12 @@ __all__ = [
     "matrix",
     "merge_spans",
     "per_query",
+    "read_beir",
+    "read_csv",
+    "read_jsonl",
+    "read_legalbench_rag",
     "retrieved_character_count",
     "total_length",
+    "write_csv",
+    "write_jsonl",
 ]

@@ -3,8 +3,9 @@
 A lab for grounding pipelines. Sweep **parser × chunker × embedder × index × reranker** on your
 own documents and get back ranked, reproducible results scored on quality, latency and cost.
 
-> **Status: alpha (v0.1).** Sweeps run end to end on local models with no network access.
-> Real embedding models, rerankers and the CLI are next — see [docs/roadmap.md](docs/roadmap.md).
+> **Status: alpha (v0.2).** Sweeps run end to end, and eval sets can be drafted, filtered and
+> reviewed. Real embedding models, rerankers, significance testing and the CLI are next —
+> see [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
@@ -111,8 +112,9 @@ traceback.
 | ✅ | Content-addressed caching with prefix reuse across configurations |
 | ✅ | Cost and latency: per-stage timings, p50/p95/p99, dollars per 1k queries |
 | ✅ | Leaderboard, Pareto frontier, axis effects, config diff, plain-English summary |
+| ✅ | Eval sets: draft from a corpus, filter, classify, review, score their own power |
+| ✅ | Import from JSONL, CSV, BEIR and LegalBench-RAG |
 | ⬜ | Real embedding models via ONNX, rerankers |
-| ⬜ | Eval-set generation and review |
 | ⬜ | Confidence intervals and paired significance testing |
 | ⬜ | CLI, run manifest, exports |
 

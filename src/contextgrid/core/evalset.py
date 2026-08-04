@@ -160,6 +160,16 @@ class EvalItem:
         return bool(self.gold)
 
     @property
+    def has_evidence(self) -> bool:
+        """True when this question points at evidence in either form.
+
+        Distinct from `is_answerable`, which is stricter and means the evidence has been
+        *resolved* to character spans in a particular parse. A freshly generated item has
+        anchors and no spans: it has evidence, and nothing has located it yet.
+        """
+        return bool(self.gold or self.anchors)
+
+    @property
     def is_portable(self) -> bool:
         """True when this item carries anchors and can be re-resolved against any parse."""
         return bool(self.anchors)
@@ -230,9 +240,19 @@ class EvalSet:
         return tuple(i for i in self.items if i.is_answerable)
 
     @property
+    def with_evidence(self) -> tuple[EvalItem, ...]:
+        """Questions carrying evidence in either form, resolved or not.
+
+        Distinct from `answerable`, which counts only questions whose evidence has been
+        located in a particular parse. A freshly generated set has evidence everywhere and
+        is answerable nowhere until it has been resolved.
+        """
+        return tuple(i for i in self.items if i.has_evidence)
+
+    @property
     def is_portable(self) -> bool:
-        """True when every answerable item can be re-resolved against a different parse."""
-        return all(i.is_portable for i in self.items if i.is_answerable)
+        """True when every item with evidence can be re-resolved against a different parse."""
+        return all(i.is_portable for i in self.items if i.has_evidence)
 
     def by_type(self, qtype: str) -> tuple[EvalItem, ...]:
         return tuple(i for i in self.items if i.qtype == qtype)

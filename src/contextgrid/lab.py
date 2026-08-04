@@ -25,6 +25,18 @@ from contextgrid.core.documents import MediaType
 from contextgrid.core.evalset import EvalSet
 from contextgrid.corpus import Corpus, CorpusFingerprint, fingerprint
 from contextgrid.cost.model import CostModel
+from contextgrid.evalset.classify import Classifier
+from contextgrid.evalset.filters import FilterChain, FilterResult, default_filters
+from contextgrid.evalset.generate import (
+    Generation,
+    KeywordProbeGenerator,
+    LLMQuestionGenerator,
+    QuestionGenerator,
+    generate,
+)
+from contextgrid.evalset.llm import LLM, get_llm
+from contextgrid.evalset.quality import EvalSetQuality, assess
+from contextgrid.evalset.review import ReviewQueue
 from contextgrid.grid.matrix import Matrix, SweepMode, matrix
 from contextgrid.grid.runner import Runner, estimate_cost
 from contextgrid.pipeline import Config, build
@@ -63,6 +75,75 @@ class Lab:
         config = Config(parser=parser)
         parses = build(config, self.corpus, cache=self.cache).parses
         return fingerprint(self.corpus, parses)
+
+    # -- ground truth --------------------------------------------------------
+
+    def draft_evalset(
+        self,
+        *,
+        llm: LLM | str | None = None,
+        parser: str = "markdown",
+        chunker: str = "recursive:512",
+        sample: int = 50,
+        questions_per_chunk: int = 1,
+        seed: int = 0,
+    ) -> Generation:
+        """Draft an eval set from the corpus.
+
+        With an `llm`, questions are written by a model and each one has to quote the passage
+        that answers it. Without one, you get keyword probes -- useful for checking a pipeline
+        is wired up and not a substitute for questions, which `KeywordProbeGenerator` says at
+        length.
+
+        The result is a draft. Run it through `filter_evalset` and then `review`.
+        """
+        chunks = build(Config(parser=parser, chunker=chunker), self.corpus, cache=self.cache).chunks
+
+        generator: QuestionGenerator
+        if llm is None:
+            generator = KeywordProbeGenerator(seed=seed)
+        else:
+            generator = LLMQuestionGenerator(
+                llm=get_llm(llm), questions_per_chunk=questions_per_chunk
+            )
+
+        drafted = generate(chunks, generator, sample=sample, seed=seed)
+        return Generation(
+            evalset=Classifier().label_set(drafted.evalset),
+            warnings=drafted.warnings,
+            chunks_sampled=drafted.chunks_sampled,
+            chunks_skipped=drafted.chunks_skipped,
+        )
+
+    def filter_evalset(
+        self,
+        evalset: EvalSet,
+        *,
+        baseline_scores: dict[str, float] | None = None,
+        llm: LLM | str | None = None,
+        chain: FilterChain | None = None,
+    ) -> FilterResult:
+        """Drop the questions that would make a comparison meaningless.
+
+        Pass `baseline_scores` from a first run to remove questions every configuration
+        already answers, and an `llm` to remove ones answerable without reading anything.
+        """
+        from contextgrid.evalset.llm import answerer_from
+
+        answerer = answerer_from(get_llm(llm)) if llm is not None else None
+        filters = chain or default_filters(baseline_scores=baseline_scores, answerer=answerer)
+        return filters.run(evalset)
+
+    def review(self, evalset: EvalSet, *, skip_reviewed: bool = True) -> ReviewQueue:
+        """A queue of questions to accept, fix or drop, one keystroke each."""
+        return ReviewQueue.from_evalset(evalset, skip_reviewed=skip_reviewed)
+
+    def assess(
+        self, evalset: EvalSet, *, baseline_scores: dict[str, float] | None = None
+    ) -> EvalSetQuality:
+        """What this eval set can and cannot support, including the smallest difference it
+        could detect."""
+        return assess(evalset, baseline_scores=baseline_scores)
 
     # -- defining the experiment ---------------------------------------------
 
