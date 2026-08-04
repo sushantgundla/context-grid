@@ -61,6 +61,7 @@ class WarningCode(str, Enum):
 
     # -- runs ----------------------------------------------------------------
     BUDGET_REACHED = "budget_reached"
+    IMPOSSIBLE_COMBINATION = "impossible_combination"
     CACHE_MISS_STORM = "cache_miss_storm"
     NON_DETERMINISTIC_STAGE = "non_deterministic_stage"
 

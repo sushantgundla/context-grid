@@ -27,6 +27,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     handler = {
+        "run": _run_config,
+        "init": _init,
+        "check": _check,
         "profile": _profile,
         "sweep": _sweep,
         "plugins": _plugins,
@@ -49,6 +52,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"context-grid {__version__}")
     sub = parser.add_subparsers(dest="command")
+
+    execute = sub.add_parser("run", help="Run everything a config file describes.")
+    execute.add_argument("config", type=Path, help="A YAML or JSON experiment file.")
+    execute.add_argument("--quiet", action="store_true", help="Suppress per-config progress.")
+
+    starter = sub.add_parser("init", help="Write a starter config for this installation.")
+    starter.add_argument("path", type=Path, nargs="?", default=Path("contextgrid.yaml"))
+    starter.add_argument("--corpus", default="./documents")
+    starter.add_argument("--evalset", default="./questions.jsonl")
+    starter.add_argument("--force", action="store_true", help="Overwrite an existing file.")
+
+    inspect = sub.add_parser("check", help="Validate a config and say what it would run.")
+    inspect.add_argument("config", type=Path)
 
     profile = sub.add_parser("profile", help="Profile a corpus and say which axes will matter.")
     profile.add_argument("corpus", type=Path)
@@ -92,6 +108,80 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
+
+
+def _run_config(args: argparse.Namespace) -> int:
+    from contextgrid.config import load, run, write_report
+    from contextgrid.report import format_leaderboard
+
+    config = load(args.config)
+    print(config.describe())
+
+    progress = None
+    if not args.quiet:
+
+        def progress(index: int, total: int, cfg: object) -> None:
+            print(f"  [{index}/{total}] {cfg.label}", file=sys.stderr)  # type: ignore[attr-defined]
+
+    results = run(config, on_progress=progress)
+
+    print()
+    print(format_leaderboard(results, config.run.headline, config.report.leaderboard_limit))
+    print()
+    print(results.summary(config.run.headline))
+    print()
+    print(f"cache: {results.cache_summary}")
+
+    written = write_report(config, results)
+    if written:
+        print(f"\nwrote {len(written)} files to {config.report.out}")
+    return 0
+
+
+def _init(args: argparse.Namespace) -> int:
+    from contextgrid.config import render
+
+    if args.path.exists() and not args.force:
+        print(f"error: {args.path} already exists. Pass --force to overwrite.", file=sys.stderr)
+        return 1
+
+    args.path.write_text(
+        render(
+            filename=args.path.name, name=args.path.stem, corpus=args.corpus, evalset=args.evalset
+        ),
+        encoding="utf-8",
+    )
+    print(f"wrote {args.path}")
+    print(f"edit it, then run:  contextgrid run {args.path}")
+    return 0
+
+
+def _check(args: argparse.Namespace) -> int:
+    """Validate a config and say what it would do, without running anything."""
+    from contextgrid.config import load
+
+    config = load(args.config)
+    print(config.describe())
+
+    problems: list[str] = []
+    if not config.corpus.exists():
+        problems.append(f"corpus not found: {config.corpus}")
+    if config.evalset is None:
+        problems.append("no evalset, so there is nothing to score against")
+    elif not config.evalset.exists():
+        problems.append(f"eval set not found: {config.evalset}")
+
+    for axis, values in config.grid.as_dict().items():
+        print(f"  {axis:11} {values}")
+
+    if problems:
+        print()
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 1
+
+    print("\nconfig is valid.")
+    return 0
 
 
 def _profile(args: argparse.Namespace) -> int:

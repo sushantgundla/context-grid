@@ -138,7 +138,7 @@ def test_the_sparse_arm_of_a_sweep_collapses() -> None:
 
 
 def test_deduplication_keeps_the_original_order() -> None:
-    configs = deduplicate([Config(chunker="a"), Config(chunker="b"), Config(chunker="a")])
+    configs, _ = deduplicate([Config(chunker="a"), Config(chunker="b"), Config(chunker="a")])
     assert [c.chunker for c in configs] == ["a", "b"]
 
 

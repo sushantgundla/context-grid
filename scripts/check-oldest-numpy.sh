@@ -15,7 +15,8 @@ NUMPY_VERSION="2.2.6"   # the newest numpy Python 3.10 can install
 if [ ! -d "$ENV_DIR" ]; then
   echo "building $ENV_DIR ..."
   python3.12 -m venv "$ENV_DIR"
-  "$ENV_DIR/bin/pip" install -q "numpy==$NUMPY_VERSION" "mypy>=2.3" pymupdf pdfplumber
+  "$ENV_DIR/bin/pip" install -q \
+    "numpy==$NUMPY_VERSION" "mypy>=2.3" pymupdf pdfplumber pyyaml types-PyYAML
 fi
 
 echo "mypy $("$ENV_DIR/bin/mypy" --version | cut -d' ' -f2) / numpy $NUMPY_VERSION / target py3.10"

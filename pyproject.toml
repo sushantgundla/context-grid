@@ -26,7 +26,11 @@ classifiers = [
 
 # The core stays dependency-free on purpose. Everything heavy lives behind an extra,
 # so `pip install context-grid` never drags in torch, CUDA or a PDF engine.
-dependencies = ["numpy>=1.24"]
+dependencies = [
+    "numpy>=1.24",
+    # The config file is the product, so its parser is not optional. ~800 KB.
+    "pyyaml>=6.0",
+]
 
 [project.optional-dependencies]
 parse = [
@@ -44,6 +48,7 @@ dev = [
     "pymupdf>=1.24",
     "pdfplumber>=0.11",
     "ranx>=0.3.20",
+    "types-pyyaml",
 ]
 
 [project.scripts]

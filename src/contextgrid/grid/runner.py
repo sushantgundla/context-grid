@@ -127,7 +127,21 @@ class Runner:
         chosen = SweepMode(mode)
         if chosen is SweepMode.STAGED:
             return self._staged(matrix, evalset, budget_seconds, on_progress)
-        return self._flat(matrix.expand(chosen), evalset, chosen, budget_seconds, on_progress)
+
+        configs, dropped = matrix.expand_with_dropped(chosen)
+        results = self._flat(configs, evalset, chosen, budget_seconds, on_progress)
+
+        if dropped:
+            results.warnings.add(
+                WarningCode.IMPOSSIBLE_COMBINATION,
+                f"{dropped} combination(s) in this matrix cannot be built and were skipped -- "
+                "a dense index with no embedder has nothing to search. The axes you wrote are "
+                "almost certainly what you meant; this is just the product of them that is not",
+                severity=Severity.INFO,
+                stage="run",
+                dropped=dropped,
+            )
+        return results
 
     def _flat(
         self,

@@ -128,6 +128,13 @@ class Matrix:
         earlier results and only the runner can know them. What staged actually runs is a
         subset, decided as it goes.
         """
+        configs, _ = self.expand_with_dropped(mode)
+        return configs
+
+    def expand_with_dropped(
+        self, mode: SweepMode | str = SweepMode.OFAT
+    ) -> tuple[list[Config], int]:
+        """The configurations, and how many combinations were impossible to run."""
         chosen = SweepMode(mode)
         raw = self._factorial() if chosen is SweepMode.FACTORIAL else self._ofat()
         return deduplicate(raw)
@@ -172,7 +179,8 @@ class Matrix:
         if axis not in AXIS_ORDER:
             raise MatrixError(f"unknown axis {axis!r}. Axes are: {', '.join(AXIS_ORDER)}")
         values = getattr(self, axis)
-        return deduplicate([base.with_(**{axis: value}) for value in values])
+        configs, _ = deduplicate([base.with_(**{axis: value}) for value in values])
+        return configs
 
     def __iter__(self) -> Iterator[Config]:
         return iter(self.expand())
@@ -218,16 +226,49 @@ def canonicalise(config: Config) -> Config:
     return config
 
 
-def deduplicate(configs: Sequence[Config]) -> list[Config]:
-    """Canonicalise, then drop repeats, keeping the original order."""
+def is_runnable(config: Config) -> bool:
+    """Whether this combination can actually be built.
+
+    Writing `embedder: [tfidf, null]` alongside `index: [dense, bm25]` obviously means "tfidf
+    with dense, and bm25 with nothing" -- but a factorial expansion also produces `null` with
+    `dense`, which cannot run at all because a dense index has no vectors to search.
+
+    Dropping those is right. Erroring would force the user to write two configs to express one
+    perfectly clear intention, and running them would fail halfway through a sweep.
+    """
+    if config.embedder is not None:
+        return True
+    try:
+        from contextgrid.index import get_index
+
+        return not get_index(config.index).needs_vectors
+    except Exception:
+        # An index that cannot be built at all is a different problem, and the run should
+        # report it properly rather than have it silently disappear from the matrix.
+        return True
+
+
+def deduplicate(configs: Sequence[Config]) -> tuple[list[Config], int]:
+    """Canonicalise, drop impossible combinations and repeats, keeping the original order.
+
+    Returns the surviving configurations and how many were dropped, because a matrix that
+    quietly shrinks is a matrix somebody will misread.
+    """
     kept: list[Config] = []
     seen: set[Config] = set()
+    dropped = 0
+
     for config in configs:
+        if not is_runnable(config):
+            dropped += 1
+            continue
         normalised = canonicalise(config)
-        if normalised not in seen:
-            seen.add(normalised)
-            kept.append(normalised)
-    return kept
+        if normalised in seen:
+            continue
+        seen.add(normalised)
+        kept.append(normalised)
+
+    return kept, dropped
 
 
 def matrix(
