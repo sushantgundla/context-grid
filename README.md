@@ -3,8 +3,8 @@
 A lab for grounding pipelines. Sweep **parser × chunker × embedder × index × reranker** on your
 own documents and get back ranked, reproducible results scored on quality, latency and cost.
 
-> **Status: pre-alpha.** The scoring core is being built first. There is no working pipeline yet —
-> see [docs/roadmap.md](docs/roadmap.md).
+> **Status: alpha (v0.1).** Sweeps run end to end on local models with no network access.
+> Real embedding models, rerankers and the CLI are next — see [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
@@ -104,10 +104,17 @@ traceback.
 | ✅ | PDF parsers: PyMuPDF and pdfplumber, with exact offsets and heading inference |
 | ✅ | Corpus loading, and a fingerprint that suggests which axes will matter |
 | ✅ | The anchor resolver — one eval set, re-resolved against every parser |
-| ⬜ | Embedders, indexes, rerankers |
-| ⬜ | The grid runner, caching, cost model |
+| ✅ | Embedders: TF-IDF, hashing, and a chance-level control. No downloads |
+| ✅ | Indexes: exact dense, BM25, hybrid with RRF or weighted fusion |
+| ✅ | Metrics — recall, precision, nDCG, MRR, MAP, hit rate — **verified against `ranx`** |
+| ✅ | The grid: factorial, one-factor-at-a-time and staged sweeps |
+| ✅ | Content-addressed caching with prefix reuse across configurations |
+| ✅ | Cost and latency: per-stage timings, p50/p95/p99, dollars per 1k queries |
+| ✅ | Leaderboard, Pareto frontier, axis effects, config diff, plain-English summary |
+| ⬜ | Real embedding models via ONNX, rerankers |
 | ⬜ | Eval-set generation and review |
-| ⬜ | ranx metrics, significance testing |
+| ⬜ | Confidence intervals and paired significance testing |
+| ⬜ | CLI, run manifest, exports |
 
 Full plan: [docs/roadmap.md](docs/roadmap.md) · Design: [docs/design.md](docs/design.md)
 
@@ -122,8 +129,16 @@ pytest -m integration       # anything touching a model or the network
 mypy && ruff check .
 ```
 
-Unit tests never touch the network. The span algebra and the resolver are covered by Hypothesis
-property tests, because a bug there would be invisible in every number the tool prints.
+Unit tests never touch the network. Three things get more than ordinary care:
+
+- **The span algebra and the resolver** are covered by Hypothesis property tests, because a bug
+  there would be invisible in every number the tool prints.
+- **Every plugin** must pass a conformance suite for its family — and the suites themselves are
+  tested against six deliberately broken plugins, to prove they can fail.
+- **Every metric** is checked against [`ranx`](https://github.com/AmenRa/ranx), the peer-reviewed
+  reference implementation, on randomly generated judgements and runs. The core installs with
+  numpy and nothing else, so the metrics are implemented here rather than delegated — and
+  "our numbers match ranx on a thousand random cases" is a stronger claim than "we used ranx".
 
 ## Licence
 

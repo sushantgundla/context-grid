@@ -1,0 +1,348 @@
+"""One configuration, end to end.
+
+A grid cell is this: parse, chunk, embed, index, search, score. Everything the grid does on
+top -- expanding axes, reusing work, ranking results -- is bookkeeping around this loop.
+
+Two things it is careful about.
+
+**Ground truth is re-resolved per parse.** Two parsers produce different text, so the same
+authored eval set has to be located again in each one. Skipping that is how a parser
+comparison silently becomes nonsense.
+
+**Every stage is timed and cached separately.** Sweeping rerankers should not re-embed
+anything, and the only way to be sure it did not is to count.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from typing import Any
+
+from contextgrid.cache.store import Cache, CacheStats, cache_key, cached
+from contextgrid.chunk import get_chunker
+from contextgrid.core.documents import Chunk, ParsedDocument
+from contextgrid.core.evalset import EvalSet, Qrels
+from contextgrid.core.protocols import Chunker, Parser
+from contextgrid.core.warnings import Severity, WarningCode, WarningLog
+from contextgrid.corpus import Corpus
+from contextgrid.embed import Embedder, get_embedder
+from contextgrid.index.base import Index
+from contextgrid.parse import get_parser
+from contextgrid.score.anchor import AnchorResolver
+from contextgrid.score.resolve import SpanResolver
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    """One point in the grid.
+
+    Written as spec strings so a configuration is readable, serialisable and pasteable --
+    `Config("markdown", "recursive:512,overlap=64", "tfidf", "dense")` is the whole thing.
+    """
+
+    parser: str = "markdown"
+    chunker: str = "recursive:512"
+    embedder: str | None = "tfidf"
+    index: str = "dense"
+    k: int = 10
+
+    @property
+    def label(self) -> str:
+        """A short identifier that reads well in a leaderboard row."""
+        parts = [self.parser, self.chunker]
+        if self.embedder:
+            parts.append(self.embedder)
+        parts.append(self.index)
+        return " · ".join(parts)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "parser": self.parser,
+            "chunker": self.chunker,
+            "embedder": self.embedder,
+            "index": self.index,
+            "k": self.k,
+        }
+
+    def with_(self, **changes: Any) -> Config:
+        return replace(self, **changes)
+
+
+@dataclass(slots=True)
+class Timings:
+    """Wall-clock per stage, in milliseconds.
+
+    Kept per stage rather than as one total, because "this config is slow" is not actionable
+    and "this config spends 90% of its time in the reranker" is.
+    """
+
+    parse_ms: float = 0.0
+    chunk_ms: float = 0.0
+    embed_ms: float = 0.0
+    index_ms: float = 0.0
+    query_ms: list[float] = field(default_factory=list)
+
+    @property
+    def build_ms(self) -> float:
+        return self.parse_ms + self.chunk_ms + self.embed_ms + self.index_ms
+
+    def percentile(self, fraction: float) -> float:
+        """Query latency at a percentile. p95 is the number users feel; the mean hides it."""
+        if not self.query_ms:
+            return 0.0
+        ordered = sorted(self.query_ms)
+        position = min(int(fraction * len(ordered)), len(ordered) - 1)
+        return ordered[position]
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "parse_ms": self.parse_ms,
+            "chunk_ms": self.chunk_ms,
+            "embed_ms": self.embed_ms,
+            "index_ms": self.index_ms,
+            "build_ms": self.build_ms,
+            "query_p50_ms": self.percentile(0.50),
+            "query_p95_ms": self.percentile(0.95),
+            "query_p99_ms": self.percentile(0.99),
+        }
+
+
+@dataclass(slots=True)
+class BuiltPipeline:
+    """A configuration that has read the corpus and is ready to answer queries."""
+
+    config: Config
+    parses: dict[str, ParsedDocument]
+    chunks: list[Chunk]
+    index: Index
+    embedder: Embedder | None
+    timings: Timings
+    warnings: WarningLog
+    index_bytes: int = 0
+    embed_tokens: int = 0
+
+    def search(self, query: str, k: int | None = None) -> list[str]:
+        """Chunk ids for one query, best first."""
+        limit = k or self.config.k
+        vector = None
+        if self.embedder is not None and self.index.needs_vectors:
+            vector = self.embedder.embed_queries([query]).vectors[0]
+        return [scored.chunk_id for scored in self.index.search(query, vector, limit)]
+
+    def run_queries(self, evalset: EvalSet, k: int | None = None) -> dict[str, list[str]]:
+        """Answer every question, recording how long each one took."""
+        run: dict[str, list[str]] = {}
+        for item in evalset:
+            started = time.perf_counter()
+            run[item.id] = self.search(item.question, k)
+            self.timings.query_ms.append((time.perf_counter() - started) * 1000)
+        return run
+
+    def chunk_by_id(self) -> dict[str, Chunk]:
+        return {chunk.id: chunk for chunk in self.chunks}
+
+
+def build(
+    config: Config,
+    corpus: Corpus,
+    *,
+    cache: Cache | None = None,
+    stats: CacheStats | None = None,
+) -> BuiltPipeline:
+    """Run a configuration's indexing side: parse, chunk, embed, index."""
+    warnings = WarningLog()
+    timings = Timings()
+    parser = get_parser(config.parser)
+    chunker = get_chunker(config.chunker)
+
+    parses = _parse_all(parser, corpus, cache, stats, timings, warnings)
+    chunks = _chunk_all(chunker, parses, cache, stats, timings)
+
+    if not chunks:
+        warnings.add(
+            WarningCode.EMPTY_CHUNK_SET,
+            f"{config.label} produced no chunks at all, so every query will score zero. "
+            "Either the parser found no text or the chunker rejected all of it",
+            severity=Severity.INVALID,
+            stage="chunk",
+            subject=config.label,
+        )
+
+    embedder, vectors, embed_tokens = _embed_all(config, chunks, cache, stats, timings, warnings)
+
+    started = time.perf_counter()
+    index = _make_index(config)
+    index.build(chunks, vectors)
+    timings.index_ms = (time.perf_counter() - started) * 1000
+
+    return BuiltPipeline(
+        config=config,
+        parses=parses,
+        chunks=chunks,
+        index=index,
+        embedder=embedder,
+        timings=timings,
+        warnings=warnings,
+        index_bytes=index.size_bytes(),
+        embed_tokens=embed_tokens,
+    )
+
+
+# ---------------------------------------------------------------------------
+# stages
+# ---------------------------------------------------------------------------
+
+
+def _parse_all(
+    parser: Parser,
+    corpus: Corpus,
+    cache: Cache | None,
+    stats: CacheStats | None,
+    timings: Timings,
+    warnings: WarningLog,
+) -> dict[str, ParsedDocument]:
+    started = time.perf_counter()
+    parses: dict[str, ParsedDocument] = {}
+
+    for source in corpus:
+        if not parser.supports(source.media_type):
+            warnings.add(
+                WarningCode.PARSER_FALLBACK,
+                f"{parser.name!r} does not read {source.media_type.value}, so {source.id!r} "
+                "is not in this index at all. Nothing in it can be retrieved",
+                severity=Severity.CAUTION,
+                stage="parse",
+                subject=source.id,
+            )
+            continue
+
+        key = cache_key(
+            "parse",
+            parser.version,
+            {"parser": parser.name, **params_of(parser)},
+            [source.content_hash()],
+        )
+        parsed = cached(cache, key, "parse", lambda s=source: parser.parse(s), stats)
+        parses[source.id] = parsed
+        warnings.extend(parsed.warnings)
+
+    timings.parse_ms = (time.perf_counter() - started) * 1000
+    return parses
+
+
+def _chunk_all(
+    chunker: Chunker,
+    parses: Mapping[str, ParsedDocument],
+    cache: Cache | None,
+    stats: CacheStats | None,
+    timings: Timings,
+) -> list[Chunk]:
+    started = time.perf_counter()
+    chunks: list[Chunk] = []
+
+    for parsed in parses.values():
+        key = cache_key(
+            "chunk",
+            chunker.version,
+            {"chunker": chunker.name, **params_of(chunker)},
+            [parsed.text_hash()],
+        )
+        produced = cached(cache, key, "chunk", lambda p=parsed: chunker.chunk(p), stats)
+        chunks.extend(produced)
+
+    timings.chunk_ms = (time.perf_counter() - started) * 1000
+    return chunks
+
+
+def _embed_all(
+    config: Config,
+    chunks: Sequence[Chunk],
+    cache: Cache | None,
+    stats: CacheStats | None,
+    timings: Timings,
+    warnings: WarningLog,
+) -> tuple[Embedder | None, Any, int]:
+    if config.embedder is None:
+        return None, None, 0
+
+    embedder = get_embedder(config.embedder)
+    started = time.perf_counter()
+
+    texts = [chunk.text for chunk in chunks]
+    embedder.prepare(texts)
+
+    key = cache_key(
+        "embed",
+        embedder.version,
+        {"embedder": embedder.name, **params_of(embedder)},
+        [texts_hash(texts)],
+    )
+    result = cached(cache, key, "embed", lambda: embedder.embed_documents(texts), stats)
+    warnings.extend(result.warnings)
+
+    timings.embed_ms = (time.perf_counter() - started) * 1000
+    return embedder, result.vectors, result.input_tokens
+
+
+def _make_index(config: Config) -> Index:
+    from contextgrid.index import get_index
+
+    return get_index(config.index)
+
+
+def params_of(plugin: object) -> dict[str, Any]:
+    """A plugin's configuration, for the cache key.
+
+    Private attributes are skipped. A fitted TF-IDF vocabulary is derived from the corpus,
+    which is already in the key via the text hash, and including it would make the key depend
+    on the thing it is supposed to identify.
+    """
+    if not is_dataclass(plugin):
+        return {}
+    return {f.name: getattr(plugin, f.name) for f in fields(plugin) if not f.name.startswith("_")}
+
+
+def texts_hash(texts: Sequence[str]) -> str:
+    """A hash of an ordered list of texts. The chunk set's identity, for caching."""
+    digest = hashlib.sha256()
+    for text in texts:
+        digest.update(text.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# scoring one configuration
+# ---------------------------------------------------------------------------
+
+
+def resolve_evalset(
+    evalset: EvalSet,
+    parses: Mapping[str, ParsedDocument],
+    resolver: AnchorResolver | None = None,
+) -> tuple[EvalSet, WarningLog]:
+    """Locate the eval set's evidence inside this configuration's parse.
+
+    Skipped when the eval set carries spans rather than anchors -- those were authored
+    against a fixed text and are already correct for it.
+    """
+    if not any(item.anchors for item in evalset):
+        return evalset, WarningLog()
+    return (resolver or AnchorResolver()).resolve(evalset, parses)
+
+
+def build_qrels(
+    evalset: EvalSet, chunks: Sequence[Chunk], resolver: SpanResolver | None = None
+) -> tuple[Qrels, WarningLog]:
+    """Turn span-level gold into chunk-level judgements for this chunking."""
+    span_resolver = resolver or SpanResolver()
+    resolutions, log = span_resolver.resolve(evalset, chunks)
+    qrels = {
+        item_id: resolution.as_qrel()
+        for item_id, resolution in resolutions.items()
+        if resolution.labels
+    }
+    return qrels, log

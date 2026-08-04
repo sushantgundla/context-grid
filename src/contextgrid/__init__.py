@@ -10,6 +10,7 @@ a valid thing to do at all.
 
 from __future__ import annotations
 
+from contextgrid.cache import Cache, CacheStats, DiskCache, MemoryCache, NullCache
 from contextgrid.chunk import CHUNKERS, ChunkerError, get_chunker
 from contextgrid.core.errors import (
     ContextGridError,
@@ -52,13 +53,21 @@ from contextgrid.corpus import (
     fingerprint,
     fingerprint_sources,
 )
+from contextgrid.cost import PRICES, CostBreakdown, CostModel, Pricing
+from contextgrid.embed import EMBEDDERS, Embedder, get_embedder
+from contextgrid.grid import Matrix, Runner, SweepMode, estimate_cost, matrix
+from contextgrid.index import INDEXES, Index, get_index
+from contextgrid.lab import Lab
 from contextgrid.parse import PARSERS, get_parser
+from contextgrid.pipeline import BuiltPipeline, Config, Timings
+from contextgrid.report import Results, RunResult
 from contextgrid.score.anchor import (
     AnchorMatch,
     AnchorResolver,
     MatchStrategy,
     collapse_whitespace,
 )
+from contextgrid.score.metrics import DEFAULT_KS, available_metrics, evaluate, per_query
 from contextgrid.score.resolve import (
     GoldResolution,
     Resolution,
@@ -72,26 +81,38 @@ from contextgrid.score.resolve import (
 )
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
 
-__version__ = "0.0.3"
+__version__ = "0.1.0"
 
 __all__ = [
     "CHUNKERS",
+    "DEFAULT_KS",
+    "EMBEDDERS",
+    "INDEXES",
     "PARSERS",
+    "PRICES",
     "TOKENIZERS",
     "AnchorMatch",
     "AnchorResolver",
     "Block",
     "BlockKind",
+    "BuiltPipeline",
+    "Cache",
+    "CacheStats",
     "Chunk",
     "ChunkSet",
     "Chunker",
     "ChunkerError",
+    "Config",
     "ContextGridError",
     "Corpus",
     "CorpusError",
     "CorpusFingerprint",
+    "CostBreakdown",
+    "CostModel",
+    "DiskCache",
     "Document",
     "DocumentError",
+    "Embedder",
     "EvalItem",
     "EvalSet",
     "EvalSetError",
@@ -99,42 +120,60 @@ __all__ = [
     "GoldResolution",
     "GoldSpan",
     "GridWarning",
+    "Index",
+    "Lab",
     "MatchStrategy",
+    "Matrix",
     "MediaType",
+    "MemoryCache",
     "MissingExtraError",
+    "NullCache",
     "ParsedDocument",
     "Parser",
+    "Pricing",
     "QuestionType",
     "Registry",
     "RelevanceLabel",
     "Resolution",
     "ResolutionError",
     "ResolutionPolicy",
+    "Results",
     "RetrievedChunk",
+    "RunResult",
+    "Runner",
     "Severity",
     "SourceFile",
     "Span",
     "SpanError",
     "SpanResolver",
+    "SweepMode",
+    "Timings",
     "Tokenizer",
     "UnknownPluginError",
     "WarningCode",
     "WarningLog",
     "__version__",
+    "available_metrics",
     "character_f1",
     "character_precision",
     "character_recall",
     "collapse_whitespace",
     "coverage_fraction",
     "covered_length",
+    "estimate_cost",
+    "evaluate",
     "fingerprint",
     "fingerprint_sources",
     "get_chunker",
+    "get_embedder",
+    "get_index",
     "get_parser",
     "get_tokenizer",
     "gold_coverage_by_chunk",
     "intersection_length",
+    "matrix",
     "merge_spans",
+    "per_query",
     "retrieved_character_count",
     "total_length",
 ]

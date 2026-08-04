@@ -137,7 +137,7 @@ measurement of the parser rather than a bug in the eval set.
 
 ---
 
-## M3 — Cache, embed, index, retrieve, score
+## M3 — Cache, embed, index, retrieve, score ✅ *shipped*
 
 **Build** — `cache/` content-addressed store with the tokenizer in the chunk key (carried over
 from M2), `embed/` local CPU models via ONNX (`D1`, `D4`, `D6`), `index/` exact dense + BM25 +
@@ -151,7 +151,7 @@ checked against `ranx` directly
 
 ---
 
-## M4 — The grid
+## M4 — The grid ✅ *shipped*
 
 **Build** — `grid/matrix.py` (axis expansion, live config count), sweep modes full-factorial / OFAT
 / staged, `grid/runner.py` with prefix reuse, cancel and resume, `report/results.py` with the
@@ -164,7 +164,7 @@ across identical runs and different across changed params; resume produces ident
 
 ---
 
-## M5 — Cost and performance
+## M5 — Cost and performance ✅ *shipped*
 
 **Build** — `cost/` pricing tables and model (`M1`, `M2`), pre-run estimate and hard budget cap
 (`M3`, `M4`), staged latency breakdown (`L18`), index build time and size (`L19`, `E20`),
@@ -173,7 +173,32 @@ cache-saving readout (`M6`), Pareto computation (`M7`)
 **Test** — cost model against frozen pricing fixtures; budget cap actually halts a run; latency
 attribution sums to wall-clock within tolerance
 
-**Exit** — **v0.2.** Every config carries dollars and milliseconds beside its quality.
+**Exit** — **v0.2.** Every config carries dollars and milliseconds beside its quality. ✅
+*(shipped as v0.1.0 — the private v0.1/v0.2 split was not worth the ceremony)*
+
+**What M3–M5 actually shipped.** Content-addressed cache (memory and disk) with prefix reuse.
+Three zero-dependency embedders, including a chance-level control that proves the scoring chain
+measures something. Exact dense, BM25, and hybrid search with both RRF and weighted fusion.
+Retrieval metrics implemented natively and **verified against `ranx` on randomly generated
+cases**, which keeps the core at numpy-and-nothing-else while making the correctness claim
+checkable. The grid with all three sweep modes, per-stage timings, a cost model that prices
+local compute by the hour so it lands on the same chart as a hosted API, and the results views:
+leaderboard, Pareto frontier, axis effects, config diff and a plain-English summary.
+
+**Three things the build found.**
+
+1. **MAP has two conventions and they disagree by a lot.** Dividing by `min(relevant, k)` is the
+   Kaggle convention; dividing by the total number of relevant chunks is trec_eval's, which
+   `ranx` follows and which the IR literature means by MAP@k. The cross-check caught it
+   immediately. We follow the standard and document the consequence.
+2. **A sweep was running redundant configurations.** BM25 never looks at a vector, so
+   `bm25 + tfidf` and `bm25 + hash` are the same run under two names. Worse than the wasted
+   time: the embedder axis effect averaged three identical BM25 scores into the embedder's
+   record as though it had earned them. Configurations are now canonicalised before expansion,
+   which cut a 27-config factorial to 21 and moved the control embedder's apparent score from
+   0.53 to its true 0.33.
+3. **Sub-millisecond latency printed as "0 ms"**, which reads as a broken measurement rather
+   than a fast one.
 
 ---
 

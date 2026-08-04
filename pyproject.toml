@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "context-grid"
-version = "0.0.3"
+version = "0.1.0"
 description = "A lab for grounding pipelines: sweep parser x chunker x embedder x index x reranker on your own documents, scored on quality, latency and cost."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Sushant Gundla" }]
 keywords = ["rag", "retrieval", "evaluation", "benchmark", "embeddings", "chunking", "llm"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -26,7 +26,7 @@ classifiers = [
 
 # The core stays dependency-free on purpose. Everything heavy lives behind an extra,
 # so `pip install context-grid` never drags in torch, CUDA or a PDF engine.
-dependencies = []
+dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 parse = [
@@ -41,6 +41,7 @@ dev = [
     "ruff>=0.5",
     "pymupdf>=1.24",
     "pdfplumber>=0.11",
+    "ranx>=0.3.20",
 ]
 
 [project.urls]
