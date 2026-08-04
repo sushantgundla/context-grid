@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+import numpy.typing as npt
 
 from contextgrid.core.errors import ContextGridError
 
@@ -296,7 +297,9 @@ def compare(
 # ---------------------------------------------------------------------------
 
 
-def _aligned(left: Sequence[float], right: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
+def _aligned(
+    left: Sequence[float], right: Sequence[float]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     a = np.asarray(list(left), dtype=np.float64)
     b = np.asarray(list(right), dtype=np.float64)
     if a.size != b.size:

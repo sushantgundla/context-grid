@@ -130,7 +130,14 @@ pip install -e ".[dev]"
 pytest                      # unit + property tests
 pytest -m integration       # anything touching a model or the network
 mypy && ruff check .
+
+./scripts/check-oldest-numpy.sh   # type-check against the oldest toolchain CI uses
 ```
+
+That last one exists because `python_version` in the mypy config does not change which numpy
+is installed. A bare `np.ndarray` annotation type-checks fine under a recent numpy and fails
+on the Python 3.10 runner under an older one — so the rule is to always write `Vectors` or
+`npt.NDArray[...]`, never a bare `np.ndarray`, and the script catches it when the rule slips.
 
 Unit tests never touch the network. Three things get more than ordinary care:
 
