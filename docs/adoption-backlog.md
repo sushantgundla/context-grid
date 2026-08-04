@@ -349,9 +349,32 @@ without the weight. Worth checking that claim before committing to it.
 
 ---
 
-## Dimension 7 — LLM calls
+## Dimension 7 — LLM calls ✅ done
 
-**Today.** A one-method `LLM` protocol with hand-written OpenAI and Anthropic clients. Used by
+**Shipped.** litellm, and the hand-written OpenAI and Anthropic clients are gone:
+
+    openai:gpt-4o-mini | anthropic:claude-sonnet-5 | litellm:gemini/gemini-2.0-flash
+    litellm:ollama/llama3  (with api_base, for a local server)
+
+Three clients became one adapter under three names, so every config already written stays
+valid. A bare `openai` resolves too — an axis value that needs a parameter before it is usable
+at all is a bad axis value.
+
+**The cost bonus was real.** The price table here is ten hand-maintained entries against a
+field of thousands, which meant nearly every real model was costed at zero — and a silent zero
+reads as "free" rather than "unknown". litellm ships prices for 2985 models, so the local table
+now wins where it has an opinion and litellm answers everything else. `claude-sonnet-5` prices
+at $2/$10 per million in and out; `gpt-4o-mini` at $0.15/$0.60. Output tokens are priced
+separately, which matters because every provider charges several times more for them and
+collapsing the two makes a verbose model look as cheap as a terse one. An unknown model still
+warns, so the fallback did not swallow the honest signal. Costing keeps working with litellm
+absent.
+
+**Not adopted:** instructor. Worth revisiting for question generation, where structured output
+with validation and retries is exactly the need — `parse_json_reply` currently does that job by
+being forgiving about wrappers and strict about content.
+
+**Originally.** A one-method `LLM` protocol with hand-written OpenAI and Anthropic clients. Used by
 generation, question generation, and the query transforms.
 
 | Candidate | For | Against |

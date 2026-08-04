@@ -41,9 +41,8 @@ from contextgrid.evalset.io import (
 from contextgrid.evalset.llm import (
     LLM,
     LLMS,
-    AnthropicChat,
+    LiteLLMChat,
     LLMError,
-    OpenAIChat,
     RecordingLLM,
     answerer_from,
     get_llm,
@@ -65,7 +64,6 @@ from contextgrid.evalset.review import (
 __all__ = [
     "LLM",
     "LLMS",
-    "AnthropicChat",
     "Classifier",
     "DanglingReferenceFilter",
     "Decision",
@@ -79,8 +77,8 @@ __all__ = [
     "KeywordProbeGenerator",
     "LLMError",
     "LLMQuestionGenerator",
+    "LiteLLMChat",
     "NonDiscriminatingFilter",
-    "OpenAIChat",
     "QuestionGenerator",
     "RecordingLLM",
     "Rejection",

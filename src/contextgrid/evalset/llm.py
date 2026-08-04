@@ -11,7 +11,6 @@ one produces an install instruction rather than a traceback.
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -61,80 +60,112 @@ class RecordingLLM:
 
 
 @dataclass(frozen=True, slots=True)
-class OpenAIChat:
-    """OpenAI chat completions. Bring your own key."""
+class LiteLLMChat:
+    """Any chat model, through litellm.
+
+    One adapter instead of one per provider. `openai/gpt-4o-mini`, `anthropic/claude-sonnet-5`,
+    `gemini/gemini-2.0-flash`, `ollama/llama3` and a hundred others are the same call with a
+    different name, and litellm carries the per-provider quirks so this package does not have
+    to grow an adapter every time somebody wants a model it has not heard of.
+
+    The key comes from the environment. `api_key` exists for the caller who is managing keys
+    themselves, and is never written to disk or into a run manifest.
+    """
 
     model: str = "gpt-4o-mini"
     temperature: float = 0.0
     api_key: str | None = None
+    api_base: str | None = None
+    timeout: float = 120.0
+    #: Replaces the network call: prompt in, reply out. Set it to exercise anything that calls
+    #: a model without a key or a network.
+    transport: Callable[[str, int], str] | None = None
 
     @property
     def name(self) -> str:
         return self.model
 
     def complete(self, prompt: str, *, max_tokens: int = 512) -> str:
+        if self.transport is not None:
+            return self.transport(prompt, max_tokens)
+
         try:
-            from openai import OpenAI
+            import litellm
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise MissingExtraError("The OpenAI provider", "llm", package="openai") from exc
+            raise MissingExtraError("Model calls", "llm", package="litellm") from exc
 
-        key = self.api_key or os.environ.get("OPENAI_API_KEY")
-        if not key:
-            raise LLMError(
-                "no OpenAI key. Pass `api_key=` or set OPENAI_API_KEY. Keys are never "
-                "written to disk or into a run manifest."
-            )
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+            "max_tokens": max_tokens,
+            "timeout": self.timeout,
+        }
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
 
-        client = OpenAI(api_key=key)
-        response = client.chat.completions.create(
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content or ""
-
-
-@dataclass(frozen=True, slots=True)
-class AnthropicChat:
-    """Anthropic messages. Bring your own key."""
-
-    model: str = "claude-sonnet-5"
-    temperature: float = 0.0
-    api_key: str | None = None
-
-    @property
-    def name(self) -> str:
-        return self.model
-
-    def complete(self, prompt: str, *, max_tokens: int = 512) -> str:
         try:
-            import anthropic  # type: ignore[import-not-found]
-        except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise MissingExtraError("The Anthropic provider", "llm", package="anthropic") from exc
+            response = litellm.completion(**kwargs)
+        except Exception as error:
+            raise LLMError(_explain(error, self.model)) from error
 
-        key = self.api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
+        try:
+            return str(response.choices[0].message.content or "")
+        except (AttributeError, IndexError, KeyError) as error:
             raise LLMError(
-                "no Anthropic key. Pass `api_key=` or set ANTHROPIC_API_KEY. Keys are never "
-                "written to disk or into a run manifest."
-            )
+                f"{self.model} returned a reply this adapter could not read: {error}"
+            ) from error
 
-        client = anthropic.Anthropic(api_key=key)
-        response = client.messages.create(
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
+
+def _explain(error: Exception, model: str) -> str:
+    """A provider exception, turned into something a person can act on."""
+    text = str(error)
+    lowered = text.lower()
+
+    if "api" in lowered and "key" in lowered:
+        return (
+            f"no usable API key for {model}. Set the provider's key in the environment -- "
+            "OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY and so on. Keys are never "
+            f"written to disk or into a run manifest. ({text})"
         )
-        return "".join(block.text for block in response.content if hasattr(block, "text"))
+    if "not found" in lowered or "does not exist" in lowered:
+        return (
+            f"{model} was not recognised. litellm expects `provider/model` for anything that "
+            f"is not OpenAI -- for example `anthropic/claude-sonnet-5`. ({text})"
+        )
+    if "rate limit" in lowered or "429" in lowered:
+        return f"{model} is rate limiting. Slow the run down or use a smaller model. ({text})"
+    if "connection" in lowered or "refused" in lowered:
+        return f"could not reach the endpoint for {model}. Is it running? ({text})"
+    return text
 
 
-LLMS.register("openai", shorthand="model", doc="OpenAI chat completions (bring your own key).")(
-    OpenAIChat
+def _prefixed(prefix: str, default: str) -> Callable[..., LiteLLMChat]:
+    """A provider-named factory, so `openai:gpt-4o-mini` keeps working.
+
+    These were separate hand-written clients. They are now one adapter under three names --
+    configs people have already written stay valid, and there is one code path to keep right
+    rather than three. A bare `openai` still resolves, because an axis value that needs a
+    parameter to be usable at all is a bad axis value.
+    """
+
+    def build(model: str = default, **kwargs: Any) -> LiteLLMChat:
+        qualified = model if "/" in model else f"{prefix}/{model}"
+        return LiteLLMChat(model=qualified, **kwargs)
+
+    return build
+
+
+LLMS.register(
+    "litellm", shorthand="model", doc="Any chat model through litellm. Bring your own key."
+)(LiteLLMChat)
+LLMS.register("openai", shorthand="model", doc="OpenAI chat, through litellm.")(
+    _prefixed("openai", "gpt-4o-mini")
 )
-LLMS.register("anthropic", shorthand="model", doc="Anthropic messages (bring your own key).")(
-    AnthropicChat
+LLMS.register("anthropic", shorthand="model", doc="Anthropic messages, through litellm.")(
+    _prefixed("anthropic", "claude-sonnet-5")
 )
 
 

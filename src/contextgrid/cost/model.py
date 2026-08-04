@@ -92,6 +92,54 @@ _BACKENDS = frozenset({"litellm", "tei"})
 _LOCAL_BACKENDS = frozenset({"tei"})
 
 
+def _litellm_pricing(name: str) -> Pricing | None:
+    """Fall back to litellm's price table, which covers nearly three thousand models.
+
+    The table above is deliberately a hand-written literal: a cost comparison has to be
+    reproducible, and a number that moves under you between runs is worse than one that is
+    three months stale and labelled as such. But ten hand-maintained entries against the whole
+    field means most real models get costed at zero, and *that* is worse still -- a silent
+    zero looks like "free" rather than "unknown".
+
+    So: the local table wins where it has an opinion, and litellm answers everything else. It
+    returns None when it has no opinion either, which keeps the "no published price" warning
+    meaningful.
+    """
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover - litellm is an optional extra
+        return None
+
+    entry = litellm.model_cost.get(name)
+    if entry is None:
+        # litellm keys hosted models by their provider-qualified name too.
+        entry = next(
+            (value for key, value in litellm.model_cost.items() if key.rsplit("/", 1)[-1] == name),
+            None,
+        )
+    if not isinstance(entry, dict):
+        return None
+
+    per_token = entry.get("input_cost_per_token")
+    output_per_token = entry.get("output_cost_per_token")
+    if not isinstance(per_token, (int, float)):
+        return None
+
+    million = 1_000_000
+    mode = str(entry.get("mode", ""))
+    return Pricing(
+        embed_per_million=float(per_token) * million if mode == "embedding" else 0.0,
+        rerank_per_million=float(per_token) * million if mode == "rerank" else 0.0,
+        generate_input_per_million=float(per_token) * million if mode != "embedding" else 0.0,
+        generate_output_per_million=(
+            float(output_per_token) * million
+            if isinstance(output_per_token, (int, float)) and mode != "embedding"
+            else 0.0
+        ),
+        metered=bool(per_token) or bool(output_per_token),
+    )
+
+
 def _is_local(model: str | object) -> bool:
     """Whether this runs on the user's own machine rather than somebody's API."""
     name = model if isinstance(model, str) else str(getattr(model, "name", ""))
@@ -155,6 +203,10 @@ class CostModel:
         # apply -- machine time -- is already counted from the clock.
         if _is_local(model):
             return Pricing(metered=False)
+
+        found = _litellm_pricing(name)
+        if found is not None:
+            return found
 
         self.warnings.add(
             WarningCode.BUDGET_REACHED,
