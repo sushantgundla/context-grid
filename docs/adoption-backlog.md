@@ -240,9 +240,37 @@ run in production" is a legitimate and different arm. usearch is a nice-to-have.
 
 ---
 
-## Dimension 4 — Parsers
+## Dimension 4 — Parsers ✅ done
 
-**Today.** Text, Markdown, PyMuPDF, pdfplumber. Docling and Unstructured are registered but not
+**Shipped.** docling, marker and pymupdf4llm, as decided:
+
+    parser: [pymupdf, pdfplumber, pymupdf4llm, docling, marker]
+
+Five arms on the axis nothing else in the field measures, three of them real engines. All emit
+Markdown, which is split into blocks with tables kept whole and page markers read and dropped.
+Offsets stay exact — every block is a literal slice of the text that parser produced.
+
+Measured on the contract fixture: `pymupdf` 7 ms and no table; `pymupdf4llm` 412 ms and finds
+the table; `docling` 222 s on a cold start with model loading, 4 blocks, table found. That
+spread is the finding, and it is the kind of thing usually left as folklore.
+
+**pymupdf4llm is not deterministic in-process, and that made isolation non-negotiable.** Its
+output for a document depends on which documents went through the same interpreter before it:
+a prose PDF that parses to 1182 characters alone parses to 919 mangled ones — "notce perod s
+trty", characters simply dropped — after a PDF with a table has gone through. The state is in
+MuPDF's C layer, below Python: reloading the module, passing an explicit `hdr_info`, resetting
+`small_glyph_heights` and emptying MuPDF's store all fail to clear it. Only a fresh process
+does. So each document is parsed in its own subprocess, which costs ~100 ms against the ~400 ms
+the conversion already takes. For a tool whose entire foundation is the parse, a corpus that
+parses differently depending on file order is disqualifying.
+
+docling and marker are behind `CG_SLOW_PARSERS=1` in the test suite — they load vision models
+and take minutes cold. Both have been run for real.
+
+**Not adopted:** MinerU (heavy, awkward PaddleOCR chain), extractous, and `unstructured`, which
+stays registered-but-unimplemented.
+
+**Originally.** Text, Markdown, PyMuPDF, pdfplumber. Docling and Unstructured are registered but not
 implemented. This is the headline axis and it has four arms, two of which are trivial.
 
 | Candidate | For | Against |

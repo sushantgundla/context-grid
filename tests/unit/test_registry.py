@@ -205,11 +205,11 @@ def test_a_lazily_registered_parser_loads_once_its_extra_is_installed() -> None:
 
 
 def test_a_parser_whose_module_does_not_exist_yet_reports_its_extra() -> None:
-    """Docling lands in a later milestone. Until then, asking for it should say which extra
+    """`unstructured` is registered and not yet written. Asking for it should say which extra
     to install rather than raising ModuleNotFoundError from four frames down."""
-    assert "docling" in PARSERS
+    assert "unstructured" in PARSERS
     with pytest.raises(MissingExtraError, match=r"context-grid\[parse-ml\]"):
-        PARSERS.create("docling")
+        PARSERS.create("unstructured")
 
 
 def test_registry_is_iterable_over_registrations(registry: Registry[Widget]) -> None:

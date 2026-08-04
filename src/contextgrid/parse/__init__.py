@@ -43,11 +43,30 @@ PARSERS.register_lazy(
 )
 PARSERS.register_lazy(
     "docling",
-    module="contextgrid.parse.docling",
+    module="contextgrid.parse.layout",
     attr="DoclingParser",
     extra="parse-ml",
     package="docling",
-    doc="Layout-model PDF extraction with strong table handling.",
+    doc="Layout and table-structure models. PDF, DOCX, PPTX, HTML. The table arm.",
+)
+PARSERS.register_lazy(
+    "marker",
+    module="contextgrid.parse.layout",
+    attr="MarkerParser",
+    extra="parse-ml",
+    package="marker-pdf",
+    shorthand="languages",
+    doc="Surya layout and OCR, 90+ languages. The most faithful and by far the slowest.",
+)
+# Same extraction engine as `pymupdf`, different output. Any difference between the two is
+# Markdown structure alone, which is the one question the heavy parsers confound.
+PARSERS.register_lazy(
+    "pymupdf4llm",
+    module="contextgrid.parse.layout",
+    attr="PyMuPDF4LLMParser",
+    extra="parse",
+    package="pymupdf4llm",
+    doc="Markdown from the PyMuPDF engine. Tests output format, not extraction.",
 )
 PARSERS.register_lazy(
     "unstructured",

@@ -36,6 +36,13 @@ dependencies = [
 parse = [
     "pymupdf>=1.24",
     "pdfplumber>=0.11",
+    "pymupdf4llm>=0.0.17",
+]
+# Layout-model parsers. Heavy -- they download and run vision models -- which is why they are
+# their own extra rather than part of [parse].
+parse-ml = [
+    "docling>=2.0",
+    "marker-pdf>=1.0",
 ]
 # The chunker libraries people actually deploy. chonkie is small (a few hundred KB) and
 # purpose-built; langchain-text-splitters is heavier but is what most production RAG is
@@ -142,5 +149,9 @@ module = [
     "faiss.*",
     "usearch.*",
     "psycopg.*",
+    "docling.*",
+    "docling_core.*",
+    "marker.*",
+    "pymupdf4llm.*",
 ]
 ignore_missing_imports = true
