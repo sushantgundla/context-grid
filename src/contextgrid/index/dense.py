@@ -72,7 +72,9 @@ class ExactDenseIndex:
         if not self._ids:
             return []
 
-        query = np.asarray(vector, dtype=np.float32).reshape(1, -1)
+        # Annotated rather than inferred: reshape gives a two-dimensional shape type and
+        # `normalise` returns an any-dimensional one, so the reassignment below would narrow.
+        query: Vectors = np.asarray(vector, dtype=np.float32).reshape(1, -1)
         if query.shape[1] != self._matrix.shape[1]:
             raise IndexBuildError(
                 f"query has {query.shape[1]} dimensions but the index was built with "
