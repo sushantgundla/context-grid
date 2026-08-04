@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 import numpy as np
+import numpy.typing as npt
 
 from contextgrid.embed.base import EmbeddingResult, Vectors, normalise
 from contextgrid.tokens import get_tokenizer
@@ -95,7 +96,9 @@ class TfidfEmbedder:
     max_tokens: ClassVar[int | None] = None
 
     _vocabulary: dict[str, int] = field(default_factory=dict, init=False, repr=False)
-    _idf: np.ndarray = field(default_factory=lambda: np.zeros(0), init=False, repr=False)
+    _idf: npt.NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float32), init=False, repr=False
+    )
 
     @property
     def dimensions(self) -> int:

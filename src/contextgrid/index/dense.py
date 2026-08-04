@@ -41,7 +41,7 @@ class ExactDenseIndex:
     is_exact: ClassVar[bool] = True
 
     _ids: list[str] = field(default_factory=list, init=False, repr=False)
-    _matrix: np.ndarray = field(
+    _matrix: Vectors = field(
         default_factory=lambda: np.zeros((0, 0), dtype=np.float32), init=False, repr=False
     )
 

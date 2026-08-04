@@ -21,10 +21,16 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+import numpy.typing as npt
 
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 
-Vectors = np.ndarray
+#: A matrix of embeddings, one row per text.
+#:
+#: Fully parameterised rather than a bare `np.ndarray`, because under `mypy --strict` an
+#: unparameterised generic is an error on some numpy versions and not on others -- which
+#: means it type-checks locally and fails on the oldest Python in CI.
+Vectors = npt.NDArray[np.float32]
 
 
 @dataclass(frozen=True, slots=True)
