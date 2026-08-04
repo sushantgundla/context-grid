@@ -12,6 +12,7 @@ table `pymupdf` flattens into prose.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 
 import pytest
@@ -28,6 +29,13 @@ from tests.pdf_fixtures import contract_pdf, prose_pdf
 slow = pytest.mark.skipif(
     os.environ.get("CG_SLOW_PARSERS") != "1",
     reason="loads vision models and takes minutes; set CG_SLOW_PARSERS=1 to run",
+)
+
+# The block-splitting tests below need no engine at all, so only the ones that run pymupdf4llm
+# are skipped when the extra is absent.
+needs_pymupdf4llm = pytest.mark.skipif(
+    importlib.util.find_spec("pymupdf4llm") is None,
+    reason="needs the [parse] extra",
 )
 
 
@@ -110,6 +118,7 @@ def contract() -> SourceFile:
     return SourceFile(id="contract", raw=contract_pdf(), media_type=MediaType.PDF)
 
 
+@needs_pymupdf4llm
 def test_every_block_is_a_literal_slice_of_the_text(contract: SourceFile) -> None:
     """What changes between parsers is *what the text is*, not whether offsets into it can be
     trusted. Gold spans resolve against this parse, so a block that is not a slice moves every
@@ -119,6 +128,7 @@ def test_every_block_is_a_literal_slice_of_the_text(contract: SourceFile) -> Non
         assert parsed.text[block.span.start : block.span.end] == block.text
 
 
+@needs_pymupdf4llm
 def test_it_finds_the_table_the_plain_extractor_flattens(contract: SourceFile) -> None:
     """The whole reason this arm is on the axis. Same extraction engine, different output: one
     returns a table, the other returns a soup of digits in reading order."""
@@ -129,11 +139,13 @@ def test_it_finds_the_table_the_plain_extractor_flattens(contract: SourceFile) -
     assert not any(block.kind is BlockKind.TABLE for block in plain.blocks)
 
 
+@needs_pymupdf4llm
 def test_headings_are_marked_as_headings(contract: SourceFile) -> None:
     parsed = PyMuPDF4LLMParser().parse(contract)
     assert any(block.is_heading for block in parsed.blocks)
 
 
+@needs_pymupdf4llm
 def test_it_records_which_engine_produced_the_text(contract: SourceFile) -> None:
     """Two parsers over the same PDF produce different text, so a parse that does not say which
     one it came from cannot be reproduced or compared."""
@@ -142,18 +154,21 @@ def test_it_records_which_engine_produced_the_text(contract: SourceFile) -> None
     assert parsed.meta["output_format"] == "markdown"
 
 
+@needs_pymupdf4llm
 def test_pages_are_attributed(contract: SourceFile) -> None:
     parsed = PyMuPDF4LLMParser().parse(contract)
     assert parsed.page_count >= 1
     assert any(block.page is not None for block in parsed.blocks)
 
 
+@needs_pymupdf4llm
 def test_parsing_twice_gives_the_same_text(contract: SourceFile) -> None:
     """Caching and diffing both rest on this."""
     parser = PyMuPDF4LLMParser()
     assert parser.parse(contract).text == parser.parse(contract).text
 
 
+@needs_pymupdf4llm
 def test_prose_parses_without_inventing_tables() -> None:
     source = SourceFile(id="prose", raw=prose_pdf(), media_type=MediaType.PDF)
     parsed = PyMuPDF4LLMParser().parse(source)
@@ -161,6 +176,7 @@ def test_prose_parses_without_inventing_tables() -> None:
     assert not any(block.kind is BlockKind.TABLE for block in parsed.blocks)
 
 
+@needs_pymupdf4llm
 def test_a_document_parses_the_same_whatever_was_parsed_before_it(
     contract: SourceFile,
 ) -> None:
@@ -184,6 +200,7 @@ def test_a_document_parses_the_same_whatever_was_parsed_before_it(
     assert alone.text == after.text
 
 
+@needs_pymupdf4llm
 def test_isolation_is_on_by_default() -> None:
     """Off, the failure it re-enables is silent."""
     assert PyMuPDF4LLMParser().isolate
@@ -194,6 +211,7 @@ def test_isolation_is_on_by_default() -> None:
     )
 
 
+@needs_pymupdf4llm
 def test_a_broken_pdf_says_which_document_it_was() -> None:
     """The worker runs in another process, so its traceback has to be carried back with the
     document's name attached or a failed sweep says nothing useful."""
@@ -204,6 +222,7 @@ def test_a_broken_pdf_says_which_document_it_was() -> None:
         PyMuPDF4LLMParser().parse(source)
 
 
+@needs_pymupdf4llm
 def test_source_bytes_that_were_never_read_is_a_clear_error() -> None:
     source = SourceFile(id="unread", raw=None, media_type=MediaType.PDF)
     from contextgrid.core.errors import DocumentError
@@ -212,6 +231,7 @@ def test_source_bytes_that_were_never_read_is_a_clear_error() -> None:
         PyMuPDF4LLMParser().parse(source)
 
 
+@needs_pymupdf4llm
 def test_it_only_claims_the_formats_it_can_read() -> None:
     parser = PyMuPDF4LLMParser()
     assert parser.supports(MediaType.PDF)

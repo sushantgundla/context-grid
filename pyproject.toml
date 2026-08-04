@@ -85,6 +85,7 @@ dev = [
     "litellm>=1.60",
     "faiss-cpu>=1.8",
     "usearch>=2.12",
+    "pymupdf4llm>=0.0.17",
 ]
 
 [project.scripts]
