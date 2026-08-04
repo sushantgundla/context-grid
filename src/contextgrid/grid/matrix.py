@@ -33,7 +33,15 @@ from contextgrid.pipeline import Config
 #: Deliberate rather than alphabetical. The parser decides what text exists at all, so
 #: choosing it first is the only ordering where the later choices are being made about the
 #: real corpus. Reranking comes last because it operates on whatever the rest produced.
-AXIS_ORDER: tuple[str, ...] = ("parser", "chunker", "embedder", "index", "reranker", "candidates")
+AXIS_ORDER: tuple[str, ...] = (
+    "parser",
+    "chunker",
+    "embedder",
+    "index",
+    "transform",
+    "reranker",
+    "candidates",
+)
 
 
 #: Written out with a real multiplication sign, because "2 x 3" reads as a variable.
@@ -58,6 +66,7 @@ class Matrix:
     chunker: tuple[str, ...] = ("recursive:512",)
     embedder: tuple[str | None, ...] = ("tfidf",)
     index: tuple[str, ...] = ("dense",)
+    transform: tuple[str | None, ...] = (None,)
     reranker: tuple[str | None, ...] = (None,)
     candidates: tuple[int, ...] = (50,)
     k: int = 10
@@ -92,6 +101,7 @@ class Matrix:
             chunker=self.chunker[0],
             embedder=self.embedder[0],
             index=self.index[0],
+            transform=self.transform[0],
             reranker=self.reranker[0],
             candidates=self.candidates[0],
             k=self.k,
@@ -124,12 +134,22 @@ class Matrix:
 
     def _factorial(self) -> list[Config]:
         return [
-            Config(parser=p, chunker=c, embedder=e, index=i, reranker=r, candidates=d, k=self.k)
-            for p, c, e, i, r, d in product(
+            Config(
+                parser=p,
+                chunker=c,
+                embedder=e,
+                index=i,
+                transform=t,
+                reranker=r,
+                candidates=d,
+                k=self.k,
+            )
+            for p, c, e, i, t, r, d in product(
                 self.parser,
                 self.chunker,
                 self.embedder,
                 self.index,
+                self.transform,
                 self.reranker,
                 self.candidates,
             )
@@ -172,6 +192,9 @@ def canonicalise(config: Config) -> Config:
     identical BM25 scores into the embedder's record as though it had earned them.
     """
     # "none" is the identity reranker, so it is the same configuration as no reranker at all.
+    if config.transform == "none":
+        config = config.with_(transform=None)
+
     if config.reranker == "none":
         config = config.with_(reranker=None)
 
@@ -212,6 +235,7 @@ def matrix(
     chunker: str | Sequence[str] = "recursive:512",
     embedder: str | Sequence[str | None] | None = "tfidf",
     index: str | Sequence[str] = "dense",
+    transform: str | Sequence[str | None] | None = None,
     reranker: str | Sequence[str | None] | None = None,
     candidates: int | Sequence[int] = 50,
     k: int = 10,
@@ -226,6 +250,7 @@ def matrix(
         chunker=_as_tuple(chunker),
         embedder=_as_tuple(embedder),
         index=_as_tuple(index),
+        transform=_as_tuple(transform),
         reranker=_as_tuple(reranker),
         candidates=_as_tuple(candidates),
         k=k,

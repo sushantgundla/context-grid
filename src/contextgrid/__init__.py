@@ -138,9 +138,21 @@ from contextgrid.score.significance import (
     randomisation_test,
 )
 from contextgrid.tokens import TOKENIZERS, get_tokenizer
+from contextgrid.transform import (
+    TRANSFORMS,
+    Decompose,
+    ExpandAcronyms,
+    HyDE,
+    MultiQuery,
+    NoTransform,
+    QueryTransform,
+    StepBack,
+    TransformedQuery,
+    get_transform,
+)
 from contextgrid.validate import ValidationResult, load_benchmark, self_check, validate
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "CHUNKERS",
@@ -151,6 +163,7 @@ __all__ = [
     "PRICES",
     "RERANKERS",
     "TOKENIZERS",
+    "TRANSFORMS",
     "AnchorMatch",
     "AnchorResolver",
     "Answer",
@@ -175,6 +188,7 @@ __all__ = [
     "CorpusFingerprint",
     "CostBreakdown",
     "CostModel",
+    "Decompose",
     "Diagnosis",
     "DiskCache",
     "Document",
@@ -184,6 +198,7 @@ __all__ = [
     "EvalSet",
     "EvalSetError",
     "EvalSetQuality",
+    "ExpandAcronyms",
     "ExtractiveGenerator",
     "FailurePoint",
     "FailureReport",
@@ -195,6 +210,7 @@ __all__ = [
     "GoldResolution",
     "GoldSpan",
     "GridWarning",
+    "HyDE",
     "Index",
     "Interval",
     "KeywordProbeGenerator",
@@ -207,6 +223,8 @@ __all__ = [
     "MediaType",
     "MemoryCache",
     "MissingExtraError",
+    "MultiQuery",
+    "NoTransform",
     "NullCache",
     "Ordering",
     "ParsedDocument",
@@ -214,6 +232,7 @@ __all__ = [
     "Pricing",
     "Quantization",
     "QuantizedDenseIndex",
+    "QueryTransform",
     "QuestionType",
     "RecordingLLM",
     "Registry",
@@ -233,9 +252,11 @@ __all__ = [
     "Span",
     "SpanError",
     "SpanResolver",
+    "StepBack",
     "SweepMode",
     "Timings",
     "Tokenizer",
+    "TransformedQuery",
     "UnknownPluginError",
     "ValidationResult",
     "Verdict",
@@ -268,6 +289,7 @@ __all__ = [
     "get_parser",
     "get_reranker",
     "get_tokenizer",
+    "get_transform",
     "gold_coverage_by_chunk",
     "intersection_length",
     "lift",

@@ -34,6 +34,7 @@ from contextgrid.parse import get_parser
 from contextgrid.rerank import Reranker, get_reranker
 from contextgrid.score.anchor import AnchorResolver
 from contextgrid.score.resolve import SpanResolver
+from contextgrid.transform import NoTransform, QueryTransform, get_transform
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,7 @@ class Config:
     chunker: str = "recursive:512"
     embedder: str | None = "tfidf"
     index: str = "dense"
+    transform: str | None = None
     reranker: str | None = None
     k: int = 10
     #: How many results the retriever hands the reranker. The parameter most reranking
@@ -61,6 +63,8 @@ class Config:
         parts = [self.parser, self.chunker]
         if self.embedder:
             parts.append(self.embedder)
+        if self.transform:
+            parts.append(f"+{self.transform}")
         parts.append(self.index)
         if self.reranker:
             parts.append(f"{self.reranker}@{self.candidates}")
@@ -72,6 +76,7 @@ class Config:
             "chunker": self.chunker,
             "embedder": self.embedder,
             "index": self.index,
+            "transform": self.transform,
             "reranker": self.reranker,
             "k": self.k,
             "candidates": self.candidates,
@@ -134,6 +139,7 @@ class BuiltPipeline:
     index_bytes: int = 0
     embed_tokens: int = 0
     reranker: Reranker | None = None
+    transform: QueryTransform = field(default_factory=NoTransform)
 
     def search(self, query: str, k: int | None = None) -> list[str]:
         """Chunk ids for one query, best first.
@@ -143,18 +149,34 @@ class BuiltPipeline:
         no-reranker arm never pays for candidates it would have thrown away.
         """
         limit = k or self.config.k
-        vector = None
-        if self.embedder is not None and self.index.needs_vectors:
-            vector = self.embedder.embed_queries([query]).vectors[0]
+        rewritten = self.transform.transform(query)
+        depth = max(self.config.candidates, limit) if self.reranker else limit
+
+        # A transform that produced several queries means several searches, fused by rank.
+        # Scores are never compared across them: a cosine from one query and a cosine from
+        # another are not on the same scale, however similar they look.
+        results = [
+            self.index.search(text, self._vector_for(text), depth) for text in rewritten.queries
+        ]
+        if len(results) == 1:
+            ranked = results[0]
+        else:
+            from contextgrid.index.base import top_k
+            from contextgrid.index.hybrid import reciprocal_rank_fusion
+
+            ranked = top_k(reciprocal_rank_fusion(results), depth)
 
         if self.reranker is None:
-            return [scored.chunk_id for scored in self.index.search(query, vector, limit)]
+            return [scored.chunk_id for scored in ranked[:limit]]
 
-        depth = max(self.config.candidates, limit)
-        retrieved = self.index.search(query, vector, depth)
         by_id = self.chunk_by_id()
-        candidates = [by_id[scored.chunk_id] for scored in retrieved if scored.chunk_id in by_id]
+        candidates = [by_id[scored.chunk_id] for scored in ranked if scored.chunk_id in by_id]
         return [scored.chunk_id for scored in self.reranker.rerank(query, candidates, limit)]
+
+    def _vector_for(self, text: str) -> Any:
+        if self.embedder is None or not self.index.needs_vectors:
+            return None
+        return self.embedder.embed_queries([text]).vectors[0]
 
     def run_queries(self, evalset: EvalSet, k: int | None = None) -> dict[str, list[str]]:
         """Answer every question, recording how long each one took."""
@@ -213,6 +235,7 @@ def build(
         index_bytes=index.size_bytes(),
         embed_tokens=embed_tokens,
         reranker=get_reranker(config.reranker) if config.reranker else None,
+        transform=get_transform(config.transform),
     )
 
 
