@@ -50,6 +50,17 @@ chunk = [
 llm = [
     "litellm>=1.60",
 ]
+# Approximate search. faiss covers flat/IVF/HNSW/PQ from one wheel; usearch is a second
+# implementation of HNSW with quantization built into the index rather than bolted on.
+index = [
+    "faiss-cpu>=1.8",
+    "usearch>=2.12",
+]
+# Postgres with pgvector -- the index people actually deploy on. Needs a running server, so it
+# is deliberately its own extra rather than part of [index].
+pgvector = [
+    "psycopg[binary]>=3.1",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -65,6 +76,8 @@ dev = [
     "chonkie>=1.7",
     "langchain-text-splitters>=0.3",
     "litellm>=1.60",
+    "faiss-cpu>=1.8",
+    "usearch>=2.12",
 ]
 
 [project.scripts]
@@ -126,5 +139,8 @@ module = [
     "langchain_text_splitters.*",
     "litellm.*",
     "openai.*",
+    "faiss.*",
+    "usearch.*",
+    "psycopg.*",
 ]
 ignore_missing_imports = true

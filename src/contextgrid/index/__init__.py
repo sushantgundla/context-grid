@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from contextgrid.core.registry import Registry
 from contextgrid.index.base import Index, Scored, top_k
 from contextgrid.index.dense import ExactDenseIndex, IndexBuildError
@@ -22,6 +24,10 @@ from contextgrid.index.quantize import (
     recall_against_exact,
 )
 from contextgrid.index.sparse import BM25Index
+
+if TYPE_CHECKING:  # Imported for the public names only; both need optional dependencies.
+    from contextgrid.index.ann import FaissIndex, USearchIndex
+    from contextgrid.index.pgvector import PgVectorIndex
 
 INDEXES: Registry[Index] = Registry(family="index")
 
@@ -60,6 +66,36 @@ INDEXES.register("hybrid", shorthand="fusion", doc="Dense plus BM25, fused by ra
     _hybrid
 )
 
+# Approximate search. Until these landed the chart this package most wanted to draw -- what
+# did approximation actually cost you? -- had nothing to plot.
+INDEXES.register_lazy(
+    "faiss",
+    module="contextgrid.index.ann",
+    attr="FaissIndex",
+    extra="index",
+    package="faiss",
+    shorthand="kind",
+    doc="faiss: flat, hnsw, ivf or ivfpq. Four index types on one axis.",
+)
+INDEXES.register_lazy(
+    "usearch",
+    module="contextgrid.index.ann",
+    attr="USearchIndex",
+    extra="index",
+    package="usearch",
+    shorthand="dtype",
+    doc="usearch HNSW, with f32/f16/i8/b1 storage. A second opinion on the same idea.",
+)
+INDEXES.register_lazy(
+    "pgvector",
+    module="contextgrid.index.pgvector",
+    attr="PgVectorIndex",
+    extra="pgvector",
+    package="psycopg",
+    shorthand="kind",
+    doc="Postgres with pgvector: exact, hnsw or ivfflat. What people actually deploy on.",
+)
+
 
 def get_index(spec: str | Index) -> Index:
     """Resolve an index from a spec like `hybrid:weighted,alpha=0.7`, or pass one through."""
@@ -72,16 +108,19 @@ __all__ = [
     "BinaryCodec",
     "CompressionReport",
     "ExactDenseIndex",
+    "FaissIndex",
     "FusionError",
     "HybridIndex",
     "Index",
     "IndexBuildError",
+    "PgVectorIndex",
     "ProductCodec",
     "Quantization",
     "QuantizationError",
     "QuantizedDenseIndex",
     "ScalarCodec",
     "Scored",
+    "USearchIndex",
     "get_index",
     "recall_against_exact",
     "reciprocal_rank_fusion",

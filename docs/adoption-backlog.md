@@ -185,9 +185,45 @@ ColPali from the same process. Both are proxied by litellm, so one adapter can r
 
 ---
 
-## Dimension 3 — Indexing
+## Dimension 3 — Indexing ✅ done
 
-**Today.** Exact dense (numpy matmul), BM25, hybrid fusion, quantization. Correct, and exact
+**Shipped.** All three, as decided:
+
+    index: [dense, faiss:flat, faiss:hnsw, faiss:ivfpq, usearch:i8, pgvector:hnsw]
+
+The chart this package most wanted to draw — *what did approximation actually cost you?* — had
+nothing to plot before this, because every index was exact. Now `faiss` gives flat, IVF, HNSW
+and IVFPQ from one wheel, `usearch` gives a second opinion on HNSW with f32/f16/i8/b1 storage,
+and `pgvector` is the arm that is a database rather than a library.
+
+On a 400-vector fixture, measured against exhaustive search: `faiss:hnsw` 0.98, `faiss:ivf` at
+one probe 0.42 and at ten 1.00, `faiss:ivfpq` 0.175 for 4.4 KB against flat's 102 KB.
+`usearch` f32 and f16 both 1.00, i8 0.95 for half the memory.
+
+Four things worth recording:
+
+* **A small corpus trains a bad codebook silently.** PQ learns 2^bits centroids per subspace
+  and faiss wants ~39 points for each, so the default 8 bits needs ~10,000 vectors. Below that
+  faiss prints a warning nobody reads and returns plausible, wrong neighbours. `nlist` and
+  `pq_bits` are now reduced to fit and the reduction is recorded on `fitted_to_corpus`.
+* **pgvector's session parameters were being ignored entirely.** `SET LOCAL` lasts until the
+  end of the current transaction, and on an autocommit connection there is none — Postgres
+  accepted it, did nothing, and every query ran at the default `probes = 1` while the sweep
+  reported numbers for whatever was asked for. Only a live database caught this. With `SET`,
+  recall goes 0.26 → 1.00 across the probe range; before, it was 0.26 at every setting.
+* **usearch's own `memory_usage` is useless for this.** It reports the arena it allocated,
+  which barely moves between f32 and i8 — so the dtype axis would have shown quantization
+  saving nothing. Computed from the dtype instead.
+* **`cosine` has to mean one thing.** Left to their defaults these libraries compare L2 on raw
+  vectors, which ranks differently. Both normalise on both sides, so the index axis compares
+  indexes rather than metrics in disguise.
+
+pgvector's exact mode is cross-checked against the numpy reference, ranking for ranking — two
+completely different implementations of the same thing, so a metric bug in either shows up.
+Its tests skip without `PGVECTOR_DSN` and there is no in-process fake: a fake pgvector would
+measure nothing, and passing in CI would be worse than the arm being absent.
+
+**Originally.** Exact dense (numpy matmul), BM25, hybrid fusion, quantization. Correct, and exact
 search only — there is no approximate index, so the ANN recall-loss chart has nothing to plot.
 
 | Candidate | For | Against |
