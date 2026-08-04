@@ -21,6 +21,8 @@ from contextgrid.embed.base import (
     truncate,
 )
 from contextgrid.embed.local import HashEmbedder, TfidfEmbedder, TokenCountEmbedder
+from contextgrid.embed.prefixes import Prefixes, for_model
+from contextgrid.embed.remote import EmbedderError, LiteLLMEmbedder, TEIEmbedder
 
 EMBEDDERS: Registry[Embedder] = Registry(family="embedder")
 
@@ -34,30 +36,26 @@ EMBEDDERS.register("length", doc="Text length in one dimension. A chance-level c
     TokenCountEmbedder
 )
 
-# Real models arrive with the extras that provide them.
-for _name, _attr, _doc in [
-    ("bge-base-en-v1.5", "BgeBaseEn", "BAAI bge-base-en-v1.5 via ONNX. CPU-friendly."),
-    ("e5-base-v2", "E5BaseV2", "intfloat/e5-base-v2, with query:/passage: prefixes."),
-    ("all-MiniLM-L6-v2", "MiniLmL6", "The speed baseline."),
-]:
-    EMBEDDERS.register_lazy(
-        _name,
-        module="contextgrid.embed.onnx",
-        attr=_attr,
-        extra="embed",
-        package="onnxruntime",
-        doc=_doc,
-    )
-
+# Real models. Two backends cover the field between them: litellm for anything hosted, TEI for
+# anything run locally. Both take the model name as their shorthand, so a sweep across real
+# models is one line -- `embedder: [tei:bge-base-en-v1.5, litellm:text-embedding-3-small]`.
 EMBEDDERS.register_lazy(
-    "text-embedding-3-small",
-    module="contextgrid.embed.openai",
-    attr="OpenAISmall",
+    "litellm",
+    module="contextgrid.embed.remote",
+    attr="LiteLLMEmbedder",
     extra="llm",
-    package="openai",
-    shorthand="dimensions",
-    doc="OpenAI text-embedding-3-small (bring your own key).",
+    package="litellm",
+    shorthand="model",
+    doc="Any hosted model, through litellm. Bring your own key.",
 )
+
+# No package= at all: the TEI backend is built on urllib, so a running server plus a bare
+# `pip install context-grid` is enough for real embeddings.
+EMBEDDERS.register(
+    "tei",
+    shorthand="model",
+    doc="A local text-embeddings-inference server. No key, no network, no extra dependency.",
+)(TEIEmbedder)
 
 
 def get_embedder(spec: str | Embedder) -> Embedder:
@@ -71,14 +69,19 @@ __all__ = [
     "AdapterError",
     "AdapterReport",
     "Embedder",
+    "EmbedderError",
     "EmbeddingResult",
     "HashEmbedder",
     "LinearAdapter",
+    "LiteLLMEmbedder",
+    "Prefixes",
+    "TEIEmbedder",
     "TfidfEmbedder",
     "TokenCountEmbedder",
     "Triplet",
     "Vectors",
     "fit_adapter",
+    "for_model",
     "get_embedder",
     "mine_triplets",
     "normalise",

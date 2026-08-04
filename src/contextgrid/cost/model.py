@@ -49,8 +49,53 @@ PRICES: dict[str, Pricing] = {
     "text-embedding-3-small": Pricing(embed_per_million=0.02),
     "text-embedding-3-large": Pricing(embed_per_million=0.13),
     "embed-v3": Pricing(embed_per_million=0.10),
+    "embed-english-v3.0": Pricing(embed_per_million=0.10),
     "voyage-3": Pricing(embed_per_million=0.06),
+    "text-embedding-ada-002": Pricing(embed_per_million=0.10),
 }
+
+
+def price_key(model: str | object) -> str:
+    """The name a price is looked up under.
+
+    Three shapes reach this, and the naive `split(":")[0]` is wrong for two of them:
+
+    * `tfidf` or `tfidf:5000` -- a plain plugin, optionally with parameters. Take the name.
+    * `litellm:text-embedding-3-small,dimensions=256` -- a backend and the model it is
+      serving. The **model** is what costs money, so the backend prefix has to come off, or
+      every hosted model in a sweep would be priced as the string "litellm", find no entry,
+      and quietly cost zero.
+    * an embedder instance, which the Python API allows anywhere a spec string does. Ask it.
+
+    Provider-qualified names (`cohere/embed-english-v3.0`) keep only the last segment, since
+    the price belongs to the model rather than to the route taken to reach it.
+    """
+    if not isinstance(model, str):
+        named = getattr(model, "model", None) or getattr(model, "name", None)
+        return price_key(str(named)) if named else ""
+
+    text = model.split(",", 1)[0].strip()  # drop keyword parameters
+    parts = [part for part in text.split(":") if part]
+    if not parts:
+        return ""
+
+    # `litellm:model` and `tei:model` name a backend then a model; everything else is
+    # `name` or `name:shorthand`, where the shorthand is a number or a size.
+    tail = parts[-1] if parts[0] in _BACKENDS and len(parts) > 1 else parts[0]
+    return tail.split("/")[-1].strip()
+
+
+#: Backends that serve some *other* model, so the price belongs to the tail of the spec.
+_BACKENDS = frozenset({"litellm", "tei"})
+
+#: Backends that run on your own hardware. Free per token, not free per second.
+_LOCAL_BACKENDS = frozenset({"tei"})
+
+
+def _is_local(model: str | object) -> bool:
+    """Whether this runs on the user's own machine rather than somebody's API."""
+    name = model if isinstance(model, str) else str(getattr(model, "name", ""))
+    return name.split(":", 1)[0] in _LOCAL_BACKENDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,14 +142,19 @@ class CostModel:
     prices: dict[str, Pricing] = field(default_factory=lambda: dict(PRICES))
     warnings: WarningLog = field(default_factory=WarningLog)
 
-    def pricing_for(self, model: str | None) -> Pricing:
+    def pricing_for(self, model: str | object | None) -> Pricing:
         if model is None:
             return Pricing(metered=False)
 
-        # Spec strings carry parameters; the price belongs to the model name.
-        name = model.split(":", 1)[0]
+        name = price_key(model)
         if name in self.prices:
             return self.prices[name]
+
+        # A local server is free per token by definition. Saying "no published price" about a
+        # model somebody is running on their own machine would be noise, and the cost that does
+        # apply -- machine time -- is already counted from the clock.
+        if _is_local(model):
+            return Pricing(metered=False)
 
         self.warnings.add(
             WarningCode.BUDGET_REACHED,
@@ -119,7 +169,7 @@ class CostModel:
     def estimate(
         self,
         *,
-        embedder: str | None,
+        embedder: str | object | None,
         index_tokens: int,
         query_tokens_per_query: float,
         compute_seconds: float = 0.0,

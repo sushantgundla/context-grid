@@ -285,7 +285,24 @@ def matrix(
 
     `lab.grid(parser="markdown", chunker=["recursive:512", "semantic"])` should work without
     the caller wrapping the single value in a list.
+
+    Every axis takes a **spec string**, not a plugin instance. That is not fussiness: a
+    configuration has to be writable into a leaderboard row, a cache key and a YAML file, and
+    an object is none of those. `chonkie:recursive:512` survives all three; a
+    `ChonkieRecursiveChunker` survives none, and a run nobody can write down is a run nobody
+    can reproduce.
     """
+    axes = {
+        "parser": parser,
+        "chunker": chunker,
+        "embedder": embedder,
+        "index": index,
+        "transform": transform,
+        "reranker": reranker,
+    }
+    for axis, value in axes.items():
+        _require_specs(axis, value)
+
     return Matrix(
         parser=_as_tuple(parser),
         chunker=_as_tuple(chunker),
@@ -296,6 +313,28 @@ def matrix(
         candidates=_as_tuple(candidates),
         k=k,
     )
+
+
+def _require_specs(axis: str, value: Any) -> None:
+    """Reject plugin instances early, where the message can still be useful.
+
+    Left through, an instance reaches the leaderboard as `TypeError: sequence item 2: expected
+    str` from inside a report formatter -- long after the sweep has run, and pointing at a
+    place that has nothing to do with the mistake.
+    """
+    # Not `_as_tuple`: it would call `tuple()` on the instance and raise "not iterable"
+    # before this ever got a chance to say something useful.
+    items = value if isinstance(value, (list, tuple)) else [value]
+    for item in items:
+        if item is None or isinstance(item, (str, int)):
+            continue
+        kind = type(item).__name__
+        raise ContextGridError(
+            f"{axis} was given a {kind} instance. Axes take spec strings, so that a "
+            f"configuration can be written into a report, a cache key and a config file -- "
+            f'try {axis}="{getattr(item, "name", kind.lower())}" instead. To use an object '
+            "directly, build one Config and run it rather than sweeping over it."
+        )
 
 
 def _as_tuple(value: Any) -> tuple[Any, ...]:

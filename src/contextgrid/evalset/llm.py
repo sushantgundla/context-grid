@@ -74,7 +74,7 @@ class OpenAIChat:
 
     def complete(self, prompt: str, *, max_tokens: int = 512) -> str:
         try:
-            from openai import OpenAI  # type: ignore[import-not-found]
+            from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise MissingExtraError("The OpenAI provider", "llm", package="openai") from exc
 

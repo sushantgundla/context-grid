@@ -135,9 +135,41 @@ reference. Three sources on one axis is the comparison the tool exists to make.
 
 ---
 
-## Dimension 2 — Embedders
+## Dimension 2 — Embedders ✅ done
 
-**Today.** TF-IDF, hashing and a length control. Useful as baselines, useless as real retrieval.
+**Shipped.** Two backends, decided together: **litellm** for anything hosted and **TEI** for
+anything local.
+
+    embedder: [tei:bge-base-en-v1.5, litellm:text-embedding-3-small]
+
+TEI needs no extra dependency at all — it is reached over plain `urllib`, so a running server
+plus a bare `pip install context-grid` gives real embeddings with no key and no network.
+litellm sits behind `[llm]` and reaches every hosted provider through one name.
+
+Four things came out of building it:
+
+* **Prefixes are now looked up from the model name.** E5 wants `query:` and `passage:`, BGE
+  wants an instruction on the query and nothing on the document, OpenAI wants neither. Getting
+  this wrong does not fail — it just costs several points, invisibly, and costs them *unevenly
+  across the arms of a sweep*, which turns a model comparison into a comparison of one model
+  against a handicapped version of another. An explicit prefix always wins, including an
+  explicit empty one.
+* **The cost model was pricing hosted models at zero.** It split the spec on the first colon,
+  so `litellm:text-embedding-3-small` looked up the price of "litellm", found nothing, and
+  charged zero. Now the price is looked up under the model, with the backend prefix stripped
+  and provider routes (`cohere/…`) resolved.
+* **`matrix()` silently accepted plugin instances**, which then blew up much later inside a
+  report formatter with `expected str`. Axes take spec strings, because a configuration has to
+  be writable into a leaderboard row, a cache key and a YAML file — a run nobody can write down
+  is a run nobody can reproduce. The error now says so, and names the string to use.
+* **There is a `transport` hook** on both backends: hand it a callable and a whole sweep runs
+  with no server and no key. That is how these are tested, and it is a real need for anybody
+  building on the package.
+
+**Not adopted:** sentence-transformers (would drag ~2 GB of torch into an install whose whole
+point is being small) and Infinity (TEI chosen instead; litellm can reach Infinity anyway).
+
+**Originally.** TF-IDF, hashing and a length control. Useful as baselines, useless as real retrieval.
 This is the biggest gap in the package: nobody can currently sweep a real embedding model.
 
 | Candidate | For | Against |
