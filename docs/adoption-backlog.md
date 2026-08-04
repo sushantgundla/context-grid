@@ -1,0 +1,269 @@
+# Adoption backlog — replacing hand-written plumbing with real libraries
+
+**Date:** 2026-08-04 · Companion to [design.md](./design.md) and [roadmap.md](./roadmap.md)
+
+## Why this exists
+
+Everything in context-grid today is hand-written on top of numpy. That was one decision applied
+to two very different kinds of code, and it was right for one of them and wrong for the other.
+
+**Right for the scorer.** Span resolution, the coverage policy, the metrics — these are the
+things that make the tool trustworthy, and they are verified: the metrics match `ranx` exactly
+on a thousand random cases, and the span algebra is covered by property tests. Owning that code
+is the point.
+
+**Wrong for the plumbing.** Chunkers, embedder hosting, vector indexes, ingestion, LLM calls.
+Writing my own means a worse implementation than a maintained library, a narrower set of
+options to sweep, and — worst of all — the tool measures *my* chunker rather than the chunker
+people actually deploy. A comparison of strategies nobody runs is a comparison of nothing.
+
+So: adopt libraries for every dimension, keep the scorer.
+
+## The rule for every adoption
+
+Three conditions, all of them, or it does not land:
+
+1. **It becomes a config value.** `chunker: chonkie:semantic` must work the same way
+   `chunker: recursive:512` does today. No new API surface for the user.
+2. **It is an optional extra.** `pip install context-grid` must stay one dependency. Every
+   library goes behind `[chunk]`, `[embed]`, `[index]` and so on, registered lazily.
+3. **It passes the conformance suite.** Offsets round-trip, no silent text loss, determinism.
+   A library that cannot preserve character offsets declares `offsets_exact=False` rather than
+   being trusted.
+
+## Where this is going: one file runs everything
+
+The end state the backlog serves. A user writes one YAML, and the whole thing runs.
+
+```yaml
+# contextgrid.yaml
+corpus: ./documents
+evalset: ./questions.jsonl
+
+grid:
+  parser:    [docling, marker, pymupdf]
+  chunker:   [chonkie:recursive:512, chonkie:semantic, chonkie:late]
+  embedder:  [tei:bge-base-en-v1.5, litellm:text-embedding-3-small]
+  index:     [faiss:hnsw, faiss:flat, bm25, hybrid]
+  transform: [none, hyde]
+  reranker:  [none, tei:bge-reranker-v2-m3]
+  candidates: [10, 50, 100]
+
+run:
+  mode: ofat            # factorial | ofat | staged
+  k: 10
+  headline: recall@5
+  budget_usd: 2.00
+  budget_seconds: 900
+
+report:
+  out: ./results
+  formats: [markdown, json, html]
+```
+
+`contextgrid run contextgrid.yaml` → a bundle with the leaderboard, the significance test, the
+failure diagnosis, the winning config and the manifest.
+
+That file is the product. Everything below is in service of it.
+
+---
+
+## Phase 0 — the config file *(no research needed, do first)*
+
+Every adoption below lands as new config values, so the config format should exist before they
+start arriving rather than being retrofitted around six of them.
+
+- A schema for the YAML above, validated with clear errors that name the offending key.
+- `contextgrid run config.yaml` as the primary CLI entry point.
+- `contextgrid init` to write a starter config with the installed plugins listed as comments.
+- Config → run manifest, so the file itself is part of what reproduces a run.
+- JSON accepted as well as YAML, same schema.
+
+**Open question for the owner:** YAML needs a parser. `pyyaml` is the obvious one and would be
+the *first* dependency outside numpy in the core. The alternative is keeping it in the `[config]`
+extra and having `contextgrid run` say "pip install context-grid[config]". My inclination is to
+put it in the core — a config-driven tool whose config format is optional is silly.
+
+---
+
+## Dimension 1 — Chunkers
+
+**Today.** Six hand-written: fixed, recursive, sentence, structural, semantic. All preserve
+exact offsets. All are mine, which means the tool compares my chunkers rather than the ones
+people deploy.
+
+| Candidate | For | Against |
+|---|---|---|
+| **[chonkie](https://docs.chonkie.ai/oss/chunkers/overview)** | Purpose-built for exactly this. Nine strategies including late chunking, neural boundary detection and AST-based code chunking. Rust-backed, ~100× faster than pure Python. 505 KB installed against LangChain's ~50 MB. Used in production at scale | Young project. Offset preservation needs verifying against our conformance suite before it can be trusted |
+| **[semchunk](https://pypi.org/project/semchunk/)** | Tiny, pure Python, no dependencies. Reported more semantically accurate than LangChain's recursive splitter and 90% faster than semantic-text-splitter | One strategy only. Complements chonkie rather than replacing it |
+| **langchain-text-splitters** | Everybody's default, so "what LangChain does" is a meaningful arm on the grid | Six general-purpose splitters against chonkie's nine specialised ones. Pulls a heavier dependency tree |
+| **llama-index node parsers** | Strong hierarchical and sentence-window parsers. The other default people actually run | Heavy. Coupled to LlamaIndex's `Node` type, which needs adapting to our `Chunk` |
+
+**Recommendation:** chonkie as the primary, langchain-text-splitters as a second arm because
+it is what most deployments actually use, and keeping our hand-written ones as the offset-exact
+reference. Three sources on one axis is the comparison the tool exists to make.
+
+---
+
+## Dimension 2 — Embedders
+
+**Today.** TF-IDF, hashing and a length control. Useful as baselines, useless as real retrieval.
+This is the biggest gap in the package: nobody can currently sweep a real embedding model.
+
+| Candidate | For | Against |
+|---|---|---|
+| **[litellm](https://docs.litellm.ai/docs/embedding/supported_embedding)** | One interface to every hosted provider — OpenAI, Cohere, Voyage, Gemini, Bedrock, plus TEI and Infinity as backends. Solves the BYOK story in one dependency. Also gives us LLM calls (dimension 7) from the same library | Large. Its abstraction occasionally lags provider features. Needs keys, so untestable in CI |
+| **[TEI](https://github.com/huggingface/text-embeddings-inference)** (HuggingFace) | The standard local server. Runs on Mac, Linux, Windows. Exposes `/embed`, `/rerank`, `/tokenize` — so it covers the reranker dimension too. Nearly any open model | A separate server process. Docker or a binary to manage |
+| **[Infinity](https://github.com/michaelfeil/infinity)** | Higher throughput than TEI in most reports. ONNX/CTranslate2 backends, dynamic batching, CPU-friendly. Serves embeddings, rerankers, and ColPali — which would unlock the visual-retrieval axis. Already validated in your private research | Same server-process cost. Smaller community than TEI |
+| **sentence-transformers** | In-process, no server, one pip install. Simplest possible path to a real model | Drags in torch (~2 GB). Slower than a dedicated server. Would make CI unusable |
+
+**Recommendation:** litellm for hosted plus one local server. Between TEI and Infinity I lean
+Infinity — you have already validated it, it is CPU-friendly, and it covers rerankers and
+ColPali from the same process. Both are proxied by litellm, so one adapter can reach either.
+
+---
+
+## Dimension 3 — Indexing
+
+**Today.** Exact dense (numpy matmul), BM25, hybrid fusion, quantization. Correct, and exact
+search only — there is no approximate index, so the ANN recall-loss chart has nothing to plot.
+
+| Candidate | For | Against |
+|---|---|---|
+| **[faiss](https://github.com/facebookresearch/faiss)** | The reference. Flat, IVF, HNSW, PQ, OPQ — every index type on one axis, which is exactly the sweep we want. `faiss-cpu` is a reasonable wheel | Not a database: no CRUD, no persistence story worth having. Fine here, since we build indexes and throw them away |
+| **[hnswlib](https://github.com/nmslib/hnswlib)** | Tiny, fast, `M`/`efConstruction`/`efSearch` exposed directly — the parameters the PRD wants swept | HNSW only. faiss covers it and more |
+| **[usearch](https://github.com/unum-cloud/usearch)** | Smaller and faster than faiss in its own benchmarks. Built-in quantization | Smaller ecosystem. Its benchmarks are self-published |
+| **pgvector** | What people actually deploy on. Tests the real thing rather than a library | Needs Postgres running. Slowest to set up, and hardest in CI |
+| **qdrant / lancedb** | Real vector databases with filtering | Heavier than needed to compare index *types* |
+
+**Recommendation:** faiss first — one dependency covering flat, IVF, HNSW and PQ, which turns
+the ANN-versus-exact chart from impossible into free. pgvector second, because "what we actually
+run in production" is a legitimate and different arm. usearch is a nice-to-have.
+
+---
+
+## Dimension 4 — Parsers
+
+**Today.** Text, Markdown, PyMuPDF, pdfplumber. Docling and Unstructured are registered but not
+implemented. This is the headline axis and it has four arms, two of which are trivial.
+
+| Candidate | For | Against |
+|---|---|---|
+| **[docling](https://github.com/docling-project/docling)** (IBM) | PDF, DOCX, PPTX, XLSX, HTML, images, audio. Strong table extraction. Already registered | Heavy — layout models. Slow per page |
+| **[marker](https://github.com/datalab-to/marker)** | Best-rated for structure fidelity. Surya OCR, 90+ languages | Slow. Reported ~100× slower than fast extractors, which is itself a finding worth charting |
+| **[MinerU](https://github.com/opendatalab/MinerU)** | Excellent on complex layouts and CJK. Outputs Markdown *and* JSON | Heavy. PaddleOCR dependency chain is awkward |
+| **unstructured** | `fast` and `hi_res` as two distinct arms from one library. Already registered | Heavier than needed. Local build reportedly weaker than their cloud |
+| **pymupdf4llm** | Markdown output from PyMuPDF, no extra weight. Cheap third arm | Same engine as PyMuPDF, so it tests output format rather than extraction |
+| **[extractous](https://github.com/yobix-ai/extractous)** | Rust, very fast, many formats | Newer. Less proven on tables |
+
+**Recommendation:** docling and marker next — they are the two the field actually benchmarks,
+and together with PyMuPDF they give fast/accurate/table-aware as three genuinely different arms.
+MinerU after, for the CJK and complex-layout case.
+
+---
+
+## Dimension 5 — Rerankers
+
+**Today.** Identity, lexical overlap, MMR. All hand-written. The cross-encoders are registered
+and unimplemented, which means the reranker axis currently compares three things nobody deploys.
+
+| Candidate | For | Against |
+|---|---|---|
+| **TEI / Infinity `/rerank`** | Same server as the embedders. `bge-reranker-v2-m3`, `mxbai-rerank`, `jina-reranker` all served | Depends on dimension 2's decision |
+| **sentence-transformers CrossEncoder** | In-process, simplest | torch again |
+| **litellm rerank** | Cohere and Voyage rerank behind one interface. BYOK | Hosted only |
+| **[rerankers](https://github.com/AnswerDotAI/rerankers)** (AnswerAI) | One tiny interface over cross-encoders, ColBERT, RankGPT, Cohere, FlashRank. Purpose-built for exactly this axis | Young. Another abstraction layer |
+
+**Recommendation:** falls out of dimension 2 — whichever server we adopt gives rerankers for
+free. `rerankers` is worth a look as a second arm since it covers ColBERT and RankGPT, which
+the servers do not.
+
+---
+
+## Dimension 6 — Ingestion
+
+**Today.** `pathlib` and `csv`. Local files only. No connectors, no incremental sync.
+
+| Candidate | For | Against |
+|---|---|---|
+| **[llama-index readers](https://llamahub.ai/)** | 150+ connectors — Notion, Confluence, S3, Drive, GitHub, Slack. By far the widest | Heavy. Pulls a lot for what is a loading step |
+| **[agno](https://docs.agno.com/)** | Clean readers plus a Docling reader that preserves structure. Explicitly built for RAG knowledge bases. Lighter than LlamaIndex | Agent framework first, ingestion second. Smaller connector set |
+| **[docling](https://github.com/docling-project/docling)** | Already a parser candidate — reuse it as the reader and get one component for two dimensions | Formats, not sources. No Notion/S3/Confluence |
+| **unstructured** | Connectors *and* parsing, enterprise-oriented | Heaviest of the four |
+
+**Recommendation:** llama-index readers, but **only the reader package** (`llama-index-readers-*`
+installs individually rather than pulling the whole framework). That gets the connector breadth
+without the weight. Worth checking that claim before committing to it.
+
+---
+
+## Dimension 7 — LLM calls
+
+**Today.** A one-method `LLM` protocol with hand-written OpenAI and Anthropic clients. Used by
+generation, question generation, and the query transforms.
+
+| Candidate | For | Against |
+|---|---|---|
+| **[litellm](https://docs.litellm.ai/)** | 100+ providers, one interface. Cost tracking built in, which the cost panel wants anyway. Retries, fallbacks, caching. Same dependency as dimension 2 | Large. Its own opinions about config |
+| **Provider SDKs directly** | What we have. No abstraction to fight | One adapter per provider, forever |
+| **[instructor](https://github.com/jxnl/instructor)** | Structured output with validation and retries — which is exactly what question generation needs | Narrow. Complements litellm rather than replacing it |
+
+**Recommendation:** litellm, and delete the hand-written clients. Its built-in cost tracking is
+a genuine bonus: the cost model currently carries a hand-maintained price table that will go
+stale, and litellm maintains one.
+
+---
+
+## Dimension 8 — Transforms
+
+**Today.** HyDE, multi-query, decomposition, step-back, acronym expansion. Hand-written prompts.
+
+Honest finding from the research: **there is no good library for this.** Query transforms live
+inside LangChain and LlamaIndex as pipeline components rather than as anything reusable.
+[FlashRAG](https://github.com/RUC-NLPIR/FlashRAG) is the closest — a research toolkit with 17
+RAG algorithms and 36 benchmark datasets — but it is built to reproduce papers rather than to be
+embedded in another tool.
+
+**Recommendation:** keep ours, and steal FlashRAG's *prompts* and algorithm list rather than its
+code. Revisit if something purpose-built appears. This is the one dimension where hand-written
+is still the right answer, and it is worth saying so rather than adopting a framework for the
+sake of consistency.
+
+---
+
+## Dimension 9 — Metrics
+
+**Today.** Hand-written, verified against `ranx` on random cases in CI.
+
+| Candidate | For | Against |
+|---|---|---|
+| **Keep ours** | Zero-dependency core. Already proven correct against the reference. The verification is itself a selling point | It is code to maintain |
+| **[ranx](https://github.com/AmenRa/ranx)** | Peer-reviewed. Fusion algorithms and statistical tests included. Already a dev dependency | Numba, and therefore LLVM, in the core install |
+| **[ir_measures](https://ir-measur.es/)** | Unified interface over pytrec_eval, gdeval, trectools. Standardised measure names. The most *correct* option | Another layer. pytrec_eval needs compiling |
+| **pytrec_eval** | Direct binding to trec_eval, the actual reference implementation | C extension. Awkward wheels |
+
+**Recommendation:** keep ours as the default and add `ir_measures` as an optional *cross-check*
+backend. "Our numbers match the reference implementation exactly" is a stronger claim than
+"we imported the reference implementation", and it costs nothing to keep. This is the other
+dimension where I would push back on adopting.
+
+---
+
+## Suggested order
+
+Config first, then the dimensions that unlock the most, then the rest.
+
+| Step | Dimension | Why here |
+|---|---|---|
+| 0 | **Config file** | Everything below lands as config values |
+| 1 | **Embedders** | The biggest gap. Nobody can sweep a real model today, which limits every other axis |
+| 2 | **Rerankers** | Falls out of step 1 for free |
+| 3 | **Chunkers** | Cleanest adoption, immediate breadth, low risk |
+| 4 | **Indexing** | faiss unlocks the ANN-versus-exact chart, which is currently impossible |
+| 5 | **LLM calls** | litellm; deletes code and fixes the stale price table |
+| 6 | **Parsers** | docling and marker. Heaviest installs, so last of the big ones |
+| 7 | **Ingestion** | Connectors. Valuable and not blocking anything |
+| 8 | **Transforms / Metrics** | Recommend keeping both. Revisit if that changes |
+
+Each step: research, options with pros and cons, **owner decides**, then implement behind an
+extra with conformance tests.
