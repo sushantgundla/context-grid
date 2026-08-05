@@ -68,6 +68,11 @@ index = [
 pgvector = [
     "psycopg[binary]>=3.1",
 ]
+# agno, for agentic retrieval and its readers. Optional: agentic retrieval falls back to this
+# package's own LLM protocol without it.
+agent = [
+    "agno>=2.8",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -86,6 +91,7 @@ dev = [
     "faiss-cpu>=1.8",
     "usearch>=2.12",
     "pymupdf4llm>=0.0.17",
+    "agno>=2.8",
 ]
 
 [project.scripts]
@@ -154,5 +160,6 @@ module = [
     "docling_core.*",
     "marker.*",
     "pymupdf4llm.*",
+    "agno.*",
 ]
 ignore_missing_imports = true

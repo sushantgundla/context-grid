@@ -84,6 +84,15 @@ class Runner:
         if self.cache is None:
             self.cache = MemoryCache()
 
+        # Sorting a leaderboard on a metric nobody computed is the quietest possible failure.
+        # `Runner(headline="recall@2")` reported 0.000 for every configuration, because 2 is
+        # not one of the default cut-offs and `recall@2` was therefore never calculated -- an
+        # empty column read as a real result. The config path had already learned this; the
+        # Python API had not, so the guarantee now lives in the one place that serves both.
+        _, _, cut = self.headline.partition("@")
+        if cut.isdigit() and int(cut) not in self.ks:
+            self.ks = tuple(sorted({*self.ks, int(cut)}))
+
     # -- one configuration ---------------------------------------------------
 
     def run_one(self, config: Config, evalset: EvalSet) -> RunResult:
@@ -166,12 +175,25 @@ class Runner:
         """Run a matrix in the chosen mode."""
         chosen = SweepMode(mode)
         budget = Budget(seconds=budget_seconds, usd=budget_usd)
+        _warn_if_unbounded(matrix, budget)
 
         if chosen is SweepMode.STAGED:
             return self._staged(matrix, evalset, budget, on_progress)
 
         configs, dropped = matrix.expand_with_dropped(chosen)
         results = self._flat(configs, evalset, chosen, budget, on_progress)
+
+        unbounded = matrix.meta.get("unbounded_model_calls")
+        if unbounded:
+            results.warnings.add(
+                WarningCode.BUDGET_REACHED,
+                f"the {unbounded!r} retrieval strategy calls a model once or more per question "
+                "and this sweep has no `budget_usd` or `budget_seconds`. It decides its own "
+                "number of calls, so nothing here could tell you the bill in advance",
+                severity=Severity.CAUTION,
+                stage="run",
+                subject=str(unbounded),
+            )
 
         if dropped:
             results.warnings.add(
@@ -291,6 +313,33 @@ class Runner:
         results.warnings.extend(self.cost_model.warnings)
         results.meta["final"] = current.as_dict()
         return results
+
+
+def _warn_if_unbounded(matrix: Matrix, budget: Budget) -> None:
+    """Say so when a sweep can call a model an unknown number of times with no ceiling.
+
+    An agentic strategy decides how many searches -- and therefore how many model calls -- each
+    question needs. Multiply that by an eval set and a matrix and there is no number anybody can
+    work out in advance. Every other axis has a cost you can estimate before starting; this one
+    does not, which is exactly why it deserves a limit and a warning when it has none.
+
+    A warning rather than a refusal: it is the user's money and they may well mean it.
+    """
+    if budget.usd is not None or budget.seconds is not None:
+        return
+
+    from contextgrid.retrieve import get_retriever
+
+    for value in matrix.retrieval:
+        if value is None:
+            continue
+        try:
+            strategy = get_retriever(value)
+        except Exception:  # pragma: no cover - a bad spec fails later, with a better message
+            continue
+        if getattr(strategy, "uses_model", False):
+            matrix.meta["unbounded_model_calls"] = strategy.name
+            return
 
 
 def _check_strategy_did_something(

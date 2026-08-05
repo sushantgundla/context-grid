@@ -7,6 +7,7 @@ apart is what turns "should I use agentic retrieval?" from a rewrite into a cell
 from __future__ import annotations
 
 from contextgrid.core.registry import Registry
+from contextgrid.retrieve.agentic import AgenticRetrieval
 from contextgrid.retrieve.base import (
     RetrievalStrategy,
     RetrievalTrace,
@@ -28,6 +29,14 @@ RETRIEVERS.register(
 RETRIEVERS.register(
     "widened", shorthand="factor", doc="Search deeper than asked, then cut back. No model calls."
 )(WidenedRetrieval)
+# The only strategy here that calls a model. It is registered eagerly rather than behind an
+# extra because it falls back to this package's own LLM protocol when agno is absent -- a
+# strategy nobody can run is a strategy nobody measures, and measuring it is the whole point.
+RETRIEVERS.register(
+    "agentic",
+    shorthand="model",
+    doc="A model plans the searches, optionally over several rounds. Costs a call per query.",
+)(AgenticRetrieval)
 RETRIEVERS.register(
     "decomposed",
     shorthand="max_parts",
@@ -44,6 +53,7 @@ def get_retriever(spec: str | RetrievalStrategy | None) -> RetrievalStrategy:
 
 __all__ = [
     "RETRIEVERS",
+    "AgenticRetrieval",
     "DecomposedRetrieval",
     "RetrievalError",
     "RetrievalStrategy",
