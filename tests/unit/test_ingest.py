@@ -22,6 +22,24 @@ from tests.pdf_fixtures import contract_pdf
 agno = pytest.importorskip("agno")
 
 
+def agno_reads_pdfs() -> bool:
+    """agno's PDF reader raises on import without pypdf, so the strategy falls back to bytes.
+
+    Graceful, and it means "extraction happened" is only assertable where pypdf is present.
+    """
+    try:
+        from agno.knowledge.reader.reader_factory import ReaderFactory
+
+        return ReaderFactory.get_reader_for_extension(".pdf") is not None
+    except Exception:
+        return False
+
+
+needs_pdf_reader = pytest.mark.skipif(
+    not agno_reads_pdfs(), reason="agno has no PDF reader here; needs pypdf"
+)
+
+
 def pdf_source(name: str = "contract.pdf") -> SourceFile:
     return SourceFile(id=name, raw=contract_pdf(), media_type=MediaType.PDF)
 
@@ -60,6 +78,7 @@ def test_direct_is_what_no_ingestion_means() -> None:
 # ---------------------------------------------------------------------------
 
 
+@needs_pdf_reader
 def test_agno_extracts_text_from_a_pdf() -> None:
     ingested = AgnoIngestion().ingest([pdf_source()], WarningLog())
 
@@ -82,6 +101,7 @@ def test_the_document_id_survives_ingestion() -> None:
         assert strategy.ingest([source], WarningLog())[0].id == "refunds.pdf"
 
 
+@needs_pdf_reader
 def test_agno_does_not_chunk() -> None:
     """agno readers chunk by default. Letting them would silently take that decision away from
     the axis that exists to measure it."""
@@ -197,6 +217,7 @@ def test_a_sweep_runs_both_strategies_end_to_end() -> None:
         ),
     )
 
+    # Without pypdf, agno leaves the PDF as bytes -- still two runs, still both strategies.
     results = Runner(corpus=corpus, headline="recall@3").run(
         matrix(
             ingestion=["direct", "agno"],

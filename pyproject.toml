@@ -72,6 +72,9 @@ pgvector = [
 # package's own LLM protocol without it.
 agent = [
     "agno>=2.8",
+    # agno's PDF reader raises on import without it, and a PDF corpus is the case this axis
+    # was built to measure.
+    "pypdf>=4.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -92,6 +95,7 @@ dev = [
     "usearch>=2.12",
     "pymupdf4llm>=0.0.17",
     "agno>=2.8",
+    "pypdf>=4.0",
 ]
 
 [project.scripts]
