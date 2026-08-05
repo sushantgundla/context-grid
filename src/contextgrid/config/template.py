@@ -39,6 +39,10 @@ grid:
   # every query forever, so the interesting question is whether it earns that.
 {transforms}
 
+  # How the index is used, as opposed to what it is. `simple` is one search; the
+  # others widen the net or split the question. Agentic retrieval goes here.
+{retrievers}
+
   # Reordering what came back. `candidates` is how deep the reranker gets to look,
   # and it is where most of the effect lives.
 {rerankers}
@@ -50,8 +54,10 @@ run:
   headline: recall@5      # what the leaderboard sorts on
   cache: memory           # memory | disk | none
 
-  # Stop rather than run forever. Leave out for no limit.
+  # Stop rather than run forever. Leave both out for no limit. A sweep containing a
+  # strategy that decides its own number of model calls has no ceiling without them.
   # budget_seconds: 900
+  # budget_usd: 5.00
 
   # Prices local compute by the hour, so a CPU model and a hosted API land on the
   # same chart. A local model is free per token and not free to run.
@@ -76,6 +82,7 @@ def render(
     from contextgrid.index import INDEXES
     from contextgrid.parse import PARSERS
     from contextgrid.rerank import RERANKERS
+    from contextgrid.retrieve import RETRIEVERS
     from contextgrid.transform import TRANSFORMS
 
     return TEMPLATE.format(
@@ -88,6 +95,7 @@ def render(
         embedders=_axis("embedder", ["tfidf", "null"], EMBEDDERS),
         indexes=_axis("index", ["dense", "bm25", "hybrid"], INDEXES),
         transforms=_axis("transform", ["null"], TRANSFORMS),
+        retrievers=_axis("retrieval", ["simple"], RETRIEVERS),
         rerankers=_axis("reranker", ["null", "lexical"], RERANKERS),
     )
 

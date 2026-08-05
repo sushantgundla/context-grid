@@ -68,6 +68,7 @@ class GridConfig:
     embedder: tuple[str | None, ...] = ("tfidf",)
     index: tuple[str, ...] = ("dense",)
     transform: tuple[str | None, ...] = (None,)
+    retrieval: tuple[str | None, ...] = (None,)
     reranker: tuple[str | None, ...] = (None,)
     candidates: tuple[int, ...] = (50,)
 
@@ -83,6 +84,7 @@ class GridConfig:
             embedder=_as_optional_strings(data.get("embedder", ("tfidf",)), "grid.embedder"),
             index=_as_strings(data.get("index", ("dense",)), "grid.index"),
             transform=_as_optional_strings(data.get("transform", (None,)), "grid.transform"),
+            retrieval=_as_optional_strings(data.get("retrieval", (None,)), "grid.retrieval"),
             reranker=_as_optional_strings(data.get("reranker", (None,)), "grid.reranker"),
             candidates=_as_ints(data.get("candidates", (50,)), "grid.candidates"),
         )
@@ -94,6 +96,7 @@ class GridConfig:
             embedder=self.embedder,
             index=self.index,
             transform=self.transform,
+            retrieval=self.retrieval,
             reranker=self.reranker,
             candidates=self.candidates,
             k=k,

@@ -29,9 +29,15 @@ from contextgrid.core.protocols import Chunker, Parser
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
 from contextgrid.embed import Embedder, get_embedder
-from contextgrid.index.base import Index
+from contextgrid.index.base import Index, Scored
 from contextgrid.parse import get_parser
 from contextgrid.rerank import Reranker, get_reranker
+from contextgrid.retrieve import (
+    RetrievalStrategy,
+    RetrievalTrace,
+    SimpleRetrieval,
+    get_retriever,
+)
 from contextgrid.score.anchor import AnchorResolver
 from contextgrid.score.resolve import SpanResolver
 from contextgrid.transform import NoTransform, QueryTransform, get_transform
@@ -50,6 +56,8 @@ class Config:
     embedder: str | None = "tfidf"
     index: str = "dense"
     transform: str | None = None
+    #: How the index is used, as opposed to what it is. `None` means plain search.
+    retrieval: str | None = None
     reranker: str | None = None
     k: int = 10
     #: How many results the retriever hands the reranker. The parameter most reranking
@@ -65,6 +73,8 @@ class Config:
             parts.append(self.embedder)
         if self.transform:
             parts.append(f"+{self.transform}")
+        if self.retrieval and self.retrieval != "simple":
+            parts.append(f"~{self.retrieval}")
         parts.append(self.index)
         if self.reranker:
             parts.append(f"{self.reranker}@{self.candidates}")
@@ -77,6 +87,7 @@ class Config:
             "embedder": self.embedder,
             "index": self.index,
             "transform": self.transform,
+            "retrieval": self.retrieval,
             "reranker": self.reranker,
             "k": self.k,
             "candidates": self.candidates,
@@ -140,6 +151,10 @@ class BuiltPipeline:
     embed_tokens: int = 0
     reranker: Reranker | None = None
     transform: QueryTransform = field(default_factory=NoTransform)
+    retrieval: RetrievalStrategy = field(default_factory=SimpleRetrieval)
+    #: What the strategies did, accumulated across every query. Two configurations with the
+    #: same recall and different model-call counts are a decision, not a tie.
+    trace: RetrievalTrace = field(default_factory=RetrievalTrace)
 
     def search(self, query: str, k: int | None = None) -> list[str]:
         """Chunk ids for one query, best first.
@@ -147,24 +162,19 @@ class BuiltPipeline:
         With a reranker, the retriever is asked for `candidates` results and the reranker
         cuts them down to `k`. Without one, the retriever is asked for `k` directly -- so the
         no-reranker arm never pays for candidates it would have thrown away.
+
+        *How* those results are gathered is the retrieval strategy's business: one search, a
+        wider one, several fused, or a model deciding as it goes. The strategy never sees the
+        index, so every strategy works with every store.
         """
         limit = k or self.config.k
         rewritten = self.transform.transform(query)
         depth = max(self.config.candidates, limit) if self.reranker else limit
 
-        # A transform that produced several queries means several searches, fused by rank.
-        # Scores are never compared across them: a cosine from one query and a cosine from
-        # another are not on the same scale, however similar they look.
-        results = [
-            self.index.search(text, self._vector_for(text), depth) for text in rewritten.queries
-        ]
-        if len(results) == 1:
-            ranked = results[0]
-        else:
-            from contextgrid.index.base import top_k
-            from contextgrid.index.hybrid import reciprocal_rank_fusion
+        def searcher(text: str, wanted: int) -> Sequence[Scored]:
+            return self.index.search(text, self._vector_for(text), wanted)
 
-            ranked = top_k(reciprocal_rank_fusion(results), depth)
+        ranked = self.retrieval.retrieve(query, rewritten.queries, searcher, depth, self.trace)
 
         if self.reranker is None:
             return [scored.chunk_id for scored in ranked[:limit]]
@@ -236,6 +246,7 @@ def build(
         embed_tokens=embed_tokens,
         reranker=get_reranker(config.reranker) if config.reranker else None,
         transform=get_transform(config.transform),
+        retrieval=get_retriever(config.retrieval),
     )
 
 

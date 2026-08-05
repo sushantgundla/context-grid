@@ -109,6 +109,7 @@ class Runner:
         metrics.update(_character_metrics(resolved, run, pipeline.chunk_by_id(), headline_k))
         by_type = _slice_by_type(resolved, scores, self.headline)
         failures = diagnose(resolved, qrels, run, k=headline_k)
+        _check_strategy_did_something(config, pipeline, len(resolved.items), span_log)
 
         warnings = WarningLog()
         warnings.extend(pipeline.warnings)
@@ -290,6 +291,41 @@ class Runner:
         results.warnings.extend(self.cost_model.warnings)
         results.meta["final"] = current.as_dict()
         return results
+
+
+def _check_strategy_did_something(
+    config: Config, pipeline: Any, questions: int, log: WarningLog
+) -> None:
+    """Say when a retrieval strategy never actually differed from plain search.
+
+    A strategy that decomposes multi-part questions does nothing at all on an eval set where
+    every question has one part. Its row then matches `simple` exactly -- and read off a
+    leaderboard that looks like a measured tie, as though the strategy had been tried and found
+    not to help. It had not been tried.
+
+    The distinction matters more than it sounds: the honest conclusion is "this eval set cannot
+    tell you", and the fix is a better eval set, not a different strategy.
+    """
+    strategy = getattr(pipeline, "retrieval", None)
+    trace = getattr(pipeline, "trace", None)
+    if strategy is None or trace is None or not questions:
+        return
+    if getattr(strategy, "name", "simple") == "simple":
+        return
+
+    # One search per question is exactly what plain search does.
+    if trace.searches <= questions and trace.model_calls == 0:
+        log.add(
+            WarningCode.NON_DETERMINISTIC_STAGE,
+            f"the {strategy.name!r} retrieval strategy behaved identically to plain search on "
+            f"all {questions} questions, so its score is the same as `simple` by construction "
+            "rather than by measurement. This eval set cannot tell you whether it helps",
+            severity=Severity.CAUTION,
+            stage="retrieve",
+            subject=strategy.name,
+            questions=questions,
+            searches=trace.searches,
+        )
 
 
 def _character_metrics(

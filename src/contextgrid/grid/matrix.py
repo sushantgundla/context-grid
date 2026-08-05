@@ -39,6 +39,7 @@ AXIS_ORDER: tuple[str, ...] = (
     "embedder",
     "index",
     "transform",
+    "retrieval",
     "reranker",
     "candidates",
 )
@@ -67,6 +68,7 @@ class Matrix:
     embedder: tuple[str | None, ...] = ("tfidf",)
     index: tuple[str, ...] = ("dense",)
     transform: tuple[str | None, ...] = (None,)
+    retrieval: tuple[str | None, ...] = (None,)
     reranker: tuple[str | None, ...] = (None,)
     candidates: tuple[int, ...] = (50,)
     k: int = 10
@@ -102,6 +104,7 @@ class Matrix:
             embedder=self.embedder[0],
             index=self.index[0],
             transform=self.transform[0],
+            retrieval=self.retrieval[0],
             reranker=self.reranker[0],
             candidates=self.candidates[0],
             k=self.k,
@@ -147,16 +150,18 @@ class Matrix:
                 embedder=e,
                 index=i,
                 transform=t,
+                retrieval=v,
                 reranker=r,
                 candidates=d,
                 k=self.k,
             )
-            for p, c, e, i, t, r, d in product(
+            for p, c, e, i, t, v, r, d in product(
                 self.parser,
                 self.chunker,
                 self.embedder,
                 self.index,
                 self.transform,
+                self.retrieval,
                 self.reranker,
                 self.candidates,
             )
@@ -277,6 +282,7 @@ def matrix(
     embedder: str | Sequence[str | None] | None = "tfidf",
     index: str | Sequence[str] = "dense",
     transform: str | Sequence[str | None] | None = None,
+    retrieval: str | Sequence[str | None] | None = None,
     reranker: str | Sequence[str | None] | None = None,
     candidates: int | Sequence[int] = 50,
     k: int = 10,
@@ -298,6 +304,7 @@ def matrix(
         "embedder": embedder,
         "index": index,
         "transform": transform,
+        "retrieval": retrieval,
         "reranker": reranker,
     }
     for axis, value in axes.items():
@@ -309,6 +316,7 @@ def matrix(
         embedder=_as_tuple(embedder),
         index=_as_tuple(index),
         transform=_as_tuple(transform),
+        retrieval=_as_tuple(retrieval),
         reranker=_as_tuple(reranker),
         candidates=_as_tuple(candidates),
         k=k,
