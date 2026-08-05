@@ -14,6 +14,13 @@ from contextgrid.generate.answer import (
     lift,
     score_answer,
 )
+from contextgrid.generate.judge import METRICS as GENERATION_METRICS
+from contextgrid.generate.judge import (
+    GenerationJudge,
+    JudgedAnswer,
+    JudgeError,
+    available_generation_metrics,
+)
 
 GENERATORS: Registry[Generator] = Registry(family="generator")
 
@@ -23,15 +30,22 @@ GENERATORS.register(
     doc="Return the top passage verbatim. The ceiling retrieval alone can reach.",
 )(ExtractiveGenerator)
 
+# `JudgedAnswer` is deliberately not `AnswerScore`: that one records whether an extractive
+# answer matched its reference, this one records what a judge model thought of a generated one.
 __all__ = [
     "DEFAULT_PROMPT",
+    "GENERATION_METRICS",
     "GENERATORS",
     "Answer",
     "AnswerScore",
     "ExtractiveGenerator",
+    "GenerationJudge",
     "GenerationReport",
     "Generator",
+    "JudgeError",
+    "JudgedAnswer",
     "LLMGenerator",
+    "available_generation_metrics",
     "lift",
     "score_answer",
 ]

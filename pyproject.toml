@@ -70,6 +70,11 @@ pgvector = [
 ]
 # agno, for agentic retrieval and its readers. Optional: agentic retrieval falls back to this
 # package's own LLM protocol without it.
+# Generation metrics -- faithfulness, answer relevance and the rest -- through DeepEval, driven
+# by whichever model the config already chose.
+judge = [
+    "deepeval>=4.0",
+]
 agent = [
     "agno>=2.8",
     # agno's PDF reader raises on import without it, and a PDF corpus is the case this axis
@@ -96,6 +101,7 @@ dev = [
     "pymupdf4llm>=0.0.17",
     "agno>=2.8",
     "pypdf>=4.0",
+    "deepeval>=4.0",
 ]
 
 [project.scripts]
@@ -165,5 +171,6 @@ module = [
     "marker.*",
     "pymupdf4llm.*",
     "agno.*",
+    "deepeval.*",
 ]
 ignore_missing_imports = true

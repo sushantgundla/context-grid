@@ -437,7 +437,43 @@ sake of consistency.
 
 ---
 
-## Dimension 9 — Metrics
+## Dimension 9 — Metrics ✅ done (partly adopted)
+
+**Researched first.** The finding that shaped this: **every existing library covers only two of
+our seven dimensions.** RAGAS and DeepEval measure retrieval and generation. Nothing measures
+parsing, chunking, embedding or ingestion — those metrics live in research papers, not packages.
+
+| Dimension | What the field measures | Us |
+|---|---|---|
+| Parse | text coverage, table structure (TEDS/GriTS), evidence resolvability | ✅ resolvability |
+| Chunk | token precision/recall, IoU, Precision_Ω | ✅ character precision/recall |
+| Retrieval | recall, ndcg, mrr, map, context precision/recall | ✅ verified against ranx |
+| Generation | faithfulness, answer relevance, groundedness | ✅ **DeepEval** |
+
+**Chroma's chunking research independently validates the design here** — it evaluates chunkers
+with token-level precision and recall against gold excerpts, which is what this package already
+does at character level. It uses IoU; we use coverage, for the documented reason that IoU
+penalises large chunks for being large and so biases the axis under test.
+
+**DeepEval adopted for generation only.** Four metrics that fail differently: `faithfulness`
+(unsupported claims), `answer_relevancy` (true but beside the point), `contextual_relevancy`
+(a retrieval failure wearing a generation failure's clothes) and `contextual_recall` (needs a
+reference). Driven by whichever model the config already chose, so there is one key, one price
+table and one budget rather than DeepEval quietly opening its own.
+
+**The 0–100 composite is a harmonic mean, and only over what ran.** Harmonic because a system
+retrieving at 0.95 and generating faithfully at 0.10 is not middling — it confidently invents
+answers — and an arithmetic mean says 53 where the harmonic says 18. Only-what-ran because
+someone sweeping ingestion and retrieval has no generator, and scoring a missing dimension as
+zero punishes them for a question they never asked. The score never prints without naming the
+dimensions it covers.
+
+**Kept hand-written:** the retrieval metrics. No library offers character-span scoring, and
+`ranx` is more useful as a cross-check than as a dependency.
+
+---
+
+## Dimension 9 — Metrics (original entry)
 
 **Today.** Hand-written, verified against `ranx` on random cases in CI.
 

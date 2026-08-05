@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from contextgrid.report.composite import (
+    DIMENSION_METRICS,
+    CompositeScore,
+    composite,
+    harmonic_mean,
+)
 from contextgrid.report.export import (
     config_to_python,
     config_to_yaml,
@@ -20,16 +26,20 @@ from contextgrid.report.manifest import (
 from contextgrid.report.results import Results, RunResult
 
 __all__ = [
+    "DIMENSION_METRICS",
+    "CompositeScore",
     "Manifest",
     "Results",
     "RunResult",
     "build_manifest",
+    "composite",
     "config_to_python",
     "config_to_yaml",
     "diff",
     "evalset_hash",
     "explain_diff",
     "format_leaderboard",
+    "harmonic_mean",
     "results_to_json",
     "results_to_markdown",
     "write_bundle",
