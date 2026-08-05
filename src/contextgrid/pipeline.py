@@ -23,13 +23,14 @@ from typing import Any
 
 from contextgrid.cache.store import Cache, CacheStats, cache_key, cached
 from contextgrid.chunk import get_chunker
-from contextgrid.core.documents import Chunk, ParsedDocument
+from contextgrid.core.documents import Chunk, ParsedDocument, SourceFile
 from contextgrid.core.evalset import EvalSet, Qrels
 from contextgrid.core.protocols import Chunker, Parser
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
 from contextgrid.embed import Embedder, get_embedder
 from contextgrid.index.base import Index, Scored
+from contextgrid.ingest import get_ingester
 from contextgrid.parse import get_parser
 from contextgrid.rerank import Reranker, get_reranker
 from contextgrid.retrieve import (
@@ -64,11 +65,20 @@ class Config:
     #: advice omits, and where most of the effect lives: over the top 10 a reranker can only
     #: reorder what was already found, over the top 100 it can rescue what ranked 47th.
     candidates: int = 50
+    #: How a file becomes something the parser can read. `None` hands the bytes on unchanged.
+    #:
+    #: Last, not first, even though it runs first: `Config("markdown", "recursive:512", ...)`
+    #: is public API and putting a new field ahead of `parser` would silently shift every
+    #: positional argument anybody has already written.
+    ingestion: str | None = None
 
     @property
     def label(self) -> str:
         """A short identifier that reads well in a leaderboard row."""
-        parts = [self.parser, self.chunker]
+        parts = []
+        if self.ingestion and self.ingestion != "direct":
+            parts.append(f"{self.ingestion}>")
+        parts += [self.parser, self.chunker]
         if self.embedder:
             parts.append(self.embedder)
         if self.transform:
@@ -82,6 +92,7 @@ class Config:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "ingestion": self.ingestion,
             "parser": self.parser,
             "chunker": self.chunker,
             "embedder": self.embedder,
@@ -214,7 +225,9 @@ def build(
     parser = get_parser(config.parser)
     chunker = get_chunker(config.chunker)
 
-    parses = _parse_all(parser, corpus, cache, stats, timings, warnings)
+    # Ingestion runs first, because it decides what the parser is even looking at.
+    ingested = get_ingester(config.ingestion).ingest(list(corpus), warnings)
+    parses = _parse_all(parser, ingested, cache, stats, timings, warnings)
     chunks = _chunk_all(chunker, parses, cache, stats, timings)
 
     if not chunks:
@@ -257,7 +270,7 @@ def build(
 
 def _parse_all(
     parser: Parser,
-    corpus: Corpus,
+    corpus: Sequence[SourceFile],
     cache: Cache | None,
     stats: CacheStats | None,
     timings: Timings,

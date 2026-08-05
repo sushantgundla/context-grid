@@ -21,6 +21,10 @@ corpus: {corpus}
 evalset: {evalset}
 
 grid:
+  # How a file becomes something a parser can read. `direct` hands the bytes on;
+  # `agno` lets a reader extract the text, which skips the parser axis below.
+{ingesters}
+
   # What reads the documents. This is the axis nothing else in the field measures,
   # and on anything with tables it is usually the one that matters most.
 {parsers}
@@ -80,6 +84,7 @@ def render(
     from contextgrid.chunk import CHUNKERS
     from contextgrid.embed import EMBEDDERS
     from contextgrid.index import INDEXES
+    from contextgrid.ingest import INGESTERS
     from contextgrid.parse import PARSERS
     from contextgrid.rerank import RERANKERS
     from contextgrid.retrieve import RETRIEVERS
@@ -90,6 +95,7 @@ def render(
         name=name,
         corpus=corpus,
         evalset=evalset,
+        ingesters=_axis("ingestion", ["direct"], INGESTERS),
         parsers=_axis("parser", ["markdown"], PARSERS),
         chunkers=_axis("chunker", ["recursive:512", "sentence:3"], CHUNKERS),
         embedders=_axis("embedder", ["tfidf", "null"], EMBEDDERS),

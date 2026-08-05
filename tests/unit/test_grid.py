@@ -53,7 +53,8 @@ def test_a_single_value_does_not_need_wrapping_in_a_list() -> None:
 
 def test_the_shape_is_the_multiplication_written_out() -> None:
     shape = matrix(chunker=["a", "b"], index=["dense", "bm25", "hybrid"]).shape()
-    assert shape.startswith("1 \u00d7 2 \u00d7 1 \u00d7 3")
+    # ingestion, parser, chunker, embedder, index, ...
+    assert shape.startswith("1 \u00d7 1 \u00d7 2 \u00d7 1 \u00d7 3")
     assert shape.endswith("= 6")
 
 

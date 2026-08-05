@@ -332,9 +332,40 @@ the servers do not.
 
 ---
 
-## Dimension 6 — Ingestion
+## Dimension 6 — Ingestion ✅ done (agno)
 
-**Today.** `pathlib` and `csv`. Local files only. No connectors, no incremental sync.
+**Shipped.** **agno**, not llama-index — and as a sweepable axis rather than a set of
+connectors:
+
+    grid:
+      ingestion: [direct, agno]
+      retrieval: [simple, decomposed, agentic]
+
+**The llama-index recommendation below was wrong, and measuring it is what showed that.** The
+claim was that readers install individually and avoid the framework weight. They do not: one
+reader (`llama-index-readers-notion`) pulls `llama-index-core`, `llama-index-workflows` and
+nltk — 63 packages, 190 MB. agno is 29 packages, 78 MB, and Sushant has used it before.
+
+Two strategies, and the comparison between them is the point:
+
+* `direct` — hand the bytes to the parser axis. The default and the honest baseline.
+* `agno` — let an agno reader extract the text and treat that as the document.
+
+`agno` **skips the parser axis**, which is exactly what most RAG stacks do without noticing: a
+loader returns strings and everything downstream works on those. The reader has already decided
+table handling, reading order and whether a heading survives as one. On the demo PDF corpus that
+costs recall@5 0.869 against pdfplumber's 0.877 — small, real, and previously unmeasurable.
+
+Because `agno` produces Markdown, pairing it with a PDF engine is meaningless; the matrix
+collapses those combinations rather than crediting the parser axis with a difference it did not
+cause. Document ids survive ingestion, so gold written against `refunds.pdf` resolves whichever
+strategy produced the text — without that the axis could not be measured at all.
+
+**Also shipped: the retrieval axis** (dimension 5.5, not in this list originally). `simple`,
+`widened`, `decomposed` and `agentic`, where `index` stays the store and `retrieval` is how it
+is used. See the commits for what that uncovered.
+
+**Originally.** `pathlib` and `csv`. Local files only. No connectors, no incremental sync.
 
 | Candidate | For | Against |
 |---|---|---|

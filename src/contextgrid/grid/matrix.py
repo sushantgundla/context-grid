@@ -34,6 +34,7 @@ from contextgrid.pipeline import Config
 #: choosing it first is the only ordering where the later choices are being made about the
 #: real corpus. Reranking comes last because it operates on whatever the rest produced.
 AXIS_ORDER: tuple[str, ...] = (
+    "ingestion",
     "parser",
     "chunker",
     "embedder",
@@ -63,6 +64,7 @@ class MatrixError(ContextGridError, ValueError):
 class Matrix:
     """The axes of an experiment, and the baseline that OFAT and staged vary from."""
 
+    ingestion: tuple[str | None, ...] = (None,)
     parser: tuple[str, ...] = ("markdown",)
     chunker: tuple[str, ...] = ("recursive:512",)
     embedder: tuple[str | None, ...] = ("tfidf",)
@@ -99,6 +101,7 @@ class Matrix:
     def baseline(self) -> Config:
         """The first value on every axis. What OFAT and staged start from."""
         return Config(
+            ingestion=self.ingestion[0],
             parser=self.parser[0],
             chunker=self.chunker[0],
             embedder=self.embedder[0],
@@ -145,6 +148,7 @@ class Matrix:
     def _factorial(self) -> list[Config]:
         return [
             Config(
+                ingestion=g,
                 parser=p,
                 chunker=c,
                 embedder=e,
@@ -155,7 +159,8 @@ class Matrix:
                 candidates=d,
                 k=self.k,
             )
-            for p, c, e, i, t, v, r, d in product(
+            for g, p, c, e, i, t, v, r, d in product(
+                self.ingestion,
                 self.parser,
                 self.chunker,
                 self.embedder,
@@ -204,6 +209,15 @@ def canonicalise(config: Config) -> Config:
     sweep -- and worse, they poison the embedder axis effect, which would average three
     identical BM25 scores into the embedder's record as though it had earned them.
     """
+    if config.ingestion == "direct":
+        config = config.with_(ingestion=None)
+
+    # An ingestion strategy that extracts the text itself has already made every decision the
+    # parser axis measures. Sweeping a PDF engine underneath it would run the same text through
+    # arms that never see a PDF -- identical results credited to the parser axis as difference.
+    if config.ingestion is not None and _replaces_parser(config.ingestion):
+        config = config.with_(parser="markdown")
+
     # "none" is the identity reranker, so it is the same configuration as no reranker at all.
     if config.transform == "none":
         config = config.with_(transform=None)
@@ -229,6 +243,16 @@ def canonicalise(config: Config) -> Config:
         # dropping the configuration here would hide the real error behind a missing row.
         return config
     return config
+
+
+def _replaces_parser(ingestion: str) -> bool:
+    """Whether this ingestion strategy hands on text rather than bytes."""
+    try:
+        from contextgrid.ingest import get_ingester
+
+        return bool(getattr(get_ingester(ingestion), "replaces_parser", False))
+    except Exception:  # pragma: no cover - a bad spec fails later with a better message
+        return False
 
 
 def is_runnable(config: Config) -> bool:
@@ -277,6 +301,7 @@ def deduplicate(configs: Sequence[Config]) -> tuple[list[Config], int]:
 
 
 def matrix(
+    ingestion: str | Sequence[str | None] | None = None,
     parser: str | Sequence[str] = "markdown",
     chunker: str | Sequence[str] = "recursive:512",
     embedder: str | Sequence[str | None] | None = "tfidf",
@@ -299,6 +324,7 @@ def matrix(
     can reproduce.
     """
     axes = {
+        "ingestion": ingestion,
         "parser": parser,
         "chunker": chunker,
         "embedder": embedder,
@@ -311,6 +337,7 @@ def matrix(
         _require_specs(axis, value)
 
     return Matrix(
+        ingestion=_as_tuple(ingestion),
         parser=_as_tuple(parser),
         chunker=_as_tuple(chunker),
         embedder=_as_tuple(embedder),

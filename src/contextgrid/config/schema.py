@@ -63,6 +63,7 @@ class GridConfig:
     config possible: naming one axis sweeps that axis and holds everything else still.
     """
 
+    ingestion: tuple[str | None, ...] = (None,)
     parser: tuple[str, ...] = ("markdown",)
     chunker: tuple[str, ...] = ("recursive:512",)
     embedder: tuple[str | None, ...] = ("tfidf",)
@@ -79,6 +80,7 @@ class GridConfig:
                 raise _unknown_key("grid", key, AXIS_ORDER)
 
         return cls(
+            ingestion=_as_optional_strings(data.get("ingestion", (None,)), "grid.ingestion"),
             parser=_as_strings(data.get("parser", ("markdown",)), "grid.parser"),
             chunker=_as_strings(data.get("chunker", ("recursive:512",)), "grid.chunker"),
             embedder=_as_optional_strings(data.get("embedder", ("tfidf",)), "grid.embedder"),
@@ -91,6 +93,7 @@ class GridConfig:
 
     def to_matrix(self, k: int) -> Matrix:
         return Matrix(
+            ingestion=self.ingestion,
             parser=self.parser,
             chunker=self.chunker,
             embedder=self.embedder,
