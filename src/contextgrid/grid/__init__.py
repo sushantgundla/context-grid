@@ -11,10 +11,11 @@ from contextgrid.grid.matrix import (
     deduplicate,
     matrix,
 )
-from contextgrid.grid.runner import Runner, estimate_cost
+from contextgrid.grid.runner import Budget, Runner, estimate_cost
 
 __all__ = [
     "AXIS_ORDER",
+    "Budget",
     "Matrix",
     "MatrixError",
     "Runner",

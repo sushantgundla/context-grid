@@ -140,6 +140,7 @@ def run(
         evalset,
         mode=config.run.mode,
         budget_seconds=config.run.budget_seconds,
+        budget_usd=config.run.budget_usd,
         on_progress=on_progress,
     )
 

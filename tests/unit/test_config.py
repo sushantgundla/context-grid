@@ -590,3 +590,40 @@ def test_check_prints_every_axis_so_the_matrix_is_visible(
     out = capsys.readouterr().out
     for axis in ("parser", "chunker", "embedder", "index", "transform", "reranker", "candidates"):
         assert axis in out
+
+
+def test_a_dollar_budget_in_the_config_stops_a_real_sweep(workspace: Path) -> None:
+    """End to end: `budget_usd:` in the YAML has to reach the runner. It did not before --
+    the value was parsed, stored and written into the report bundle, and never checked."""
+    path = workspace / "experiment.yaml"
+    path.write_text(
+        "corpus: ./docs\n"
+        "evalset: ./questions.jsonl\n"
+        "grid:\n"
+        "  chunker: [recursive:128, recursive:256, sentence:2]\n"
+        "  index: bm25\n"
+        "  embedder: null\n"
+        "run:\n"
+        "  mode: factorial\n"
+        "  k: 3\n"
+        "  headline: recall@3\n"
+        "  budget_usd: 0.0\n",
+        encoding="utf-8",
+    )
+
+    results = run(load(path))
+
+    # A zero budget is already spent, so nothing runs and the report says why rather than
+    # presenting an empty leaderboard as if the matrix had been covered.
+    assert results.runs == []
+    assert any("budget ran out" in warning.message for warning in results.warnings)
+
+
+def test_no_budget_runs_the_whole_matrix(workspace: Path) -> None:
+    config = loads(
+        f"corpus: {workspace / 'docs'}\n"
+        f"evalset: {workspace / 'questions.jsonl'}\n"
+        "grid:\n  chunker: [recursive:128, recursive:256]\n  index: bm25\n  embedder: null\n"
+        "run:\n  mode: factorial\n  k: 3\n  headline: recall@3\n"
+    )
+    assert len(run(config).runs) == 2

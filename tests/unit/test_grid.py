@@ -424,3 +424,61 @@ def test_configs_are_hashable_so_they_can_be_deduplicated() -> None:
 
 def test_sweep_modes_are_named() -> None:
     assert {m.value for m in SweepMode} == {"factorial", "ofat", "staged"}
+
+
+# ---------------------------------------------------------------------------
+# spending limits
+# ---------------------------------------------------------------------------
+
+
+def test_a_dollar_budget_stops_the_sweep() -> None:
+    """`budget_usd` was accepted in the config, stored and written into the report -- and never
+    checked. A config asking to spend at most five dollars would spend whatever the matrix
+    cost. A knob that does nothing is worse than no knob, because somebody relies on it."""
+    from contextgrid.grid.runner import Budget
+
+    budget = Budget(usd=1.00)
+    budget.start()
+    assert budget.exceeded() is None
+
+    budget.spent_usd = 1.01
+    assert "budget ran out" in (budget.exceeded() or "")
+    assert "$1.01" in (budget.exceeded() or "")
+
+
+def test_no_budget_never_stops() -> None:
+    from contextgrid.grid.runner import Budget
+
+    budget = Budget()
+    budget.start()
+    budget.spent_usd = 10_000.0
+    assert budget.exceeded() is None
+
+
+def test_a_seconds_budget_still_works() -> None:
+    from contextgrid.grid.runner import Budget
+
+    budget = Budget(seconds=-1.0)  # already in the past
+    budget.start()
+    assert "s budget ran out" in (budget.exceeded() or "")
+
+
+def test_spending_is_charged_per_configuration() -> None:
+    """Cost is charged after each configuration rather than predicted before it -- an agentic
+    strategy decides its own number of model calls, so nothing can know the bill in advance.
+    The ceiling is therefore honoured to within one configuration."""
+    from contextgrid.cost.model import CostBreakdown
+    from contextgrid.grid.runner import Budget
+    from contextgrid.report.results import RunResult
+
+    budget = Budget(usd=1.00)
+    budget.start()
+
+    result = RunResult(
+        config=Config(),
+        cost=CostBreakdown(index_usd=0.30, query_usd_per_1k=200.0),
+    )
+    budget.charge(result, queries=1000)  # 0.30 + 200.0 * 1 = 200.30
+
+    assert budget.spent_usd == pytest.approx(200.30)
+    assert budget.exceeded() is not None

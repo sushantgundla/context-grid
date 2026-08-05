@@ -30,6 +30,44 @@ Progress = Callable[[int, int, Config], None]
 
 
 @dataclass(slots=True)
+class Budget:
+    """A ceiling on a sweep, in seconds or in dollars.
+
+    `budget_seconds` has been enforced since the runner existed. `budget_usd` was accepted in
+    the config, stored, written into the report -- and never checked, so a config that asked to
+    spend at most five dollars would spend whatever the matrix cost. A knob that does nothing
+    is worse than no knob, because somebody relies on it.
+
+    Cost is charged after each configuration rather than predicted before it. A prediction
+    would need to know what a model charges before calling it, which is exactly the thing the
+    cost model cannot know for an agentic strategy that decides its own number of calls. So the
+    ceiling is honoured to within one configuration, and the report says how much was spent.
+    """
+
+    seconds: float | None = None
+    usd: float | None = None
+    spent_usd: float = 0.0
+    _started: float = 0.0
+
+    def start(self) -> None:
+        self._started = time.perf_counter()
+
+    def charge(self, result: RunResult, queries: int) -> None:
+        """Add what one configuration cost: building its index, and serving the eval set."""
+        cost = getattr(result, "cost", None)
+        if cost is not None:
+            self.spent_usd += float(cost.total_at(queries))
+
+    def exceeded(self) -> str | None:
+        """Why the sweep should stop, or None to keep going."""
+        if self.seconds is not None and time.perf_counter() - self._started > self.seconds:
+            return f"the {self.seconds:g}s budget ran out"
+        if self.usd is not None and self.spent_usd >= self.usd:
+            return f"the ${self.usd:,.2f} budget ran out (${self.spent_usd:,.4f} spent)"
+        return None
+
+
+@dataclass(slots=True)
 class Runner:
     """Runs configurations against a corpus and an eval set."""
 
@@ -121,15 +159,18 @@ class Runner:
         *,
         mode: SweepMode | str = SweepMode.OFAT,
         budget_seconds: float | None = None,
+        budget_usd: float | None = None,
         on_progress: Progress | None = None,
     ) -> Results:
         """Run a matrix in the chosen mode."""
         chosen = SweepMode(mode)
+        budget = Budget(seconds=budget_seconds, usd=budget_usd)
+
         if chosen is SweepMode.STAGED:
-            return self._staged(matrix, evalset, budget_seconds, on_progress)
+            return self._staged(matrix, evalset, budget, on_progress)
 
         configs, dropped = matrix.expand_with_dropped(chosen)
-        results = self._flat(configs, evalset, chosen, budget_seconds, on_progress)
+        results = self._flat(configs, evalset, chosen, budget, on_progress)
 
         if dropped:
             results.warnings.add(
@@ -148,18 +189,19 @@ class Runner:
         configs: Sequence[Config],
         evalset: EvalSet,
         mode: SweepMode,
-        budget_seconds: float | None,
+        budget: Budget,
         on_progress: Progress | None,
     ) -> Results:
         results = Results(mode=mode.value)
-        started = time.perf_counter()
+        budget.start()
 
         for index, config in enumerate(configs, start=1):
-            if budget_seconds is not None and time.perf_counter() - started > budget_seconds:
+            spent = budget.exceeded()
+            if spent is not None:
                 results.warnings.add(
                     WarningCode.BUDGET_REACHED,
-                    f"stopped after {index - 1} of {len(configs)} configurations: the "
-                    f"{budget_seconds:g}s budget ran out. The leaderboard below is partial",
+                    f"stopped after {index - 1} of {len(configs)} configurations: {spent}. "
+                    "The leaderboard below is partial",
                     severity=Severity.CAUTION,
                     stage="run",
                     completed=index - 1,
@@ -172,6 +214,7 @@ class Runner:
             result = self.run_one(config, evalset)
             results.runs.append(result)
             results.warnings.extend(result.warnings)
+            budget.charge(result, len(evalset.items))
 
         results.cache_summary = self.stats.summary()
         results.warnings.extend(self.cost_model.warnings)
@@ -181,7 +224,7 @@ class Runner:
         self,
         matrix: Matrix,
         evalset: EvalSet,
-        budget_seconds: float | None,
+        budget: Budget,
         on_progress: Progress | None,
     ) -> Results:
         """Pick the best value on each axis in turn, freezing it before moving on.
@@ -191,7 +234,7 @@ class Runner:
         so it says so, rather than presenting its answer as if it had searched the space.
         """
         results = Results(mode="staged")
-        started = time.perf_counter()
+        budget.start()
         current = matrix.baseline()
         seen: dict[Config, RunResult] = {}
 
@@ -201,11 +244,11 @@ class Runner:
                 continue
 
             for position, config in enumerate(candidates, start=1):
-                if budget_seconds is not None and (time.perf_counter() - started > budget_seconds):
+                spent = budget.exceeded()
+                if spent is not None:
                     results.warnings.add(
                         WarningCode.BUDGET_REACHED,
-                        f"the {budget_seconds:g}s budget ran out during the {axis!r} stage. "
-                        "Later axes were never swept at all",
+                        f"{spent} during the {axis!r} stage. Later axes were never swept at all",
                         severity=Severity.CAUTION,
                         stage="run",
                     )
@@ -220,6 +263,7 @@ class Runner:
                 seen[config] = result
                 results.runs.append(result)
                 results.warnings.extend(result.warnings)
+                budget.charge(result, len(evalset.items))
 
             best = max(
                 (seen[c] for c in candidates if c in seen),
