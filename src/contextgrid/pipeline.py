@@ -30,7 +30,7 @@ from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
 from contextgrid.embed import Embedder, get_embedder
 from contextgrid.index.base import Index, Scored
-from contextgrid.ingest import get_ingester
+from contextgrid.ingest import Ingested, IngestionContext, get_ingester
 from contextgrid.parse import get_parser
 from contextgrid.rerank import Reranker, get_reranker
 from contextgrid.retrieve import (
@@ -163,6 +163,8 @@ class BuiltPipeline:
     reranker: Reranker | None = None
     transform: QueryTransform = field(default_factory=NoTransform)
     retrieval: RetrievalStrategy = field(default_factory=SimpleRetrieval)
+    #: What was indexed, what is retrievable, and the map between them.
+    ingested: Ingested | None = None
     #: What the strategies did, accumulated across every query. Two configurations with the
     #: same recall and different model-call counts are a decision, not a tie.
     trace: RetrievalTrace = field(default_factory=RetrievalTrace)
@@ -183,7 +185,12 @@ class BuiltPipeline:
         depth = max(self.config.candidates, limit) if self.reranker else limit
 
         def searcher(text: str, wanted: int) -> Sequence[Scored]:
-            return self.index.search(text, self._vector_for(text), wanted)
+            # Asks for more than it needs: several indexed units can stand for the same
+            # passage -- four generated questions for one chunk -- so a top-`wanted` of indexed
+            # hits can collapse to far fewer distinct passages.
+            depth = wanted * self._fan_out()
+            hits = self.index.search(text, self._vector_for(text), depth)
+            return self._to_retrievable(hits, wanted)
 
         ranked = self.retrieval.retrieve(query, rewritten.queries, searcher, depth, self.trace)
 
@@ -193,6 +200,76 @@ class BuiltPipeline:
         by_id = self.chunk_by_id()
         candidates = [by_id[scored.chunk_id] for scored in ranked if scored.chunk_id in by_id]
         return [scored.chunk_id for scored in self.reranker.rerank(query, candidates, limit)]
+
+    def _fan_out(self) -> int:
+        """How many indexed units it takes, on average, to reach one distinct passage."""
+        if self.ingested is None:
+            return 1
+        return max(1, min(8, round(self.ingested.expansion)))
+
+    def _to_retrievable(self, hits: Sequence[Scored], wanted: int) -> list[Scored]:
+        """Turn hits on indexed units into the passages they stand for.
+
+        Deduplicated, keeping the best score, because two questions generated for the same
+        chunk both matching is one passage found twice -- and counting it twice would fill the
+        result list with a single passage while claiming to have found several.
+        """
+        if self.ingested is None:
+            return list(hits[:wanted])
+
+        best: dict[str, float] = {}
+        for hit in hits:
+            target = self.ingested.resolve(hit.chunk_id)
+            if target not in best or hit.score > best[target]:
+                best[target] = hit.score
+
+        merged = self._merge_siblings(best)
+        ranked = sorted(merged.items(), key=lambda pair: (-pair[1], pair[0]))
+        return [Scored(chunk_id, score) for chunk_id, score in ranked[:wanted]]
+
+    def scored_ids(self, returned: Sequence[str]) -> list[str]:
+        """What the returned passages count as when scored, in order and without repeats.
+
+        A presentation passage counts as the units it covers. Without this a strategy that
+        hands a generator more context would be scored on ids the qrels have never heard of,
+        and would appear to have found nothing at all.
+        """
+        if self.ingested is None:
+            return list(returned)
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for chunk_id in returned:
+            for scored in self.ingested.scored_ids(chunk_id):
+                if scored not in seen:
+                    seen.add(scored)
+                    out.append(scored)
+        return out
+
+    def _merge_siblings(self, best: dict[str, float]) -> dict[str, float]:
+        """Replace a run of sibling leaves with their parent, once enough of them have hit.
+
+        The one place an ingestion strategy decides at query time. A single leaf matching means
+        that line held the answer; most of a passage matching means the passage did, and
+        returning it whole is better than returning three fragments of it.
+        """
+        if self.ingested is None:
+            return best
+        children = self.ingested.notes.get("children")
+        if not isinstance(children, dict):
+            return best
+
+        raw = self.ingested.notes.get("threshold", 0.5)
+        threshold = float(raw) if isinstance(raw, (int, float)) else 0.5
+        merged = dict(best)
+
+        for parent, leaves in children.items():
+            hit = [leaf for leaf in leaves if leaf in merged]
+            if leaves and len(hit) / len(leaves) >= threshold:
+                merged[parent] = max(merged[leaf] for leaf in hit)
+                for leaf in hit:
+                    merged.pop(leaf, None)
+        return merged
 
     def _vector_for(self, text: str) -> Any:
         if self.embedder is None or not self.index.needs_vectors:
@@ -204,12 +281,20 @@ class BuiltPipeline:
         run: dict[str, list[str]] = {}
         for item in evalset:
             started = time.perf_counter()
-            run[item.id] = self.search(item.question, k)
+            run[item.id] = self.scored_ids(self.search(item.question, k))
             self.timings.query_ms.append((time.perf_counter() - started) * 1000)
         return run
 
     def chunk_by_id(self) -> dict[str, Chunk]:
-        return {chunk.id: chunk for chunk in self.chunks}
+        """Every chunk that can come back, including presentation passages.
+
+        Reranking and generation both look chunks up here, and both should see the wider
+        passage when a strategy chose to hand one over.
+        """
+        found = {chunk.id: chunk for chunk in self.chunks}
+        if self.ingested is not None:
+            found.update(self.ingested.presented_chunks)
+        return found
 
 
 def build(
@@ -218,6 +303,7 @@ def build(
     *,
     cache: Cache | None = None,
     stats: CacheStats | None = None,
+    llm: object | None = None,
 ) -> BuiltPipeline:
     """Run a configuration's indexing side: parse, chunk, embed, index."""
     warnings = WarningLog()
@@ -225,10 +311,16 @@ def build(
     parser = get_parser(config.parser)
     chunker = get_chunker(config.chunker)
 
-    # Ingestion runs first, because it decides what the parser is even looking at.
-    ingested = get_ingester(config.ingestion).ingest(list(corpus), warnings)
-    parses = _parse_all(parser, ingested, cache, stats, timings, warnings)
+    parses = _parse_all(parser, list(corpus), cache, stats, timings, warnings)
     chunks = _chunk_all(chunker, parses, cache, stats, timings)
+
+    # Ingestion decides what is indexed and what a hit on it returns. For plain chunking the
+    # two are the same list; every other strategy deliberately breaks that identity.
+    started_ingest = time.perf_counter()
+    ingested = get_ingester(config.ingestion).ingest(
+        chunks, IngestionContext(parses=dict(parses), warnings=warnings, llm=llm)
+    )
+    timings.chunk_ms += (time.perf_counter() - started_ingest) * 1000
 
     if not chunks:
         warnings.add(
@@ -240,17 +332,22 @@ def build(
             subject=config.label,
         )
 
-    embedder, vectors, embed_tokens = _embed_all(config, chunks, cache, stats, timings, warnings)
+    embedder, vectors, embed_tokens = _embed_all(
+        config, ingested.indexed, cache, stats, timings, warnings
+    )
 
     started = time.perf_counter()
     index = _make_index(config)
-    index.build(chunks, vectors)
+    index.build(ingested.indexed, vectors)
     timings.index_ms = (time.perf_counter() - started) * 1000
 
     return BuiltPipeline(
         config=config,
         parses=parses,
-        chunks=chunks,
+        # Everything downstream -- reranking, generation, scoring -- works on what comes *back*,
+        # which is not what went in unless the strategy is plain.
+        chunks=ingested.retrievable,
+        ingested=ingested,
         index=index,
         embedder=embedder,
         timings=timings,

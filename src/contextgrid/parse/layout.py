@@ -452,3 +452,90 @@ class PyMuPDF4LLMParser(_MarkdownParser):
             text = chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
             parts.append(f"<!-- page: {index} -->\n{text}")
         return "\n\n".join(parts), page_count
+
+
+# ---------------------------------------------------------------------------
+# agno
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AgnoParser(_MarkdownParser):
+    """Text extraction through agno's readers.
+
+    On this axis rather than the ingestion one, because turning bytes into text is what a
+    parser does -- and what most RAG stacks reach for without noticing they have made a parser
+    choice at all. Putting it beside pymupdf, pdfplumber and docling prices that convenience
+    against engines built for the job.
+
+    `reader` picks one of agno's readers by name; `auto` chooses by file extension. Its PDF
+    reader needs pypdf, and says so rather than failing obscurely.
+    """
+
+    reader: str = "auto"
+
+    name: ClassVar[str] = "agno"
+    version: ClassVar[str] = "1"
+    media_types: ClassVar[tuple[MediaType, ...]] = (
+        MediaType.PDF,
+        MediaType.MARKDOWN,
+        MediaType.HTML,
+        MediaType.DOCX,
+        MediaType.TEXT,
+    )
+
+    def _to_markdown(self, source: SourceFile) -> tuple[str, int, dict[str, Any]]:
+        try:
+            from agno.knowledge.reader.reader_factory import ReaderFactory
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise MissingExtraError("The agno parser", "agent", package="agno") from exc
+
+        reader = self._reader(ReaderFactory, source)
+        if reader is None:
+            raise DocumentError(
+                f"agno has no reader for {source.id!r}. Its PDF reader needs pypdf: "
+                "pip install 'context-grid[agent]'"
+            )
+
+        import io
+
+        stream = io.BytesIO(source.raw or b"")
+        stream.name = source.id
+
+        try:
+            documents = reader.read(stream, name=source.id)
+        except TypeError:
+            documents = reader.read(stream)
+        except Exception as error:
+            raise DocumentError(f"the agno reader failed on {source.id!r}: {error}") from error
+
+        text = "\n\n".join(
+            str(getattr(document, "content", "")) for document in documents or []
+        ).strip()
+        return text, 0, {"reader": self.reader}
+
+    def _reader(self, factory: Any, source: SourceFile) -> Any:
+        if self.reader != "auto":
+            try:
+                return factory.create_reader(self.reader, chunk=False)
+            except Exception as error:
+                raise DocumentError(
+                    f"agno has no reader called {self.reader!r}. Available: "
+                    f"{', '.join(sorted(factory.get_all_reader_keys()))}"
+                ) from error
+
+        suffix = {
+            MediaType.PDF: ".pdf",
+            MediaType.MARKDOWN: ".md",
+            MediaType.HTML: ".html",
+            MediaType.DOCX: ".docx",
+        }.get(source.media_type, ".txt")
+        try:
+            reader = factory.get_reader_for_extension(suffix)
+        except Exception:
+            return None
+        if reader is not None:
+            # Chunking is its own axis. Letting the reader do it would quietly take that
+            # decision away from the thing that measures it.
+            reader.chunk = False
+        return reader

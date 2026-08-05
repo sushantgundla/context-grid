@@ -61,6 +61,15 @@ PARSERS.register_lazy(
 # Same extraction engine as `pymupdf`, different output. Any difference between the two is
 # Markdown structure alone, which is the one question the heavy parsers confound.
 PARSERS.register_lazy(
+    "agno",
+    module="contextgrid.parse.layout",
+    attr="AgnoParser",
+    extra="agent",
+    package="agno",
+    shorthand="reader",
+    doc="Text through agno's readers. What most RAG stacks use without choosing to.",
+)
+PARSERS.register_lazy(
     "pymupdf4llm",
     module="contextgrid.parse.layout",
     attr="PyMuPDF4LLMParser",

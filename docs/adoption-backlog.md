@@ -332,51 +332,51 @@ the servers do not.
 
 ---
 
-## Dimension 6 — Ingestion ✅ done (agno)
+## Dimension 6 — Ingestion ✅ done (rebuilt)
 
-**Shipped.** **agno**, not llama-index — and as a sweepable axis rather than a set of
-connectors:
+**The first attempt was wrong and this replaces it.** It shipped `ingestion: [direct, agno]`,
+which compares two *libraries* — a parser-shaped question wearing an ingestion label. agno is a
+framework, not a strategy. agno's text extraction has moved to `parser: agno`, where it belongs
+and where it can be compared against pymupdf, pdfplumber and docling fairly.
 
-    grid:
-      ingestion: [direct, agno]
-      retrieval: [simple, decomposed, agentic]
+**The definition that should have come first:**
 
-**The llama-index recommendation below was wrong, and measuring it is what showed that.** The
-claim was that readers install individually and avoid the framework weight. They do not: one
-reader (`llama-index-readers-notion`) pulls `llama-index-core`, `llama-index-workflows` and
-nltk — 63 packages, 190 MB. agno is 29 packages, 78 MB, and Sushant has used it before.
+> A chunker produces units where the thing indexed and the thing returned are the same.
+> **An ingestion strategy deliberately breaks that identity.**
 
-Two strategies, and the comparison between them is the point:
+Chunk size is a compromise nobody is happy with: small chunks embed precisely and arrive
+stripped of context; large chunks keep their context and embed into mush. Every strategy here
+refuses that compromise — index one thing, return another.
 
-* `direct` — hand the bytes to the parser axis. The default and the honest baseline.
-* `agno` — let an agno reader extract the text and treat that as the document.
+| Strategy | Indexes | Returns | Cost |
+|---|---|---|---|
+| `plain` | the chunk | the chunk | — the baseline |
+| `parent-document:N` | small chunks | the passage they came from | free |
+| `sentence-window:N` | one chunk | it plus N neighbours either side | free |
+| `hierarchical:N` | leaves | the parent once enough siblings hit | free |
+| `contextual` | chunk + LLM-written placing note | the chunk | 1 call/chunk |
+| `hypothetical-questions:N` | the questions it answers | the chunk | 1 call/chunk |
+| `propositions:N` | atomic facts | the chunk | 1 call/chunk |
+| `summary` | an LLM summary | the whole document | 1 call/**doc** |
 
-`agno` **skips the parser axis**, which is exactly what most RAG stacks do without noticing: a
-loader returns strings and everything downstream works on those. The reader has already decided
-table handling, reading order and whether a heading survives as one. On the demo PDF corpus that
-costs recall@5 0.869 against pdfplumber's 0.877 — small, real, and previously unmeasurable.
+Measured on the demo corpus at 96-token chunks: **`parent-document` 0.863 against plain's
+0.616** — a +0.247 gain for no model calls at all. `sentence-window` 0.825. `hierarchical` 0.575,
+slightly *below* plain, because merging spends result slots on wider passages.
 
-Because `agno` produces Markdown, pairing it with a PDF engine is meaningless; the matrix
-collapses those combinations rather than crediting the parser axis with a difference it did not
-cause. Document ids survive ingestion, so gold written against `refunds.pdf` resolves whichever
-strategy produced the text — without that the axis could not be measured at all.
+**One bug found, and it was a scoring bug rather than a strategy one.** `hierarchical` first
+made both the leaves and their parents retrievable — so gold resolved to each of them, a
+question with one answer acquired two things to find, and recall halved for a purely structural
+reason. Measured: 1.86 relevant units per question against plain's 1.00. Parents are now
+*presentation*, mapped back to the units they cover, so showing a generator more context never
+changes what retrieval is credited with finding.
 
-**Also shipped: the retrieval axis** (dimension 5.5, not in this list originally). `simple`,
-`widened`, `decomposed` and `agentic`, where `index` stays the store and `retrieval` is how it
-is used. See the commits for what that uncovered.
+**Also fixed:** `recursive:64` was an error. The default overlap of 64 collided with a size of
+64, and refusing a perfectly reasonable chunk size over a default the user never named is a bad
+axis value. Overlap now defaults to an eighth of the size — exactly 64 at the default 512, so
+nothing already written changes — and an overlap somebody *does* name is still checked.
 
-**Originally.** `pathlib` and `csv`. Local files only. No connectors, no incremental sync.
-
-| Candidate | For | Against |
-|---|---|---|
-| **[llama-index readers](https://llamahub.ai/)** | 150+ connectors — Notion, Confluence, S3, Drive, GitHub, Slack. By far the widest | Heavy. Pulls a lot for what is a loading step |
-| **[agno](https://docs.agno.com/)** | Clean readers plus a Docling reader that preserves structure. Explicitly built for RAG knowledge bases. Lighter than LlamaIndex | Agent framework first, ingestion second. Smaller connector set |
-| **[docling](https://github.com/docling-project/docling)** | Already a parser candidate — reuse it as the reader and get one component for two dimensions | Formats, not sources. No Notion/S3/Confluence |
-| **unstructured** | Connectors *and* parsing, enterprise-oriented | Heaviest of the four |
-
-**Recommendation:** llama-index readers, but **only the reader package** (`llama-index-readers-*`
-installs individually rather than pulling the whole framework). That gets the connector breadth
-without the weight. Worth checking that claim before committing to it.
+**Not built:** RAPTOR and GraphRAG. Both construct whole tree and graph structures, which is a
+larger piece of work than the other eight combined.
 
 ---
 

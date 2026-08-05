@@ -209,14 +209,10 @@ def canonicalise(config: Config) -> Config:
     sweep -- and worse, they poison the embedder axis effect, which would average three
     identical BM25 scores into the embedder's record as though it had earned them.
     """
-    if config.ingestion == "direct":
+    # "plain" is the same run as naming no strategy at all, and two names for one run waste a
+    # slot and dilute the axis effect.
+    if config.ingestion == "plain":
         config = config.with_(ingestion=None)
-
-    # An ingestion strategy that extracts the text itself has already made every decision the
-    # parser axis measures. Sweeping a PDF engine underneath it would run the same text through
-    # arms that never see a PDF -- identical results credited to the parser axis as difference.
-    if config.ingestion is not None and _replaces_parser(config.ingestion):
-        config = config.with_(parser="markdown")
 
     # "none" is the identity reranker, so it is the same configuration as no reranker at all.
     if config.transform == "none":
@@ -243,16 +239,6 @@ def canonicalise(config: Config) -> Config:
         # dropping the configuration here would hide the real error behind a missing row.
         return config
     return config
-
-
-def _replaces_parser(ingestion: str) -> bool:
-    """Whether this ingestion strategy hands on text rather than bytes."""
-    try:
-        from contextgrid.ingest import get_ingester
-
-        return bool(getattr(get_ingester(ingestion), "replaces_parser", False))
-    except Exception:  # pragma: no cover - a bad spec fails later with a better message
-        return False
 
 
 def is_runnable(config: Config) -> bool:

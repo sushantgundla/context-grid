@@ -187,9 +187,9 @@ class Runner:
         if unbounded:
             results.warnings.add(
                 WarningCode.BUDGET_REACHED,
-                f"the {unbounded!r} retrieval strategy calls a model once or more per question "
-                "and this sweep has no `budget_usd` or `budget_seconds`. It decides its own "
-                "number of calls, so nothing here could tell you the bill in advance",
+                f"the {unbounded!r} strategy calls a model -- per question at query time, or "
+                "per chunk while building the index -- and this sweep has no `budget_usd` or "
+                "`budget_seconds`. Nothing here can tell you the bill in advance",
                 severity=Severity.CAUTION,
                 stage="run",
                 subject=str(unbounded),
@@ -328,18 +328,20 @@ def _warn_if_unbounded(matrix: Matrix, budget: Budget) -> None:
     if budget.usd is not None or budget.seconds is not None:
         return
 
+    from contextgrid.ingest import get_ingester
     from contextgrid.retrieve import get_retriever
 
-    for value in matrix.retrieval:
-        if value is None:
-            continue
-        try:
-            strategy = get_retriever(value)
-        except Exception:  # pragma: no cover - a bad spec fails later, with a better message
-            continue
-        if getattr(strategy, "uses_model", False):
-            matrix.meta["unbounded_model_calls"] = strategy.name
-            return
+    for axis, resolve in (("retrieval", get_retriever), ("ingestion", get_ingester)):
+        for value in getattr(matrix, axis):
+            if value is None:
+                continue
+            try:
+                strategy = resolve(value)
+            except Exception:  # pragma: no cover - a bad spec fails later, more helpfully
+                continue
+            if getattr(strategy, "uses_model", False):
+                matrix.meta["unbounded_model_calls"] = strategy.name
+                return
 
 
 def _check_strategy_did_something(

@@ -21,8 +21,10 @@ corpus: {corpus}
 evalset: {evalset}
 
 grid:
-  # How a file becomes something a parser can read. `direct` hands the bytes on;
-  # `agno` lets a reader extract the text, which skips the parser axis below.
+  # What goes into the index, and what a hit on it returns. A chunker makes those the
+  # same thing; every strategy here deliberately breaks that. `parent-document` indexes
+  # small chunks and returns the passage around them; `contextual` and the rest pay a
+  # model call per chunk while building, and never again.
 {ingesters}
 
   # What reads the documents. This is the axis nothing else in the field measures,
@@ -95,7 +97,7 @@ def render(
         name=name,
         corpus=corpus,
         evalset=evalset,
-        ingesters=_axis("ingestion", ["direct"], INGESTERS),
+        ingesters=_axis("ingestion", ["plain"], INGESTERS),
         parsers=_axis("parser", ["markdown"], PARSERS),
         chunkers=_axis("chunker", ["recursive:512", "sentence:3"], CHUNKERS),
         embedders=_axis("embedder", ["tfidf", "null"], EMBEDDERS),

@@ -35,16 +35,28 @@ class FixedTokenChunker:
     """
 
     size: int = 512
-    overlap: int = 64
+    #: `None` means an eighth of the size, which is 64 at the default 512 -- exactly the fixed
+    #: default this replaced. Fixed, it made `recursive:64` an error: an inherited 64 collides
+    #: with a size of 64, and refusing a perfectly reasonable chunk size because of a default
+    #: the user never named is a bad axis value. An overlap they *do* name is still checked.
+    overlap: int | None = None
     tokenizer: str | Tokenizer | None = None
 
     name: ClassVar[str] = "fixed"
     version: ClassVar[str] = "1"
 
     _tokenizer: Tokenizer = field(init=False, repr=False, compare=False)
+    #: `overlap` with the default resolved against `size`. Always an int.
+    _overlap: int = field(init=False, repr=False, compare=False, default=0)
 
     def __post_init__(self) -> None:
-        validate_size_and_overlap(self.size, self.overlap)
+        resolved = self.size // 8 if self.overlap is None else self.overlap
+        # Both, deliberately. `overlap` is what a manifest records, and `None` there would say
+        # nothing about what actually ran; `_overlap` is the same number typed as an int, so
+        # the arithmetic below needs no narrowing at every use.
+        object.__setattr__(self, "overlap", resolved)
+        object.__setattr__(self, "_overlap", resolved)
+        validate_size_and_overlap(self.size, self._overlap)
         object.__setattr__(self, "_tokenizer", get_tokenizer(self.tokenizer))
 
     def chunk(self, parsed: ParsedDocument) -> list[Chunk]:
@@ -55,14 +67,14 @@ class FixedTokenChunker:
 
         starts = token_starts(spans)
         builder = ChunkBuilder(parsed, [self._tokenizer])
-        step = self.size - self.overlap
+        step = self.size - self._overlap
 
         ranges: list[tuple[int, int]] = []
         for cursor in range(0, len(spans), step):
             window = spans[cursor : cursor + self.size]
             if not window:
                 break
-            start = expand_back_by_tokens(spans, starts, window[0][0], self.overlap)
+            start = expand_back_by_tokens(spans, starts, window[0][0], self._overlap)
             end = window[-1][1]
             ranges.append(trim_range(text, start, end))
             if cursor + self.size >= len(spans):
