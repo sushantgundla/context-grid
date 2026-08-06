@@ -109,6 +109,20 @@ def build_cache(config: ExperimentConfig) -> Cache:
     return MemoryCache()
 
 
+def build_llm(config: ExperimentConfig) -> object | None:
+    """The model every stage that needs one shares.
+
+    One name in the config rather than one per stage: the alternative is four places to set a
+    key and four prices to reconcile, for a choice almost nobody wants to make differently per
+    stage.
+    """
+    if not config.run.model:
+        return None
+    from contextgrid.evalset.llm import get_llm
+
+    return get_llm(config.run.model)
+
+
 def build_runner(config: ExperimentConfig, corpus: Corpus) -> Runner:
     return Runner(
         corpus=corpus,
@@ -120,6 +134,7 @@ def build_runner(config: ExperimentConfig, corpus: Corpus) -> Runner:
         ),
         ks=config.run.ks,
         headline=config.run.headline,
+        llm=build_llm(config),
     )
 
 

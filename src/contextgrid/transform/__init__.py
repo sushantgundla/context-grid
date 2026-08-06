@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextgrid.transform.query import (
+    MODEL_BACKED,
     TRANSFORMS,
     Decompose,
     ExpandAcronyms,
@@ -12,11 +13,13 @@ from contextgrid.transform.query import (
     QueryTransform,
     StepBack,
     TransformedQuery,
+    available_transforms,
     describe_cost,
     get_transform,
 )
 
 __all__ = [
+    "MODEL_BACKED",
     "TRANSFORMS",
     "Decompose",
     "ExpandAcronyms",
@@ -26,6 +29,7 @@ __all__ = [
     "QueryTransform",
     "StepBack",
     "TransformedQuery",
+    "available_transforms",
     "describe_cost",
     "get_transform",
 ]

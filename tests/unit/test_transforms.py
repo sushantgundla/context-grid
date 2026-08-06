@@ -288,3 +288,75 @@ def test_a_fan_out_transform_searches_more_than_once_and_fuses() -> None:
         Config(chunker="sentence:1", transform="expand", index="bm25", k=3), evalset
     )
     assert result.scored_queries == 1
+
+
+# ---------------------------------------------------------------------------
+# reachable from a config file
+# ---------------------------------------------------------------------------
+
+
+def test_a_model_backed_transform_works_from_a_config() -> None:
+    """`transform: hyde` could not work. The pipeline never passed a model to `get_transform`,
+    so four of the five transforms raised "needs a model" from a place the user had no way to
+    influence -- unreachable from the config file, which is the primary interface."""
+    import contextgrid as cg
+    from contextgrid.core.documents import MediaType
+    from contextgrid.evalset.llm import LiteLLMChat
+    from contextgrid.pipeline import Config, build
+
+    corpus = cg.Corpus.from_texts(
+        {"a.md": "# Refunds\n\nRefunds are issued within 30 days of purchase.\n"},
+        media_type=MediaType.MARKDOWN,
+        name="hyde",
+    )
+    scripted = LiteLLMChat(
+        model="scripted", transport=lambda prompt, limit: "Refunds take thirty days."
+    )
+
+    pipeline = build(
+        Config(chunker="recursive:128", index="bm25", embedder=None, transform="hyde"),
+        corpus,
+        llm=scripted,
+    )
+    assert pipeline.transform.name == "hyde"
+    assert pipeline.search("how long do refunds take?")
+
+
+def test_the_config_names_one_model_for_every_stage_that_needs_one() -> None:
+    """One name rather than one per stage: the alternative is four places to set a key and four
+    prices to reconcile, for a choice almost nobody wants to make differently per stage."""
+    from contextgrid.config import loads
+    from contextgrid.config.loader import build_llm
+
+    config = loads("corpus: ./docs\nrun:\n  model: openai:gpt-4o-mini\n")
+    assert config.run.model == "openai:gpt-4o-mini"
+    assert build_llm(config) is not None
+    assert build_llm(loads("corpus: ./docs\n")) is None
+
+
+def test_a_transform_needing_a_model_without_one_says_which_are_free() -> None:
+    """Better than silently becoming the identity, which would look like testing HyDE while
+    testing nothing."""
+    from contextgrid.evalset.llm import LLMError
+    from contextgrid.transform import get_transform
+
+    with pytest.raises(LLMError, match="expand, none"):
+        get_transform("hyde", None)
+
+
+def test_every_transform_is_discoverable_even_when_it_needs_a_model() -> None:
+    """They were invisible: reachable if you already knew the name, mentioned nowhere the tool
+    prints -- so the axis appeared to have two arms when it has six."""
+    from contextgrid.transform import MODEL_BACKED, available_transforms
+
+    names = available_transforms()
+    assert set(MODEL_BACKED) <= set(names)
+    assert {"hyde", "multi-query", "decompose", "step-back", "expand", "none"} == set(names)
+
+
+def test_the_starter_config_mentions_the_model_backed_transforms() -> None:
+    from contextgrid.config import render
+
+    text = render()
+    line = next(line for line in text.splitlines() if "also available" in line and "hyde" in line)
+    assert "hyde" in line

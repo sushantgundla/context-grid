@@ -29,6 +29,7 @@ from contextgrid.core.protocols import Chunker, Parser
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
 from contextgrid.embed import Embedder, get_embedder
+from contextgrid.evalset.llm import LLM
 from contextgrid.index.base import Index, Scored
 from contextgrid.ingest import Ingested, IngestionContext, get_ingester
 from contextgrid.parse import get_parser
@@ -303,7 +304,7 @@ def build(
     *,
     cache: Cache | None = None,
     stats: CacheStats | None = None,
-    llm: object | None = None,
+    llm: LLM | None = None,
 ) -> BuiltPipeline:
     """Run a configuration's indexing side: parse, chunk, embed, index."""
     warnings = WarningLog()
@@ -355,7 +356,11 @@ def build(
         index_bytes=index.size_bytes(),
         embed_tokens=embed_tokens,
         reranker=get_reranker(config.reranker) if config.reranker else None,
-        transform=get_transform(config.transform),
+        # The model has to reach here. Four of the five transforms -- HyDE, multi-query,
+        # decompose, step-back -- cannot be built without one, so a config naming any of them
+        # raised "needs a model" from a place the user had no way to influence. They were
+        # unreachable from the config file, which is the primary interface.
+        transform=get_transform(config.transform, llm),
         retrieval=get_retriever(config.retrieval),
     )
 

@@ -79,6 +79,9 @@ class Runner:
     span_resolver: SpanResolver = field(default_factory=SpanResolver)
     ks: tuple[int, ...] = DEFAULT_KS
     headline: str = "recall@5"
+    #: Shared by every stage that needs a model: transforms, agentic retrieval, LLM-backed
+    #: ingestion, and the generation judge.
+    llm: Any = None
 
     def __post_init__(self) -> None:
         if self.cache is None:
@@ -98,7 +101,7 @@ class Runner:
     def run_one(self, config: Config, evalset: EvalSet) -> RunResult:
         """Build a configuration, answer every question, and score it."""
         started = time.perf_counter()
-        pipeline = build(config, self.corpus, cache=self.cache, stats=self.stats)
+        pipeline = build(config, self.corpus, cache=self.cache, stats=self.stats, llm=self.llm)
 
         # The evidence has to be located again in *this* parse. Two parsers produce
         # different text, so a span that was right for one is meaningless for the other.

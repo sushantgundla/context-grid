@@ -420,7 +420,20 @@ stale, and litellm maintains one.
 
 ---
 
-## Dimension 8 — Transforms
+## Dimension 8 — Transforms ✅ kept hand-written, and finally reachable
+
+**Nothing adopted, and that is the finding.** Query transforms live inside LangChain and
+LlamaIndex as pipeline components rather than as anything reusable. FlashRAG is the closest, and
+it is built to reproduce papers rather than to be embedded. This is the one dimension where
+hand-written is the right answer.
+
+**But four of the five were unreachable from a config file.** HyDE, multi-query, decompose and
+step-back all need a model, and the pipeline never passed one — so `transform: hyde` in a YAML
+raised "needs a model" from a place the user had no way to influence. They were also invisible:
+`contextgrid init` listed two arms on an axis that has six. Both fixed; `run.model` in the
+config now supplies every stage that needs a model.
+
+## Dimension 8 — Transforms (original entry)
 
 **Today.** HyDE, multi-query, decomposition, step-back, acronym expansion. Hand-written prompts.
 

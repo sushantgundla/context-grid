@@ -90,7 +90,7 @@ def render(
     from contextgrid.parse import PARSERS
     from contextgrid.rerank import RERANKERS
     from contextgrid.retrieve import RETRIEVERS
-    from contextgrid.transform import TRANSFORMS
+    from contextgrid.transform import MODEL_BACKED, TRANSFORMS
 
     return TEMPLATE.format(
         filename=filename,
@@ -102,18 +102,22 @@ def render(
         chunkers=_axis("chunker", ["recursive:512", "sentence:3"], CHUNKERS),
         embedders=_axis("embedder", ["tfidf", "null"], EMBEDDERS),
         indexes=_axis("index", ["dense", "bm25", "hybrid"], INDEXES),
-        transforms=_axis("transform", ["null"], TRANSFORMS),
+        transforms=_axis("transform", ["null"], TRANSFORMS, extra=MODEL_BACKED),
         retrievers=_axis("retrieval", ["simple"], RETRIEVERS),
         rerankers=_axis("reranker", ["null", "lexical"], RERANKERS),
     )
 
 
-def _axis(name: str, chosen: list[str], registry: object) -> str:
-    """One axis line, plus a comment listing everything else this installation can run."""
+def _axis(name: str, chosen: list[str], registry: object, extra: tuple[str, ...] = ()) -> str:
+    """One axis line, plus a comment listing everything else this installation can run.
+
+    `extra` is for values that cannot be registered but do exist -- the transforms needing a
+    model, which were reachable only by somebody who already knew their names.
+    """
     already = {value.split(":", 1)[0] if ":" in value else value for value in chosen}
     # `recursive:512` is already on the line; listing `recursive` again under "also available"
     # reads as a second, different plugin.
-    rest = [plugin for plugin in _installed(registry) if plugin not in already]
+    rest = sorted({*_installed(registry), *extra} - already)
 
     line = f"  {name}: [{', '.join(chosen)}]"
     return line if not rest else f"{line}\n{_wrapped('also available: ' + ', '.join(rest))}"

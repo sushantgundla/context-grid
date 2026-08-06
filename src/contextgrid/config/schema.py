@@ -123,6 +123,10 @@ class RunConfig:
     resolution_policy: str = "coverage"
     resolution_threshold: float = 0.5
     cache: str = "memory"
+    #: The model the pipeline reaches for when a strategy needs one: HyDE and the other query
+    #: transforms, agentic retrieval, the LLM-backed ingestion strategies, and the generation
+    #: judge. One name, so one key and one price.
+    model: str | None = None
 
     KNOWN: ClassVar[tuple[str, ...]] = (
         "mode",
@@ -135,6 +139,7 @@ class RunConfig:
         "resolution_policy",
         "resolution_threshold",
         "cache",
+        "model",
     )
 
     @classmethod
@@ -154,6 +159,7 @@ class RunConfig:
             resolution_policy=str(data.get("resolution_policy", "coverage")),
             resolution_threshold=float(data.get("resolution_threshold", 0.5)),
             cache=str(data.get("cache", "memory")),
+            model=str(data["model"]) if data.get("model") else None,
         )
         config.validate()
         return config
@@ -207,6 +213,7 @@ class RunConfig:
             "resolution_policy": self.resolution_policy,
             "resolution_threshold": self.resolution_threshold,
             "cache": self.cache,
+            "model": self.model,
         }
 
 

@@ -291,6 +291,19 @@ TRANSFORMS.register(
 )(ExpandAcronyms)
 
 
+#: Transforms that need a model, and cannot be registered because of it.
+#:
+#: Kept as a name list so `contextgrid plugins` and the config template can *say they exist*.
+#: They were previously invisible: reachable if you already knew the name, and mentioned
+#: nowhere the tool prints -- so the axis appeared to have two arms when it has six.
+MODEL_BACKED: tuple[str, ...] = ("hyde", "multi-query", "decompose", "step-back")
+
+
+def available_transforms() -> tuple[str, ...]:
+    """Every transform, whether or not it needs a model."""
+    return tuple(sorted({*TRANSFORMS.names(), *MODEL_BACKED}))
+
+
 def get_transform(spec: str | QueryTransform | None, llm: LLM | None = None) -> QueryTransform:
     """Resolve a transform, supplying the model to the ones that need one.
 
