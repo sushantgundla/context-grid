@@ -36,7 +36,12 @@ DIMENSION_METRICS: dict[str, tuple[str, ...]] = {
     "parse": ("evidence_resolvable",),
     # Of the characters returned, how many were the ones asked for? The chunker's honest score:
     # a huge chunk can hold the answer and still waste most of a context window.
-    "chunk": ("character_precision",),
+    #
+    # `char_precision`, not `character_precision`: the runner emits the short spelling, and this
+    # table spent its whole existence asking for the long one. Nothing matched, so the chunk
+    # dimension was silently dropped from every composite score ever computed -- reported as
+    # "not measured" on runs that had measured it perfectly well.
+    "chunk": ("char_precision",),
     # Can this embedder discriminate on this corpus at all? Measurable with no eval set, which
     # makes it the only dimension somebody choosing a model can score before writing questions.
     "embed": ("embedding_quality",),

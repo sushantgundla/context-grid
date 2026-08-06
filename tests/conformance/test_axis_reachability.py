@@ -747,8 +747,20 @@ def test_a_metric_nobody_computed_is_absent_rather_than_zero() -> None:
     # And the honest path reports what it actually measured.
     score = results.composite()
     assert score is not None
-    assert score.score == pytest.approx(100.0)
+    # Not zero -- that was the bug: an absent metric read as a measured 0.0, and the harmonic
+    # mean took the whole score down with it.
+    assert score.score > 0.0
     assert "embed" in score.missing
+
+    # This used to assert exactly 100.0, which held only because `parse` and `chunk` could
+    # never be scored at all: nothing emitted `evidence_resolvable`, and `DIMENSION_METRICS`
+    # asked for `character_precision` while the runner emits `char_precision`. With both
+    # reachable the honest score is lower, because the chunker really is not perfect -- and
+    # that is exactly the thing the composite exists to stop a good retriever from hiding.
+    assert set(score.parts) == {"parse", "chunk", "retrieval"}
+    assert score.parts["parse"] == pytest.approx(1.0)
+    assert score.parts["retrieval"] == pytest.approx(1.0)
+    assert 0.0 < score.parts["chunk"] < 1.0
 
 
 def test_a_run_can_say_whether_it_measured_something() -> None:
@@ -770,3 +782,58 @@ def test_the_plugin_listing_pluralises_index_properly() -> None:
 
     assert _plural("index") == "indexes"
     assert _plural("chunker") == "chunkers"
+
+
+def test_every_composite_dimension_can_actually_be_scored() -> None:
+    """The guard for the bug that hid two of the five dimensions in plain sight.
+
+    `DIMENSION_METRICS` is a promise: these are the things a composite score covers. Two of
+    them were unreachable for the whole life of the package -- `evidence_resolvable` was
+    emitted by nothing at all, and `chunk` asked for `character_precision` while the runner
+    emits `char_precision`. Both failed silently, reported as "not measured" on runs that had
+    measured them, so the headline number covered three dimensions while claiming five.
+
+    Every test that touched the composite passed, because they all built their own metric
+    dicts using the same wrong names the table used. Nothing compared the table against a real
+    run -- which is what this does.
+    """
+    from contextgrid.core.documents import MediaType
+    from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor
+    from contextgrid.corpus import Corpus
+    from contextgrid.grid import Runner
+    from contextgrid.pipeline import Config
+    from contextgrid.report.composite import DIMENSION_METRICS
+
+    corpus = Corpus.from_texts(
+        {"a.md": "# Refunds\n\nRefunds are issued within 30 days of purchase.\n"},
+        media_type=MediaType.MARKDOWN,
+        name="dimensions",
+    )
+    evalset = EvalSet(
+        id="dimensions",
+        items=(
+            EvalItem(
+                id="q",
+                question="how long do refunds take?",
+                anchors=(GoldAnchor(quote="within 30 days", source_id="a.md"),),
+            ),
+        ),
+    )
+    result = Runner(corpus=corpus).run_one(
+        Config(chunker="recursive:128", index="bm25", embedder=None), evalset
+    )
+
+    # A plain retrieval run measures parse, chunk and retrieval. `embed` needs a separate
+    # corpus diagnostic and `generation` needs a generator, so neither is expected here --
+    # but the other three must be genuinely present, not merely declared.
+    for dimension in ("parse", "chunk", "retrieval"):
+        names = DIMENSION_METRICS[dimension]
+        found = [
+            name
+            for name in names
+            if result.has(name) or any(result.has(f"{name}@{k}") for k in (1, 3, 5, 10, 20))
+        ]
+        assert found, (
+            f"DIMENSION_METRICS[{dimension!r}] wants {names!r} and this run emitted none of "
+            f"them. It emitted: {sorted(result.metrics)}"
+        )

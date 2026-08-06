@@ -160,6 +160,21 @@ class Runner:
         warnings.extend(generation_log)
 
         unresolved = sum(1 for item in resolved if item.anchors and not item.is_answerable)
+
+        # The parse dimension's score: of the evidence somebody quoted, how much could this
+        # parser actually find in its own output? A parser that drops a table, mangles a
+        # ligature or reorders columns loses the anchor, and every retrieval number below
+        # becomes a measurement of the parse rather than of retrieval.
+        #
+        # `DIMENSION_METRICS["parse"]` has always asked for this name and nothing has ever
+        # emitted it, so the parse dimension could not be scored at all -- the composite
+        # reported "not measured" on every run, forever. Left out entirely when no item
+        # carries an anchor, rather than scored 1.0: a run with nothing to resolve has not
+        # demonstrated a perfect parse, it has demonstrated nothing.
+        with_anchors = sum(1 for item in resolved if item.anchors)
+        if with_anchors:
+            metrics["evidence_resolvable"] = (with_anchors - unresolved) / with_anchors
+
         if not qrels:
             warnings.add(
                 WarningCode.GOLD_SPAN_UNREACHABLE,

@@ -252,13 +252,19 @@ def test_the_score_is_serialisable() -> None:
 
 
 def test_a_perfect_run_scores_one_hundred() -> None:
+    """Every metric name here must be one the runner really emits.
+
+    This test used to say `character_precision`, which is what `DIMENSION_METRICS` asked for
+    and what nothing has ever produced -- so it agreed with the typo instead of with the
+    runner, and passed while the chunk dimension was unscoreable in every real run.
+    """
     result = composite(
         {
             "recall@5": 1.0,
             "ndcg@5": 1.0,
             "faithfulness": 1.0,
             "answer_relevancy": 1.0,
-            "character_precision": 1.0,
+            "char_precision@5": 1.0,
             "evidence_resolvable": 1.0,
             "embedding_quality": 1.0,
         }

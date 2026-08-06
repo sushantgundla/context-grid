@@ -375,8 +375,12 @@ metrics are exactly what `report/composite.py` needs:
 ```python
 >>> from contextgrid.report.composite import composite
 >>> composite(result.metrics).dimensions
-('generation', 'retrieval')
+('chunk', 'generation', 'parse', 'retrieval')
 ```
+
+Four dimensions, not just the two the judge produced: a run with a generator still parsed,
+chunked and retrieved, so those score too. Only `embed` is absent, because it needs a
+separate corpus diagnostic rather than an eval set.
 
 A missing `[judge]` extra, or no `run.model` at all, degrades gracefully: generation still
 runs, the lexical scores (`groundedness`, `citation_accuracy`, ...) still land in `metrics`,
