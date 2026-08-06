@@ -22,6 +22,11 @@ from contextgrid.embed.base import (
 )
 from contextgrid.embed.local import HashEmbedder, TfidfEmbedder, TokenCountEmbedder
 from contextgrid.embed.prefixes import Prefixes, for_model
+from contextgrid.embed.quality import (
+    EmbeddingQuality,
+    EmbeddingQualityError,
+    assess,
+)
 from contextgrid.embed.remote import EmbedderError, LiteLLMEmbedder, TEIEmbedder
 
 EMBEDDERS: Registry[Embedder] = Registry(family="embedder")
@@ -70,6 +75,8 @@ __all__ = [
     "AdapterReport",
     "Embedder",
     "EmbedderError",
+    "EmbeddingQuality",
+    "EmbeddingQualityError",
     "EmbeddingResult",
     "HashEmbedder",
     "LinearAdapter",
@@ -80,6 +87,7 @@ __all__ = [
     "TokenCountEmbedder",
     "Triplet",
     "Vectors",
+    "assess",
     "fit_adapter",
     "for_model",
     "get_embedder",

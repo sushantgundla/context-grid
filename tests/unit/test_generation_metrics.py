@@ -234,7 +234,7 @@ def test_two_metrics_for_one_dimension_average_rather_than_compound() -> None:
 def test_every_dimension_has_exactly_one_way_in() -> None:
     """Averaging four retrieval metrics and then averaging that against generation gives
     retrieval four votes -- an opinion about what matters dressed as arithmetic."""
-    assert set(DIMENSION_METRICS) == {"parse", "chunk", "retrieval", "generation"}
+    assert set(DIMENSION_METRICS) == {"parse", "chunk", "embed", "retrieval", "generation"}
     for names in DIMENSION_METRICS.values():
         assert names
 
@@ -260,6 +260,7 @@ def test_a_perfect_run_scores_one_hundred() -> None:
             "answer_relevancy": 1.0,
             "character_precision": 1.0,
             "evidence_resolvable": 1.0,
+            "embedding_quality": 1.0,
         }
     )
     assert result.score == pytest.approx(100.0)

@@ -37,6 +37,9 @@ DIMENSION_METRICS: dict[str, tuple[str, ...]] = {
     # Of the characters returned, how many were the ones asked for? The chunker's honest score:
     # a huge chunk can hold the answer and still waste most of a context window.
     "chunk": ("character_precision",),
+    # Can this embedder discriminate on this corpus at all? Measurable with no eval set, which
+    # makes it the only dimension somebody choosing a model can score before writing questions.
+    "embed": ("embedding_quality",),
     # Did the right passages come back?
     "retrieval": ("recall", "ndcg"),
     # Is the answer supported by them, and does it address the question?
