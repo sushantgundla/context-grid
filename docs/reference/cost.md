@@ -17,6 +17,8 @@ a sweep.
 
 ```python
 # src/contextgrid/cost/model.py
+from contextgrid.cost.model import Pricing
+
 PRICES: dict[str, Pricing] = {
     "hash": Pricing(metered=False),
     "tfidf": Pricing(metered=False),
@@ -171,6 +173,8 @@ Both are `run:` config keys (`RunConfig.budget_seconds`, `RunConfig.budget_usd` 
 `src/contextgrid/config/schema.py`), consumed by `grid.runner.Budget`:
 
 ```python
+from dataclasses import dataclass
+
 @dataclass(slots=True)
 class Budget:
     seconds: float | None = None

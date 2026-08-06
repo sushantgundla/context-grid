@@ -17,7 +17,7 @@ This recipe builds both sides.
 
 ## The config
 
-```python
+```python no-run: abbreviated -- shown in full in "The command" below
 grid = matrix(
     parser="markdown",
     chunker="recursive:256,overlap=32",

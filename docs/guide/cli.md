@@ -35,7 +35,7 @@ Runs everything a config file describes and prints the leaderboard. The everyday
 [getting-started.md](getting-started.md) for the full walkthrough and what "reading the
 leaderboard" means.
 
-```bash
+```bash no-run: usage synopsis -- config.yaml is a placeholder, not a real file
 contextgrid run config.yaml [--quiet]
 ```
 
@@ -51,7 +51,7 @@ Writes whatever `report:` in the config asks for (see [configuration.md](configu
 Writes a starter config listing every plugin *this installation* can actually run as a chosen
 value, and everything else as a comment showing how to unlock it (which extra to install).
 
-```bash
+```bash no-run: usage synopsis, not a literal command
 contextgrid init [path] [--corpus DIR] [--evalset FILE] [--force]
 ```
 
@@ -73,7 +73,7 @@ edit it, then run:  contextgrid run contextgrid.yaml
 Parses a config, resolves its paths, and prints the shape of the sweep — without running or
 scoring anything.
 
-```bash
+```bash no-run: usage synopsis -- config.yaml is a placeholder, not a real file
 contextgrid check config.yaml
 ```
 
@@ -123,7 +123,7 @@ axis before anything expensive starts.
 Reads a corpus and suggests which axes are worth sweeping, based on the documents themselves —
 no eval set needed.
 
-```bash
+```bash no-run: usage synopsis, not a literal command
 contextgrid profile corpus [--parser NAME]
 ```
 
@@ -138,7 +138,7 @@ $ contextgrid profile ./documents
 A one-shot sweep from flags alone, no config file. Good for a quick check; `run` with a config
 file is the one to script or keep in version control.
 
-```bash
+```bash no-run: usage synopsis, not a literal command
 contextgrid sweep corpus evalset [options]
 ```
 
@@ -176,7 +176,7 @@ Lists everything registered for each plugin family — parser, chunker, embedder
 reranker, tokenizer — with a one-line description each. Includes plugins that need an extra
 you haven't installed (unlike the `init` template, which only offers what's runnable).
 
-```bash
+```bash no-run: usage synopsis, not a literal command
 contextgrid plugins [--family NAME]
 ```
 
@@ -203,7 +203,7 @@ Inspects an eval set file and reports what it can support — size, how much has
 reviewed, the smallest score difference it can reliably detect. See
 [evalsets.md](evalsets.md#eval-set-quality) for what these numbers mean.
 
-```bash
+```bash no-run: usage synopsis -- path is a placeholder, not a real file
 contextgrid evalset path
 ```
 
@@ -222,7 +222,7 @@ Checks the scoring chain itself against [LegalBench-RAG](https://arxiv.org/abs/2
 one public benchmark that stores ground truth as character spans the way context-grid does.
 Not vendored — point it at your own local copy.
 
-```bash
+```bash no-run: usage synopsis, not a literal command
 contextgrid validate benchmark.json corpus [--limit N] [--recall-at-10 X]
 ```
 
@@ -260,7 +260,7 @@ the command stops rather than reporting scores against broken ground truth.
 Explains what changed between two run manifests (`manifest.json`, written by `run`, `sweep
 --bundle`, or as part of any report bundle).
 
-```bash
+```bash no-run: usage synopsis -- before.json/after.json are placeholders, not real files
 contextgrid diff before.json after.json
 ```
 

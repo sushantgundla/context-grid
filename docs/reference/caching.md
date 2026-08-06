@@ -9,6 +9,13 @@ parse; those that also share a chunker and embedder share the embeddings too.
 `cache_key()` hashes four things together:
 
 ```python
+import hashlib
+import json
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+from contextgrid.cache.store import CACHE_FORMAT, _canonical
+
 def cache_key(
     stage: str,
     version: str,

@@ -121,8 +121,14 @@ How fast is express shipping?,shipping.md,arrives the next business day
 ```
 
 ```python
+from pathlib import Path
 from contextgrid.evalset.io import read_csv
 
+Path("questions.csv").write_text(
+    "question,document,evidence\n"
+    "How long do refunds take?,refunds.md,within 30 days of purchase\n"
+    "How fast is express shipping?,shipping.md,arrives the next business day\n"
+)
 evalset = read_csv("questions.csv", evalset_id="from-csv")
 ```
 
@@ -163,6 +169,16 @@ up end to end; the scores it produces are far higher than anything a real user's
 get, so don't publish a leaderboard built on it.
 
 ```python
+import os
+
+os.makedirs("documents", exist_ok=True)
+with open("documents/policy.md", "w") as f:
+    f.write(
+        "# Refund Policy\n\nRefunds are issued within 30 days of purchase. Digital goods "
+        "are not refundable once downloaded.\n\n# Shipping\n\nStandard shipping takes 5 to "
+        "7 business days. Express shipping arrives the next business day.\n"
+    )
+
 from contextgrid import Corpus, get_parser, get_chunker
 from contextgrid.evalset.generate import generate, KeywordProbeGenerator
 

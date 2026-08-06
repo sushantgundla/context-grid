@@ -16,7 +16,7 @@ A Python SDK for running controlled experiments across the whole grounding pipel
 ingestion, parsing, chunking, embedding, indexing, retrieval, reranking, context assembly and
 generation — and getting back ranked, reproducible, cost-aware results on **your own documents**.
 
-```python
+```python no-run: pre-implementation design sketch (cg.Lab, .grid(), .pareto() were never shipped this way -- see guide/getting-started.md for the real API)
 import contextgrid as cg
 
 lab = cg.Lab(corpus="./contracts")
@@ -175,7 +175,7 @@ conclusion from an approximate comparison.
 
 ## 5. Core types
 
-```python
+```python no-run: pre-implementation sketch of the core types -- real signatures now differ (see core/span.py, core/documents.py, core/evalset.py)
 Span(doc_id, start, end)          # half-open [start, end)
 Document(id, text, source, meta)  # the canonical text offsets refer to
 Block(span, text, kind, page, meta)          # parser output unit
@@ -243,7 +243,7 @@ elsewhere.
 
 ## 9. Public API sketch
 
-```python
+```python no-run: pre-implementation API sketch (cg.Lab, evalset.review(), .estimate() were never shipped this way -- see guide/getting-started.md and guide/evalsets.md for the real API)
 import contextgrid as cg
 
 # 1. Corpus

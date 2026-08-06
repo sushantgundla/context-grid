@@ -288,6 +288,11 @@ def check_file(path: Path, venv_python: Path) -> list[Result]:
         tests_dir = REPO_ROOT / "tests"
         if tests_dir.is_dir():
             os.symlink(tests_dir, tmp / "tests")
+        # Recipe pages lean on examples/lab_demo.py the same way -- `sys.path.insert(0,
+        # "examples")` then `import lab_demo`.
+        examples_dir = REPO_ROOT / "examples"
+        if examples_dir.is_dir():
+            os.symlink(examples_dir, tmp / "examples")
 
         old_cwd = os.getcwd()
         os.chdir(tmp)
@@ -336,6 +341,11 @@ def check_file(path: Path, venv_python: Path) -> list[Result]:
         env["VIRTUAL_ENV"] = str(venv_python.parent.parent)
         if sh_blocks:
             os.symlink(venv_python.parent.parent, tmp / ".venv")
+            # A couple of reference pages read pyproject.toml as "source of truth" (e.g.
+            # `grep ... pyproject.toml`) -- read-only, so a symlink is safe here too.
+            pyproject = REPO_ROOT / "pyproject.toml"
+            if pyproject.is_file():
+                os.symlink(pyproject, tmp / "pyproject.toml")
         for block in sh_blocks:
             if block.skip:
                 results.append(Result(block, "SKIP", block.skip_reason))

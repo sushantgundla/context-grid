@@ -19,7 +19,7 @@ corpus.
 `embedder` as an axis, everything else fixed, same corpus and eval set as
 [choose-a-chunker.md](choose-a-chunker.md) (33 documents, 74 questions):
 
-```python
+```python no-run: abbreviated -- shown in full in "The command" below
 grid = matrix(
     parser="markdown",
     chunker="recursive:256,overlap=32",
@@ -102,7 +102,9 @@ generate documentation is the wrong trade. What *does* run, with no network at a
 `transport` hook every remote embedder takes — the same pattern
 `tests/unit/test_llm_litellm.py` uses to test the real adapter without calling out:
 
-```python
+```python no-run: continues from Part 1's corpus/evalset (examples/lab_demo.py), shown in full below
+import hashlib
+
 from contextgrid.pipeline import Config, build
 from contextgrid.grid.runner import Runner
 from contextgrid.embed.remote import TEIEmbedder
@@ -111,7 +113,9 @@ import numpy as np
 
 def fake_embed(batch):
     """Stands in for a running TEI server -- deterministic, no docker, no download."""
-    vecs = [np.random.default_rng(abs(hash(t)) % 2**32).standard_normal(64).tolist() for t in batch]
+    def seed_for(text: str) -> int:
+        return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+    vecs = [np.random.default_rng(seed_for(t)).standard_normal(64).tolist() for t in batch]
     return vecs, 0  # (vectors, token_count)
 
 
@@ -123,14 +127,16 @@ result = Runner(corpus=corpus, headline="recall@5").run_one(cfg, evalset)
 print(result.metric("recall@5"))
 ```
 
-Run for real: **`recall@5: 0.096`** — near the random-chunk floor, exactly as it should be,
+Run for real: **`recall@5: 0.123`** — near the random-chunk floor, exactly as it should be,
 because `fake_embed` returns pure noise with no relationship to the text at all. That's not a
-finding about embedders; it's proof the wiring works. Swap `fake_embed` for a real batch call and
-the same script measures a real model — see [local-only.md](local-only.md) for a fuller offline
-sweep on the same idea. Note the API: `run_one(config, evalset)` takes a single already-built
-`Config`, not the string-based `matrix()` — `matrix()` deliberately rejects plugin instances (see
-[configuration](../guide/configuration.md)), so a live `transport` callable can only be swept one
-configuration at a time, not across a whole grid in one call.
+finding about embedders; it's proof the wiring works. (The seed has to come from a stable hash
+of the text, not Python's built-in `hash()` — that's randomised per process, so a "deterministic"
+stand-in built on it would print a different number on every run.) Swap `fake_embed` for a real
+batch call and the same script measures a real model — see [local-only.md](local-only.md) for a
+fuller offline sweep on the same idea. Note the API: `run_one(config, evalset)` takes a single
+already-built `Config`, not the string-based `matrix()` — `matrix()` deliberately rejects plugin
+instances (see [configuration](../guide/configuration.md)), so a live `transport` callable can
+only be swept one configuration at a time, not across a whole grid in one call.
 
 ## Part 2 — no eval set at all: `contextgrid.embed.assess`
 

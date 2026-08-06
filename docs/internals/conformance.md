@@ -28,7 +28,7 @@ module to plug a new strategy into today, only the pattern those unit tests esta
 Both suites use the same shape. Taking the chunker one
 (`test_chunker_conformance.py`) as the example:
 
-```python
+```python no-run: excerpt from tests/conformance/test_chunker_conformance.py, not standalone
 @pytest.fixture(params=ALL_CHUNKERS, ids=CASE_IDS)
 def case(request: pytest.FixtureRequest) -> ChunkerCase:
     return request.param

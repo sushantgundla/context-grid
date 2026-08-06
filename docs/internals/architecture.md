@@ -23,10 +23,13 @@ Corpus ──parse──▶ ParsedDocument ──chunk──▶ Chunk[] ──in
                                               ── scoring, per run ──
                                                           │
                           anchor-resolve evalset ──▶ span-resolve to qrels ──▶ metrics
+                                                          │
+                                       (config.generator set) ──▶ assemble ──▶ generate ──▶ score
 ```
 
-Two more stages exist as their own modules — `assemble/` and `generate/` — but as of this
-writing they are **not** wired into the pipeline above. See [§7](#7-assemble-and-generate-a-separate-stage-not-yet-wired-in).
+A tenth, optional stage sits on top of scoring: when `config.generator` is set, `Runner.run_one`
+assembles the retrieved chunks and generates an answer, in addition to (not instead of) the
+retrieval metrics above. See [§7](#7-generation-optional-wired-into-scoring).
 
 Everything from parse through scoring happens inside two files:
 [`pipeline.py`](../../src/contextgrid/pipeline.py) builds and queries one configuration;
@@ -161,30 +164,37 @@ embedder share the embeddings too, so sweeping four rerankers across twenty conf
 embeds nothing at all. `CacheStats` (`cache/store.py`) counts hits and misses so that claim can
 be checked, not just believed — see `results.cache_summary`.
 
-## 7. Assemble and generate: a separate stage, not yet wired in
+## 7. Generation: optional, wired into scoring
 
-`assemble/context.py:ContextAssembler` and `generate/answer.py:Generator` /
-`generate/judge.py:GenerationJudge` exist and are fully implemented — ordering strategies
-(`Ordering.RELEVANCE` / `.ENDS` / `.DOCUMENT`), token budgeting, deduplication, an
-`LLMGenerator` and a no-model `ExtractiveGenerator`, `score_answer()`, and `lift()` (how much of
-a retrieval gain survived to the answer). But nothing in `pipeline.py` or `grid/runner.py`
-calls them — `BuiltPipeline.search()` returns chunk ids, and `Runner.run_one()` scores those
-ids directly. Turning retrieved chunks into an assembled context and a generated answer is
-something a caller does by hand today:
+`grid.generator` is the tenth axis (`AXIS_ORDER`, last — it runs on whatever reranking
+produced; see [generation](../dimensions/generation.md)). `None` (the default) means exactly
+what every config meant before this axis existed: no assembly, no model call, no cost.
 
-```python
-from contextgrid.assemble import ContextAssembler
-from contextgrid.generate import ExtractiveGenerator, score_answer
+When it is set, `Runner.run_one()` calls `self._score_generation(...)` after retrieval scoring
+(`diagnose()` has already run, using retrieval data alone — see step 7 below), which for every
+question calls `BuiltPipeline.answer()`:
 
-assembled = ContextAssembler().assemble(retrieved_chunks)
-answer = ExtractiveGenerator().answer(question, assembled)
-score = score_answer(answer, reference_answer)
+```python no-run: excerpt from inside BuiltPipeline.answer() -- self/retrieved are method context, not standalone
+# BuiltPipeline.answer(), pipeline.py -- assembles then generates, in one call
+context = self.assembler.assemble(retrieved)      # assemble/context.py:ContextAssembler
+return self.generator.answer(question, context), context   # the configured Generator
 ```
 
-`tests/unit/test_generation.py` is the closest thing to a spec for that pattern. Wiring it into
-the grid (an `assembler` and `generator` axis, answer-quality columns on the leaderboard, FP4–FP7
-diagnosis) is future work, not something this codebase does yet — worth knowing before assuming
-a `Config` field for it exists.
+`score_answer()` (`generate/answer.py`) scores the reply lexically against the gold chunks —
+`groundedness`, `citation_accuracy`, `evidence_overlap`, `abstention_accuracy`. When `run.model`
+is set and `deepeval` is installed, a `GenerationJudge` additionally scores `faithfulness` and
+`answer_relevancy`. Both fold into the same metrics dict every other stage reports into, which
+is what lets `DIMENSION_METRICS["generation"]` in
+[`report/composite.py`](../../src/contextgrid/report/composite.py) find them — see
+[composite score](../scoring/composite.md). A generator that fails on one question is recorded
+and skipped, the same rule an agentic retrieval planner follows for a refusal; the rest of the
+eval set still gets scored.
+
+**`diagnose()` still cannot see any of this.** It classifies FP1–FP3 from retrieval data alone
+(step 7 above) regardless of whether a generator ran in the same configuration — FP4–FP7, the
+failure points about what the generator did with the context, are not fed generation output and
+stay unclassified. `FailureReport.observed_generation` is hardcoded `False`. Watching what the
+generator actually did with a bad context is future work, not something this codebase does yet.
 
 ## See also
 

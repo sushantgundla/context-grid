@@ -21,7 +21,7 @@ config-b.yaml             chunker: [sentence:2]
 
 ## The command
 
-```bash
+```bash no-run: narrative walkthrough -- config-a.yaml/config-b.yaml and their corpus aren't reconstructed in this snippet
 .venv/bin/contextgrid run config-a.yaml
 .venv/bin/contextgrid run config-b.yaml
 cat results-a/manifest.json
@@ -64,7 +64,7 @@ manifest unique by definition, which defeats the entire point of a hash you can 
 
 Rerun `config-a.yaml` into a second output directory and compare hashes:
 
-```bash
+```bash no-run: narrative walkthrough -- continues the results-a directory from the previous command
 .venv/bin/contextgrid run config-a.yaml --quiet   # (into ./results-a2, config copied and edited)
 python3 -c "
 import json
@@ -90,7 +90,7 @@ manifests in, a plain-English answer out — `contextgrid diff <before> <after>`
 
 **Only the chunker changed:**
 
-```bash
+```bash no-run: narrative walkthrough -- results-a/results-b come from earlier commands in this recipe
 .venv/bin/contextgrid diff results-a/manifest.json results-b/manifest.json
 ```
 ```
@@ -101,7 +101,7 @@ manifests in, a plain-English answer out — `contextgrid diff <before> <after>`
 **The corpus itself changed** (edited `refunds.md`'s notice period from 30 to 45 days, and the
 eval set's gold quote to match):
 
-```bash
+```bash no-run: narrative walkthrough -- results-c comes from a run against an edited corpus, not shown here
 .venv/bin/contextgrid diff results-a/manifest.json results-c/manifest.json
 ```
 ```
@@ -125,7 +125,7 @@ its own any more — both fall back to the seed the run itself was configured wi
 
 **Same config, same seed, run twice:**
 
-```bash
+```bash no-run: narrative walkthrough -- config-x.yaml/config-y.yaml aren't reconstructed in this snippet
 .venv/bin/contextgrid run config-x.yaml --quiet   # run.seed: 7, ./results-x
 .venv/bin/contextgrid run config-y.yaml --quiet   # identical config, run.seed: 7, ./results-y
 diff out-x.txt out-y.txt
@@ -149,7 +149,7 @@ are not distinguishable on this eval set (n=3). ...
 wrote 3 files to ./results-x
 ```
 
-```python
+```python no-run: narrative walkthrough -- results-x comes from the contextgrid run command above
 import json
 
 print(json.load(open("results-x/manifest.json"))["seeds"])  # {"run": 7}

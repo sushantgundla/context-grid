@@ -68,7 +68,6 @@ chunk = [
     "chonkie>=1.7",
     "langchain-text-splitters>=0.3",
     "tree-sitter-language-pack>=0.9",
-    "litellm>=1.60",
 ]
 # Hosted embedding and generation models, through one interface. TEI needs nothing here --
 # it is reached over plain urllib, so a running server plus the core install is enough.

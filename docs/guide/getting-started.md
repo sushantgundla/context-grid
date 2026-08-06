@@ -14,10 +14,13 @@ The core installs with just a few pure-Python dependencies — no CUDA, no downl
 embedding models, PDF parsers, and some chunkers live behind extras:
 
 ```bash
-pip install "context-grid[parse]"   # pymupdf, pdfplumber
-pip install "context-grid[chunk]"   # chonkie
-pip install "context-grid[embed]"   # onnx runtime, local models
-pip install "context-grid[all]"     # everything
+pip install "context-grid[parse]"    # pymupdf, pdfplumber, pymupdf4llm
+pip install "context-grid[chunk]"    # chonkie, langchain-text-splitters
+pip install "context-grid[embed]"    # tiktoken, for exact token counts
+pip install "context-grid[llm]"      # litellm: hosted models, and their prices
+pip install "context-grid[index]"    # faiss, usearch
+
+pip install "context-grid[parse,chunk,index]"   # a useful working set
 ```
 
 You don't need any extra to follow this page — everything below runs on the bare install.
@@ -47,6 +50,7 @@ comparable at all):
 {"_evalset": {"id": "policy-questions", "version": 1, "source": "manual", "meta": {}}}
 {"id": "q1", "question": "How long do refunds take?", "gold": [], "anchors": [{"source_id": "refunds.md", "quote": "within 30 days of purchase", "grade": 2, "page_hint": null, "occurrence": 0}], "qtype": null, "answer": null, "meta": {}}
 {"id": "q2", "question": "How fast is express shipping?", "gold": [], "anchors": [{"source_id": "shipping.md", "quote": "arrives the next business day", "grade": 2, "page_hint": null, "occurrence": 0}], "qtype": null, "answer": null, "meta": {}}
+{"id": "q3", "question": "Can I return digital goods?", "gold": [], "anchors": [{"source_id": "refunds.md", "quote": "not refundable once downloaded", "grade": 2, "page_hint": null, "occurrence": 0}], "qtype": null, "answer": null, "meta": {}}
 ```
 
 You'll usually generate this with `contextgrid.evalset.generate` or write it from a
@@ -58,7 +62,7 @@ spreadsheet as CSV — see [evalsets.md](evalsets.md).
 run — nothing you'd need an extra for shows up as a runnable choice, only as a comment telling
 you how to unlock it.
 
-```bash
+```bash no-run: narrative walkthrough -- ./documents and ./questions.jsonl aren't reconstructed in this snippet
 contextgrid init contextgrid.yaml --corpus ./documents --evalset ./questions.jsonl
 ```
 
@@ -77,7 +81,7 @@ value holds it still. The full key reference, with every default, is in
 `contextgrid check` parses the config, resolves its paths, and prints the shape of the sweep —
 without running anything. Worth doing before a sweep that might take an hour.
 
-```bash
+```bash no-run: narrative walkthrough -- continues from the contextgrid init command above
 contextgrid check contextgrid.yaml
 ```
 
@@ -104,7 +108,7 @@ silently ignored.
 
 ## Run it
 
-```bash
+```bash no-run: narrative walkthrough -- continues from the contextgrid init command above
 contextgrid run contextgrid.yaml
 ```
 

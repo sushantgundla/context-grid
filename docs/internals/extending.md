@@ -4,7 +4,7 @@ This walks through writing, registering, and testing two new plugins: a `Chunker
 `RetrievalStrategy`. Every code block below actually runs — output is pasted from
 `.venv/bin/python`, not typed by hand. To reproduce it yourself:
 
-```bash
+```bash no-run: a template -- path/to/the/script.py is a placeholder, not a real file
 PYTHONPATH=. .venv/bin/python path/to/the/script.py
 ```
 

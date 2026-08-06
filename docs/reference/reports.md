@@ -63,6 +63,9 @@ the resolution policy, library versions, and seeds. It deliberately **excludes**
 costs and results — a manifest that changed every run couldn't be compared with another one.
 
 ```python
+from dataclasses import dataclass, field
+from typing import Any
+
 @dataclass(frozen=True, slots=True)
 class Manifest:
     config: dict[str, Any]
@@ -215,7 +218,7 @@ a value contains YAML-special characters (note `"structural:800"` gets quoted be
 
 ### `python` — `config_to_python()`
 
-```python
+```python no-run: this is config_to_python()'s output, a script for your own ./documents corpus
 """The winning configuration, as context-grid found it."""
 
 import contextgrid as cg
@@ -241,6 +244,8 @@ for chunk_id in pipeline.search("your question here"):
 ## `write_bundle()`: all of it, in one directory
 
 ```python
+from pathlib import Path
+
 def write_bundle(results, directory, *, metric="recall@5", manifest=None) -> list[Path]: ...
 ```
 

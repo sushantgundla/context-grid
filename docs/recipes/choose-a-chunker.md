@@ -16,7 +16,7 @@ plus thirty near-duplicate distractor documents, with 74 questions. It's the sam
 
 Five chunkers, everything else fixed: `tfidf` embedder, `dense` index, `k=5`.
 
-```python
+```python no-run: abbreviated -- corpus/evalset come from examples/lab_demo.py, built in full in "The command" below
 from contextgrid.grid import Runner, matrix
 
 grid = matrix(

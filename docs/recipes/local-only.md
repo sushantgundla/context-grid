@@ -15,7 +15,7 @@ install beyond the base package.
 
 ### The config
 
-```python
+```python no-run: abbreviated -- shown in full in "The command" below
 grid = matrix(
     parser="markdown",
     chunker="recursive:256,overlap=32",
@@ -78,7 +78,7 @@ text-embeddings-inference server) is the local option — reached over plain `ur
 zero extra dependency once the server's running. One process serves one model, so embedding and
 reranking need **separate ports**:
 
-```bash
+```bash no-run: needs a running Docker daemon and pulls images from ghcr.io
 # embeddings
 docker run -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
     --model-id BAAI/bge-base-en-v1.5
@@ -108,7 +108,7 @@ these two backends (`tests/unit/` and the classes' own docstrings both point at 
 
 ```bash
 .venv/bin/python - <<'PY'
-import sys
+import sys, hashlib
 sys.path.insert(0, "examples")
 import numpy as np
 import lab_demo as d
@@ -120,11 +120,14 @@ evalset, corpus = d.build_evalset(), d.markdown_corpus()
 
 # Deterministic stand-in for a running TEI server -- hashes each text into a fixed vector.
 # It is not a model. It exists to prove the wiring works with no server, exactly the way
-# tests/unit/test_llm_litellm.py stands in for litellm.
+# tests/unit/test_llm_litellm.py stands in for litellm. The seed has to come from a stable
+# hash of the text (sha256), not Python's built-in hash() -- that's randomised per process,
+# so a "deterministic" stand-in built on it would print a different number on every run.
 def fake_embed(batch):
     vecs = []
     for text in batch:
-        rng = np.random.default_rng(abs(hash(text)) % (2**32))
+        seed = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+        rng = np.random.default_rng(seed)
         vecs.append(rng.standard_normal(64).tolist())
     return vecs, 0
 
@@ -138,12 +141,12 @@ PY
 ### The real output
 
 ```
-recall@5: 0.0958904109589041 | chunks: 35
+recall@5: 0.1232876712328767 | chunks: 35
 ```
 
 ### How to read it
 
-0.096 is near the random-chunk floor (k=5 over 35 chunks with no useful signal lands around
+0.123 is near the random-chunk floor (k=5 over 35 chunks with no useful signal lands around
 5/35 ≈ 0.14) — which is exactly what it should be, since `fake_embed` returns pure Gaussian
 noise with zero relationship to the text. **This number says nothing about whether a real BGE
 model is good.** It says the plumbing — batching, prefixing, dimension checks, the index build —

@@ -61,7 +61,7 @@ answer. It answers "can this model tell chunks apart on these documents," never 
 retrieve the right one." See [choose-an-embedder.md](choose-an-embedder.md) for the full worked
 example (`tfidf` vs `hash:512`, real output, real geometry); the short version:
 
-```python
+```python no-run: abbreviated -- chunks stands in for your own corpus; full worked example in choose-an-embedder.md
 from contextgrid.embed import assess as embed_assess, get_embedder
 
 emb = get_embedder("tfidf")
