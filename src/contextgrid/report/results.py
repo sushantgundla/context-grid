@@ -42,8 +42,12 @@ class RunResult:
     per_query: dict[str, float] = field(default_factory=dict)
     by_type: dict[str, dict[str, float]] = field(default_factory=dict)
     failures: FailureReport | None = None
+    #: The seed the run was configured with. `interval()` resamples with it by default, so the
+    #: confidence interval on a leaderboard row is reproducible from the manifest rather than
+    #: from a hidden zero -- the same bug `Results.seed` exists to close for significance.
+    seed: int = 0
 
-    def interval(self, *, confidence: float = 0.95, seed: int = 0) -> Interval | None:
+    def interval(self, *, confidence: float = 0.95, seed: int | None = None) -> Interval | None:
         """A confidence interval on the headline metric.
 
         A single number with no interval is an opinion. This is what turns 0.71 into
@@ -51,6 +55,7 @@ class RunResult:
         """
         if not self.per_query:
             return None
+        seed = self.seed if seed is None else seed
         return bootstrap_interval(list(self.per_query.values()), confidence=confidence, seed=seed)
 
     @property
@@ -86,6 +91,9 @@ class Results:
     warnings: WarningLog = field(default_factory=WarningLog)
     cache_summary: str = ""
     mode: str = "ofat"
+    #: The seed the run was configured with. Every resampling here defaults to it, so a
+    #: significance verdict is reproducible from the manifest rather than from a hidden zero.
+    seed: int = 0
     meta: dict[str, Any] = field(default_factory=dict)
 
     def __iter__(self) -> Iterator[RunResult]:
@@ -183,7 +191,7 @@ class Results:
         *,
         metric: str = "recall@5",
         alpha: float = 0.05,
-        seed: int = 0,
+        seed: int | None = None,
     ) -> Comparison:
         """Whether two configurations actually differ, tested question by question.
 
@@ -196,6 +204,11 @@ class Results:
             missing = left if first is None else right
             raise KeyError(f"no run labelled {missing!r}")
 
+        # Falls back to the run's own seed, not to zero. `run.seed` was written into the
+        # manifest and used by nothing: a config setting `seed: 42` recorded 42 and resampled
+        # with 0, so the manifest made a reproducibility claim the run did not honour.
+        seed = self.seed if seed is None else seed
+
         return compare_scores(
             first.per_query,
             second.per_query,
@@ -207,7 +220,7 @@ class Results:
         )
 
     def is_the_winner_real(
-        self, metric: str = "recall@5", *, alpha: float = 0.05, seed: int = 0
+        self, metric: str = "recall@5", *, alpha: float = 0.05, seed: int | None = None
     ) -> Comparison | None:
         """Test the top configuration against the runner-up.
 

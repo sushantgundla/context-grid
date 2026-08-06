@@ -135,6 +135,7 @@ def build_runner(config: ExperimentConfig, corpus: Corpus) -> Runner:
         ks=config.run.ks,
         headline=config.run.headline,
         llm=build_llm(config),
+        seed=config.run.seed,
     )
 
 

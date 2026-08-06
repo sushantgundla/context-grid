@@ -1,5 +1,11 @@
 """Parsers, and the registry of them.
 
+`unstructured` used to be registered here and was never written. Worse than useless: asking for
+it raised a MissingExtraError naming the `parse-ml` extra, which does not contain it and would
+not have helped -- an instruction that costs somebody a heavy install and leaves them exactly
+where they started. Advertising a plugin that cannot run is the same failure as a config key
+nobody reads.
+
 The parser defines the text every character offset downstream refers to, which is why it is
 an axis on the grid rather than a setting. Two parsers over the same PDF produce different
 text, different chunks and different retrieval -- and nothing else in the field measures that
@@ -53,7 +59,7 @@ PARSERS.register_lazy(
     "marker",
     module="contextgrid.parse.layout",
     attr="MarkerParser",
-    extra="parse-ml",
+    extra="parse-marker",
     package="marker-pdf",
     shorthand="languages",
     doc="Surya layout and OCR, 90+ languages. The most faithful and by far the slowest.",
@@ -76,15 +82,6 @@ PARSERS.register_lazy(
     extra="parse",
     package="pymupdf4llm",
     doc="Markdown from the PyMuPDF engine. Tests output format, not extraction.",
-)
-PARSERS.register_lazy(
-    "unstructured",
-    module="contextgrid.parse.unstructured",
-    attr="UnstructuredParser",
-    extra="parse-ml",
-    package="unstructured",
-    shorthand="strategy",
-    doc="Unstructured, with fast and hi_res strategies.",
 )
 
 

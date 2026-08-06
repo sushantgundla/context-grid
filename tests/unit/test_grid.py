@@ -13,6 +13,7 @@ from contextgrid.cost.model import CostModel, Pricing
 from contextgrid.grid import Matrix, MatrixError, Runner, SweepMode, estimate_cost, matrix
 from contextgrid.grid.matrix import canonicalise, deduplicate
 from contextgrid.pipeline import Config, Timings
+from contextgrid.report.results import Results, RunResult
 from tests.support import API_DOCS, CONTRACT
 
 QUESTIONS = [
@@ -318,9 +319,102 @@ def test_the_summary_is_plain_english(corpus: Corpus, evalset: EvalSet) -> None:
 
 
 def test_an_empty_result_set_says_so() -> None:
-    from contextgrid.report.results import Results
-
     assert Results().summary() == "No configurations were run."
+
+
+# ---------------------------------------------------------------------------
+# the run's seed reaches the resampling it claims to control
+#
+# `run.seed` went into the manifest and nothing used it: a config setting `seed: 42` recorded
+# 42 and every bootstrap and significance test resampled with a hard-coded 0. These tests pin
+# the fix down at every layer -- the seed the runner was given lands on `Results` and on each
+# `RunResult`, and both `interval()` and `significance()` resample with it unless a caller
+# explicitly overrides it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_runners_seed_lands_on_results_and_every_run(corpus: Corpus, evalset: EvalSet) -> None:
+    results = Runner(corpus=corpus, seed=7).run(
+        matrix(chunker=["sentence:1", "fixed:20,overlap=0"]), evalset, mode="factorial"
+    )
+    assert results.seed == 7
+    assert all(run.seed == 7 for run in results.runs)
+
+
+def test_a_staged_sweep_also_carries_the_seed(corpus: Corpus, evalset: EvalSet) -> None:
+    results = Runner(corpus=corpus, seed=3).run(
+        matrix(chunker=["sentence:1", "fixed:20,overlap=0"], index=["dense", "bm25"]),
+        evalset,
+        mode="staged",
+    )
+    assert results.seed == 3
+
+
+# Two configurations, engineered so the paired significance test sits right on the alpha=0.05
+# boundary: the observed gap is real but small enough that whether it clears the bar depends on
+# which resample the Monte Carlo test happens to draw. That is exactly the situation `run.seed`
+# has to control for the manifest's reproducibility claim to mean anything -- a gap so large or
+# so small that every seed agrees would not exercise the fix at all.
+_MARGINAL_LEFT = {f"q{i}": 1.0 for i in range(24)}
+_MARGINAL_RIGHT = {**_MARGINAL_LEFT, **{f"q{i}": 0.0 for i in range(5)}}
+
+
+def _marginal_results(seed: int) -> Results:
+    left = RunResult(config=Config(chunker="recursive:512"), per_query=dict(_MARGINAL_LEFT))
+    right = RunResult(config=Config(chunker="sentence:3"), per_query=dict(_MARGINAL_RIGHT))
+    return Results(runs=[left, right], seed=seed)
+
+
+def test_significance_falls_back_to_the_runs_seed_not_zero() -> None:
+    results = _marginal_results(seed=1)
+    left, right = (run.label for run in results.runs)
+    # No explicit seed: this must resample with the run's seed (1), not the old hard-coded 0.
+    assert (
+        results.significance(left, right).p_value
+        == results.significance(left, right, seed=1).p_value
+    )
+
+
+def test_an_explicit_seed_still_wins_over_the_runs_seed() -> None:
+    results = _marginal_results(seed=1)
+    left, right = (run.label for run in results.runs)
+    explicit = results.significance(left, right, seed=9)
+    implicit = results.significance(left, right)
+    assert explicit.p_value == results.significance(left, right, seed=9).p_value
+    assert explicit.p_value != implicit.p_value  # seed 9 and the run's seed 1 disagree here
+
+
+def test_two_runs_with_the_same_seed_give_the_identical_verdict() -> None:
+    """The reproducibility claim itself: same config, same seed, same answer -- twice."""
+    first = _marginal_results(seed=7).is_the_winner_real("recall@5")
+    second = _marginal_results(seed=7).is_the_winner_real("recall@5")
+    assert first is not None
+    assert second is not None
+    assert first.p_value == second.p_value
+    assert first.distinguishable == second.distinguishable
+    assert first.verdict() == second.verdict()
+
+
+def test_a_different_seed_can_flip_a_marginal_verdict() -> None:
+    """Proof the seed is not decorative: on a borderline comparison, changing it changes the
+    call. Values pinned by construction -- see `_MARGINAL_LEFT`/`_MARGINAL_RIGHT` above."""
+    seed_0 = _marginal_results(seed=0).is_the_winner_real("recall@5")
+    seed_1 = _marginal_results(seed=1).is_the_winner_real("recall@5")
+    assert seed_0 is not None
+    assert seed_1 is not None
+    assert seed_0.distinguishable is True
+    assert seed_1.distinguishable is False
+
+
+def test_interval_falls_back_to_the_runs_seed() -> None:
+    from contextgrid.score.significance import bootstrap_interval
+
+    run = RunResult(config=Config(chunker="recursive:512"), per_query=dict(_MARGINAL_RIGHT), seed=5)
+    # No explicit seed: resamples with the run's own seed (5) ...
+    assert run.interval() == run.interval(seed=5)
+    # ... which is the same thing calling the resampler directly with seed=5 would produce --
+    # not just internally consistent, but actually using the value it claims to.
+    assert run.interval() == bootstrap_interval(list(_MARGINAL_RIGHT.values()), seed=5)
 
 
 # ---------------------------------------------------------------------------

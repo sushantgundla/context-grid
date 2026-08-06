@@ -298,8 +298,32 @@ def test_an_unknown_metric_lists_the_real_ones() -> None:
 
 
 def test_an_unknown_dtype_lists_the_real_ones() -> None:
-    with pytest.raises(IndexBuildError, match="f32, f16, i8, b1"):
+    with pytest.raises(IndexBuildError, match="f32, f16, i8"):
         USearchIndex(dtype="f64")
+
+
+def test_every_advertised_dtype_can_actually_be_built() -> None:
+    """`b1` was on the list and could not be built at all: usearch's binary mode wants
+    bit-packed input and a Hamming metric, not the float vectors every other arm takes, and it
+    raised "The number of vector dimensions doesn't match!" on first use.
+
+    Advertising an option that cannot run is the same failure as a config key nobody reads.
+    """
+    chunks = [Chunk(id=f"c{i}", span=Span("d", i, i + 1), text="x") for i in range(50)]
+    vectors = np.random.default_rng(0).normal(size=(50, 32)).astype(np.float32)
+
+    for dtype in USearchIndex.DTYPES:
+        index = USearchIndex(dtype=dtype)
+        index.build(chunks, vectors)
+        assert index.search("", vectors[0], k=3)
+
+
+def test_binary_quantization_is_still_available_where_it_works() -> None:
+    """Removing `usearch:b1` did not remove binary quantization -- `quantized:binary` does it
+    properly, with a rescoring pass to recover the recall it costs."""
+    from contextgrid.index import get_index
+
+    assert get_index("quantized:binary").needs_vectors
 
 
 # ---------------------------------------------------------------------------

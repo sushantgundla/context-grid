@@ -83,7 +83,15 @@ TOKENIZERS.register_lazy(
     attr="cl100k_base",
     extra="embed",
     package="tiktoken",
-    doc="OpenAI cl100k_base, via tiktoken. Exact.",
+    doc="OpenAI cl100k_base, via tiktoken. Exact, so the cost model will price with it.",
+)
+TOKENIZERS.register_lazy(
+    "o200k_base",
+    module="contextgrid.tokenizers_tiktoken",
+    attr="o200k_base",
+    extra="embed",
+    package="tiktoken",
+    doc="GPT-4o's encoding, via tiktoken. Exact.",
 )
 
 

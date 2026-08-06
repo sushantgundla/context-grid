@@ -54,6 +54,11 @@ grid:
 {rerankers}
   candidates: [50]
 
+  # Turning the retrieved, reranked passages into an answer. `null` means no generation at
+  # all -- the sweep stops at retrieval, at no extra cost. `llm` costs a model call per
+  # question, forever, same as a query transform.
+{generators}
+
 run:
   mode: ofat              # ofat | factorial | staged
   k: 10                   # how many chunks reach the generator
@@ -85,6 +90,8 @@ def render(
     """Build a starter config listing what this installation can actually run."""
     from contextgrid.chunk import CHUNKERS
     from contextgrid.embed import EMBEDDERS
+    from contextgrid.generate import GENERATORS
+    from contextgrid.generate import MODEL_BACKED as GENERATOR_MODEL_BACKED
     from contextgrid.index import INDEXES
     from contextgrid.ingest import INGESTERS
     from contextgrid.parse import PARSERS
@@ -105,6 +112,7 @@ def render(
         transforms=_axis("transform", ["null"], TRANSFORMS, extra=MODEL_BACKED),
         retrievers=_axis("retrieval", ["simple"], RETRIEVERS),
         rerankers=_axis("reranker", ["null", "lexical"], RERANKERS),
+        generators=_axis("generator", ["null"], GENERATORS, extra=GENERATOR_MODEL_BACKED),
     )
 
 

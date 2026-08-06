@@ -14,13 +14,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from contextgrid.cache.store import Cache, CacheStats, MemoryCache
-from contextgrid.core.evalset import EvalSet
+from contextgrid.core.evalset import EvalSet, Qrels
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
 from contextgrid.cost.model import CostModel
 from contextgrid.diagnose.taxonomy import diagnose
+from contextgrid.generate import GenerationReport, score_answer
 from contextgrid.grid.matrix import AXIS_ORDER, Matrix, SweepMode
-from contextgrid.pipeline import Config, build, build_qrels, resolve_evalset
+from contextgrid.pipeline import BuiltPipeline, Config, build, build_qrels, resolve_evalset
 from contextgrid.report.results import Results, RunResult
 from contextgrid.score.anchor import AnchorResolver
 from contextgrid.score.metrics import DEFAULT_KS, evaluate, per_query
@@ -82,6 +83,9 @@ class Runner:
     #: Shared by every stage that needs a model: transforms, agentic retrieval, LLM-backed
     #: ingestion, and the generation judge.
     llm: Any = None
+    #: Carried onto the results, so significance testing resamples with the seed the run
+    #: recorded rather than a hidden zero.
+    seed: int = 0
 
     def __post_init__(self) -> None:
         if self.cache is None:
@@ -123,10 +127,17 @@ class Runner:
         failures = diagnose(resolved, qrels, run, k=headline_k)
         _check_strategy_did_something(config, pipeline, len(resolved.items), span_log)
 
+        # A no-op when `config.generator` is unset: no assembly, no model call, no cost, same
+        # as before this axis existed. Folds `faithfulness` and `answer_relevancy` in when a
+        # judge ran, which is what lets DIMENSION_METRICS["generation"] find them later.
+        generation_metrics, generation_log = self._score_generation(pipeline, resolved, run, qrels)
+        metrics.update(generation_metrics)
+
         warnings = WarningLog()
         warnings.extend(pipeline.warnings)
         warnings.extend(anchor_log)
         warnings.extend(span_log)
+        warnings.extend(generation_log)
 
         unresolved = sum(1 for item in resolved if item.anchors and not item.is_answerable)
         if not qrels:
@@ -161,7 +172,104 @@ class Runner:
             per_query=scores,
             by_type=by_type,
             failures=failures,
+            seed=self.seed,
         )
+
+    # -- generation ------------------------------------------------------------
+
+    def _score_generation(
+        self,
+        pipeline: BuiltPipeline,
+        evalset: EvalSet,
+        run: Mapping[str, Sequence[str]],
+        qrels: Qrels,
+    ) -> tuple[dict[str, float], WarningLog]:
+        """Answer every question with the configured generator, and score it.
+
+        Returns nothing at all when `pipeline.generator` is unset -- the cheapest possible
+        no-op, which is what `None` on this axis has to mean.
+
+        A generator that fails on one question must not fail the sweep, the same rule
+        `retrieve.agentic._plan` already follows for a planner that refuses to cooperate: the
+        failure is recorded on that question and the rest of the eval set still gets scored.
+        """
+        log = WarningLog()
+        generator = pipeline.generator
+        if generator is None:
+            return {}, log
+
+        chunks_by_id = pipeline.chunk_by_id()
+        report = GenerationReport(generator=generator.name)
+        judge = self._generation_judge()
+        judge_scores: dict[str, list[float]] = {}
+
+        for item in evalset:
+            try:
+                answer, context = pipeline.answer(item.question, run.get(item.id, ()))
+            except Exception as error:
+                log.add(
+                    WarningCode.GENERATION_FAILED,
+                    f"the {generator.name!r} generator failed on {item.id!r}: {error}. That "
+                    "question was skipped rather than failing the run",
+                    severity=Severity.CAUTION,
+                    stage="generate",
+                    subject=item.id,
+                )
+                continue
+
+            # Gold ids, not gold spans: the qrels are already resolved to this configuration's
+            # own chunking, which a fresh span lookup would have to redo for no benefit.
+            gold_ids = {cid for cid, grade in qrels.get(item.id, {}).items() if grade > 0}
+            gold_chunks = [chunks_by_id[cid] for cid in gold_ids if cid in chunks_by_id]
+            report.scores.append(score_answer(item, answer, context, gold_chunks))
+
+            if judge is None:
+                continue
+            try:
+                judged = judge.score(
+                    query_id=item.id,
+                    question=item.question,
+                    answer=answer.text,
+                    contexts=[chunk.text for chunk in context.chunks],
+                    reference=item.answer,
+                )
+            except Exception as error:
+                log.add(
+                    WarningCode.GENERATION_FAILED,
+                    f"the generation judge failed on {item.id!r}: {error}. Its faithfulness "
+                    "and answer_relevancy were skipped for this question",
+                    severity=Severity.CAUTION,
+                    stage="generate",
+                    subject=item.id,
+                )
+                continue
+            for name, value in judged.scores.items():
+                judge_scores.setdefault(name, []).append(value)
+
+        metrics = dict(report.metrics())
+        metrics.update({name: sum(v) / len(v) for name, v in judge_scores.items() if v})
+        return metrics, log
+
+    def _generation_judge(self) -> Any:
+        """The DeepEval judge, built once per configuration, or `None` when it cannot run.
+
+        Checked here rather than inside the per-question loop: a missing `deepeval` install
+        is one clear failure, and re-discovering it on every question would turn that one
+        failure into as many warnings as there are questions. `self.llm` is `run.model` --
+        the same model already paying for generation, transforms and agentic retrieval, so a
+        sweep with a generator configured gets `faithfulness` and `answer_relevancy` without
+        a second key or an unpriced call to whatever DeepEval defaults to.
+        """
+        if self.llm is None:
+            return None
+        try:
+            import deepeval  # noqa: F401
+        except ImportError:
+            return None
+
+        from contextgrid.generate import GenerationJudge
+
+        return GenerationJudge(llm=self.llm)
 
     # -- a whole matrix ------------------------------------------------------
 
@@ -190,7 +298,7 @@ class Runner:
         if unbounded:
             results.warnings.add(
                 WarningCode.BUDGET_REACHED,
-                f"the {unbounded!r} strategy calls a model -- per question at query time, or "
+                f"the {unbounded!r} plugin calls a model -- per question at query time, or "
                 "per chunk while building the index -- and this sweep has no `budget_usd` or "
                 "`budget_seconds`. Nothing here can tell you the bill in advance",
                 severity=Severity.CAUTION,
@@ -218,7 +326,7 @@ class Runner:
         budget: Budget,
         on_progress: Progress | None,
     ) -> Results:
-        results = Results(mode=mode.value)
+        results = Results(mode=mode.value, seed=self.seed)
         budget.start()
 
         for index, config in enumerate(configs, start=1):
@@ -259,7 +367,7 @@ class Runner:
         conditional on the order the axes were swept in, and it cannot see interactions --
         so it says so, rather than presenting its answer as if it had searched the space.
         """
-        results = Results(mode="staged")
+        results = Results(mode="staged", seed=self.seed)
         budget.start()
         current = matrix.baseline()
         seen: dict[Config, RunResult] = {}
@@ -326,11 +434,17 @@ def _warn_if_unbounded(matrix: Matrix, budget: Budget) -> None:
     work out in advance. Every other axis has a cost you can estimate before starting; this one
     does not, which is exactly why it deserves a limit and a warning when it has none.
 
+    The `generator` axis is not unbounded in the same sense -- one model call per question is
+    entirely predictable -- but it is the single most expensive axis on the grid, and a model
+    call per question times a whole eval set times a whole matrix is exactly the bill this
+    warning exists to flag before it is spent rather than after.
+
     A warning rather than a refusal: it is the user's money and they may well mean it.
     """
     if budget.usd is not None or budget.seconds is not None:
         return
 
+    from contextgrid.generate import MODEL_BACKED as GENERATOR_MODEL_BACKED
     from contextgrid.ingest import get_ingester
     from contextgrid.retrieve import get_retriever
 
@@ -345,6 +459,17 @@ def _warn_if_unbounded(matrix: Matrix, budget: Budget) -> None:
             if getattr(strategy, "uses_model", False):
                 matrix.meta["unbounded_model_calls"] = strategy.name
                 return
+
+    # Checked by name rather than by building one: the `llm` generator cannot be constructed
+    # without a real `LLM` (unlike the strategies above, whose defaults build without one), so
+    # a try/except around `get_generator` would just skip it, every time, silently.
+    for value in matrix.generator:
+        if value is None:
+            continue
+        name = value.partition(":")[0]
+        if name in GENERATOR_MODEL_BACKED:
+            matrix.meta["unbounded_model_calls"] = name
+            return
 
 
 def _check_strategy_did_something(

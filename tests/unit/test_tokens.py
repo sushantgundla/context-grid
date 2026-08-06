@@ -117,6 +117,135 @@ def test_get_tokenizer_passes_an_instance_through() -> None:
     assert get_tokenizer(instance) is instance
 
 
-def test_a_model_tokenizer_needs_its_extra() -> None:
-    with pytest.raises(MissingExtraError, match="tiktoken"):
-        TOKENIZERS.create("cl100k_base")
+def test_a_tokenizer_whose_package_is_absent_names_its_extra() -> None:
+    """Tested against a synthetic registration rather than a real one.
+
+    It used to assert that `cl100k_base` raised -- which it did, because it was registered
+    against a module nobody had written and an extra that did not exist. The test passed for
+    the wrong reason, and passing kept the bug invisible. `cl100k_base` works now.
+    """
+    from contextgrid.core.protocols import Tokenizer
+    from contextgrid.core.registry import Registry
+
+    registry: Registry[Tokenizer] = Registry(family="tokenizer")
+    registry.register_lazy(
+        "imaginary",
+        module="contextgrid.this_tokenizer_does_not_exist",
+        attr="imaginary",
+        extra="embed",
+        package="something-unpublished",
+    )
+
+    with pytest.raises(MissingExtraError, match="something-unpublished"):
+        registry.create("imaginary")
+
+
+def test_every_registered_tokenizer_can_actually_be_built() -> None:
+    """The guarantee the previous test quietly gave up on."""
+    for name in TOKENIZERS.names():
+        tokenizer = get_tokenizer(name)
+        assert tokenizer.count("the refund window is thirty days") > 0
+
+
+# ---------------------------------------------------------------------------
+# exact tokenizers
+# ---------------------------------------------------------------------------
+
+tiktoken = pytest.importorskip("tiktoken")
+
+EXACT = ["cl100k_base", "o200k_base"]
+
+HARD_TEXTS = [
+    "plain ascii text",
+    "The refund window is 30 days — naïve résumé 日本語.",
+    "ありがとうございます",
+    "🙂🙃 emoji " * 5,
+    "",
+    "   \n\n  ",
+]
+
+
+@pytest.mark.parametrize("name", EXACT)
+def test_an_exact_tokenizer_says_it_is_exact(name: str) -> None:
+    """The cost model refuses to price with an approximate one, so this flag is load-bearing.
+
+    Both of these were registered against a module nobody had written, so asking for one raised
+    an install instruction naming an extra that also did not exist -- an error telling you to
+    do something that would not have helped.
+    """
+    tokenizer = get_tokenizer(name)
+    assert tokenizer.exact
+    assert tokenizer.name == name
+
+
+@pytest.mark.parametrize("name", EXACT)
+@pytest.mark.parametrize("text", HARD_TEXTS)
+def test_spans_are_ordered_and_never_overlap(name: str, text: str) -> None:
+    """A chunker cuts on these. Overlapping or out-of-order ranges put a chunk's text somewhere
+    it does not belong, and every gold span inside it moves with it."""
+    spans = get_tokenizer(name).token_spans(text)
+
+    for (_, end), (start, _) in pairwise(spans):
+        assert end <= start
+    for start, end in spans:
+        assert 0 <= start < end <= len(text)
+
+
+@pytest.mark.parametrize("name", EXACT)
+@pytest.mark.parametrize("text", HARD_TEXTS)
+def test_the_spans_reconstruct_the_text(name: str, text: str) -> None:
+    """No character may be lost between tokens. A gap is text no chunk can ever contain."""
+    spans = get_tokenizer(name).token_spans(text)
+    assert "".join(text[start:end] for start, end in spans) == text
+
+
+@pytest.mark.parametrize("name", EXACT)
+def test_a_token_boundary_inside_a_character_does_not_break_the_offsets(name: str) -> None:
+    """tiktoken splits on bytes, and a CJK character is three of them. A boundary landing
+    mid-character has no character offset of its own -- the first attempt at this fell back to
+    the end of the text and produced spans that ran backwards."""
+    text = "日本語のテキストと English mixed together 中文"
+    spans = get_tokenizer(name).token_spans(text)
+
+    assert "".join(text[start:end] for start, end in spans) == text
+    assert spans == sorted(spans)
+
+
+@pytest.mark.parametrize("name", EXACT)
+def test_it_counts_more_tokens_than_word_splitting_does(name: str) -> None:
+    """Roughly a third more on English prose, which is the entire reason the regex tokenizer is
+    barred from the cost model."""
+    text = "The quick brown fox jumps over the lazy dog, repeatedly and enthusiastically. " * 4
+    assert get_tokenizer(name).count(text) > get_tokenizer("regex").count(text)
+
+
+@pytest.mark.parametrize("name", EXACT)
+def test_counting_agrees_with_tiktoken_itself(name: str) -> None:
+    """Cross-checked against the library rather than trusted, the same way the retrieval
+    metrics are cross-checked against ranx."""
+    text = "Refunds are issued within 30 days of purchase."
+    assert get_tokenizer(name).count(text) == len(tiktoken.get_encoding(name).encode(text))
+
+
+def test_an_empty_string_has_no_tokens() -> None:
+    assert get_tokenizer("cl100k_base").count("") == 0
+    assert get_tokenizer("cl100k_base").token_spans("") == []
+
+
+def test_a_real_tokenizer_can_drive_a_chunker() -> None:
+    """The point of `token_spans`: a chunker has to cut at a token boundary *and* report the
+    character offsets it cut at."""
+    from contextgrid.chunk import get_chunker
+    from contextgrid.core.documents import MediaType, SourceFile
+    from contextgrid.parse import get_parser
+
+    text = "# Notes\n\n" + ("The refund window is thirty days. " * 40)
+    parsed = get_parser("markdown").parse(
+        SourceFile(id="d", raw=text.encode("utf-8"), media_type=MediaType.MARKDOWN)
+    )
+    chunks = get_chunker("recursive:64,tokenizer=cl100k_base").chunk(parsed)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert parsed.text[chunk.span.start : chunk.span.end] == chunk.text
+        assert chunk.token_counts["cl100k_base"] > 0

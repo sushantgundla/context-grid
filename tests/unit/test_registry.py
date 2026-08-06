@@ -204,12 +204,40 @@ def test_a_lazily_registered_parser_loads_once_its_extra_is_installed() -> None:
     assert PARSERS.create("pymupdf").name == "pymupdf"
 
 
-def test_a_parser_whose_module_does_not_exist_yet_reports_its_extra() -> None:
-    """`unstructured` is registered and not yet written. Asking for it should say which extra
-    to install rather than raising ModuleNotFoundError from four frames down."""
-    assert "unstructured" in PARSERS
+def test_a_plugin_whose_package_is_absent_reports_its_extra() -> None:
+    """Asking for a plugin whose optional dependency is missing should say which extra to
+    install, rather than raising ModuleNotFoundError from four frames down.
+
+    Tested against a synthetic registration rather than a real one. It used to point at
+    `unstructured`, which was registered and never written -- so the suite depended on the
+    codebase keeping a broken plugin around in order to test its error handling, and the
+    error itself named an extra that did not contain it and would not have helped.
+    """
+    registry: Registry[Widget] = Registry(family="widget")
+    registry.register_lazy(
+        "imaginary",
+        module="contextgrid.this_module_does_not_exist",
+        attr="Imaginary",
+        extra="parse-ml",
+        package="something-unpublished",
+    )
+
     with pytest.raises(MissingExtraError, match=r"context-grid\[parse-ml\]"):
-        PARSERS.create("unstructured")
+        registry.create("imaginary")
+
+
+def test_every_registered_parser_can_actually_be_reached() -> None:
+    """The guarantee the previous test quietly gave up on. A registration pointing at a module
+    nobody wrote is worse than no registration: the error names a fix that does not work."""
+    import importlib.util
+
+    for registration in PARSERS:
+        if registration.module is None:
+            continue
+        assert importlib.util.find_spec(registration.module) is not None, (
+            f"{registration.name!r} is registered against {registration.module!r}, "
+            "which does not exist"
+        )
 
 
 def test_registry_is_iterable_over_registrations(registry: Registry[Widget]) -> None:

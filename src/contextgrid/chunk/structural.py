@@ -35,7 +35,13 @@ class StructuralChunker:
     """
 
     max_size: int = 512
-    min_size: int = 64
+    #: `None` means an eighth of `max_size`, which is 64 at the default 512 -- exactly the
+    #: fixed default this replaced. Fixed, it made `structural:64` an error: the shorthand sets
+    #: `max_size` and the inherited 64 then collided with it. Refusing a reasonable size
+    #: because of a default the user never named is a bad axis value.
+    min_size: int | None = None
+    #: `min_size` with the default resolved against `max_size`. Always an int.
+    _min_size: int = field(init=False, repr=False, compare=False, default=0)
     keep_heading_path: bool = False
     split_tables: bool = False
     tokenizer: str | Tokenizer | None = None
@@ -48,11 +54,16 @@ class StructuralChunker:
     def __post_init__(self) -> None:
         if self.max_size <= 0:
             raise ChunkerError(f"max_size must be positive, got {self.max_size}")
-        if self.min_size < 0:
-            raise ChunkerError(f"min_size must be >= 0, got {self.min_size}")
-        if self.min_size >= self.max_size:
+        resolved = self.max_size // 8 if self.min_size is None else self.min_size
+        # Both, deliberately: `min_size` is what a manifest records and `None` there would say
+        # nothing about what ran; `_min_size` is the same number typed as an int.
+        object.__setattr__(self, "min_size", resolved)
+        object.__setattr__(self, "_min_size", resolved)
+        if self._min_size < 0:
+            raise ChunkerError(f"min_size must be >= 0, got {self._min_size}")
+        if self._min_size >= self.max_size:
             raise ChunkerError(
-                f"min_size ({self.min_size}) must be below max_size ({self.max_size})"
+                f"min_size ({self._min_size}) must be below max_size ({self.max_size})"
             )
         object.__setattr__(self, "_tokenizer", get_tokenizer(self.tokenizer))
 
@@ -107,7 +118,7 @@ class StructuralChunker:
         A document of many short headings otherwise produces a chunk per heading, each too
         small to carry any context -- the classic failure of naive structural chunking.
         """
-        if self.min_size <= 0:
+        if self._min_size <= 0:
             return sections
         merged: list[tuple[int, int]] = []
         for start, end in sections:
@@ -115,7 +126,7 @@ class StructuralChunker:
                 merged.append((start, end))
                 continue
             previous_start, _ = merged[-1]
-            too_small = self._count(text, start, end) < self.min_size
+            too_small = self._count(text, start, end) < self._min_size
             if too_small and self._count(text, previous_start, end) <= self.max_size:
                 merged[-1] = (previous_start, end)
             else:

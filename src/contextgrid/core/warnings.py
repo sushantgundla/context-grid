@@ -59,6 +59,9 @@ class WarningCode(str, Enum):
     ANCHOR_OCCURRENCE_MISSING = "anchor_occurrence_missing"
     NO_PARSE_FOR_SOURCE = "no_parse_for_source"
 
+    # -- generation ------------------------------------------------------------
+    GENERATION_FAILED = "generation_failed"
+
     # -- runs ----------------------------------------------------------------
     BUDGET_REACHED = "budget_reached"
     IMPOSSIBLE_COMBINATION = "impossible_combination"

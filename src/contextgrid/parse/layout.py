@@ -363,7 +363,7 @@ class PyMuPDF4LLMParser(_MarkdownParser):
     output for a document depends on which documents were converted before it in the same
     interpreter: state persists in MuPDF's C layer, below Python, so reloading the module and
     emptying MuPDF's store both fail to clear it. On this package's own fixtures the effect is
-    not subtle -- a prose PDF that parses to 1186 characters alone parses to 933 mangled ones
+    not subtle -- a prose PDF that parses to 1182 characters alone parses to 919 mangled ones
     ("notce perod s trty") after a PDF with a table has gone through.
 
     For a tool whose entire foundation is the parse, a corpus that parses differently depending

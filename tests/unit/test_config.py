@@ -454,6 +454,46 @@ def test_one_config_file_runs_the_whole_experiment(workspace: Path) -> None:
     assert (workspace / "results" / "experiment.yaml").read_text(encoding="utf-8")
 
 
+def test_the_seed_reaches_results_from_a_yaml(workspace: Path) -> None:
+    """`run.seed` used to be recorded and ignored: the manifest claimed a seed the run never
+    resampled with. It has to actually arrive on `Results`, not just parse without error."""
+    path = workspace / "experiment.yaml"
+    path.write_text(
+        "corpus: ./docs\nevalset: ./questions.jsonl\n"
+        "grid:\n  chunker: [recursive:256, sentence:2]\n  index: bm25\n  embedder: null\n"
+        "run:\n  k: 3\n  headline: recall@3\n  seed: 5\n",
+        encoding="utf-8",
+    )
+
+    results = run(load(path))
+    assert results.seed == 5
+    assert all(r.seed == 5 for r in results.runs)
+
+
+def test_the_manifest_records_the_seed_that_was_actually_used(workspace: Path) -> None:
+    """The recorded seed is not decorative: two runs of this file must agree, because they
+    resample with the seed the manifest says they used."""
+    path = workspace / "experiment.yaml"
+    path.write_text(
+        "corpus: ./docs\nevalset: ./questions.jsonl\n"
+        "grid:\n  chunker: [recursive:256, sentence:2]\n  index: bm25\n  embedder: null\n"
+        "run:\n  k: 3\n  headline: recall@3\n  seed: 5\n"
+        "report:\n  out: ./results\n  formats: [json]\n",
+        encoding="utf-8",
+    )
+
+    config = load(path)
+    first, second = run(config), run(config)
+    write_report(config, first)
+
+    manifest = json.loads((workspace / "results" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["seeds"] == {"run": 5}
+
+    # Same config, same seed, twice: the significance verdict has to match exactly, or the
+    # manifest's seed is a number nobody can actually reproduce a run from.
+    assert first.summary("recall@3") == second.summary("recall@3")
+
+
 def test_the_winning_config_is_written_as_runnable_python(workspace: Path) -> None:
     path = workspace / "experiment.yaml"
     path.write_text(

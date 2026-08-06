@@ -32,7 +32,8 @@ from contextgrid.pipeline import Config
 #:
 #: Deliberate rather than alphabetical. The parser decides what text exists at all, so
 #: choosing it first is the only ordering where the later choices are being made about the
-#: real corpus. Reranking comes last because it operates on whatever the rest produced.
+#: real corpus. Reranking comes last because it operates on whatever the rest produced --
+#: and `generator` comes after that, because it operates on whatever *reranking* produced.
 AXIS_ORDER: tuple[str, ...] = (
     "ingestion",
     "parser",
@@ -43,6 +44,7 @@ AXIS_ORDER: tuple[str, ...] = (
     "retrieval",
     "reranker",
     "candidates",
+    "generator",
 )
 
 
@@ -73,6 +75,7 @@ class Matrix:
     retrieval: tuple[str | None, ...] = (None,)
     reranker: tuple[str | None, ...] = (None,)
     candidates: tuple[int, ...] = (50,)
+    generator: tuple[str | None, ...] = (None,)
     k: int = 10
     meta: dict[str, Any] = field(default_factory=dict)
 
@@ -110,6 +113,7 @@ class Matrix:
             retrieval=self.retrieval[0],
             reranker=self.reranker[0],
             candidates=self.candidates[0],
+            generator=self.generator[0],
             k=self.k,
         )
 
@@ -157,9 +161,10 @@ class Matrix:
                 retrieval=v,
                 reranker=r,
                 candidates=d,
+                generator=n,
                 k=self.k,
             )
-            for g, p, c, e, i, t, v, r, d in product(
+            for g, p, c, e, i, t, v, r, d, n in product(
                 self.ingestion,
                 self.parser,
                 self.chunker,
@@ -169,6 +174,7 @@ class Matrix:
                 self.retrieval,
                 self.reranker,
                 self.candidates,
+                self.generator,
             )
         ]
 
@@ -296,6 +302,7 @@ def matrix(
     retrieval: str | Sequence[str | None] | None = None,
     reranker: str | Sequence[str | None] | None = None,
     candidates: int | Sequence[int] = 50,
+    generator: str | Sequence[str | None] | None = None,
     k: int = 10,
 ) -> Matrix:
     """Build a matrix, accepting a single value or a list on any axis.
@@ -318,6 +325,7 @@ def matrix(
         "transform": transform,
         "retrieval": retrieval,
         "reranker": reranker,
+        "generator": generator,
     }
     for axis, value in axes.items():
         _require_specs(axis, value)
@@ -332,6 +340,7 @@ def matrix(
         retrieval=_as_tuple(retrieval),
         reranker=_as_tuple(reranker),
         candidates=_as_tuple(candidates),
+        generator=_as_tuple(generator),
         k=k,
     )
 

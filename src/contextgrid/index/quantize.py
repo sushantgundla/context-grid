@@ -201,7 +201,7 @@ class QuantizedDenseIndex:
     kept -- which the size report states rather than hides.
     """
 
-    scheme: str = "scalar"
+    scheme: str | None = "scalar"
     subspaces: int = 8
     rescore: int = 0
     metric: str = "cosine"
@@ -224,6 +224,15 @@ class QuantizedDenseIndex:
     warnings: WarningLog = field(default_factory=WarningLog, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        # `quantized:none` reaches here as Python `None`, because the spec parser coerces the
+        # bare word "none" the way YAML does. Without this the error listed "none" among the
+        # valid choices while refusing the only way anybody can type it.
+        if self.scheme is None:
+            object.__setattr__(self, "scheme", Quantization.NONE.value)
+        # Narrowed once here so the rest of the class needs no `str | None` handling.
+        resolved: str = str(self.scheme)
+        object.__setattr__(self, "scheme", resolved)
+
         if self.scheme not in {q.value for q in Quantization}:
             raise QuantizationError(
                 f"unknown quantization {self.scheme!r}. Choose one of: "
@@ -261,7 +270,7 @@ class QuantizedDenseIndex:
             self._codes = np.zeros((0, 0), dtype=np.uint8)
             return
 
-        self._codec = _make_codec(self.scheme, self.subspaces)
+        self._codec = _make_codec(str(self.scheme), self.subspaces)
         self._codec.fit(prepared)
         self._codes = self._codec.encode(prepared)
 
@@ -339,7 +348,7 @@ class QuantizedDenseIndex:
         """What the codes alone cost, against float32."""
         original = int(self._originals.nbytes)
         compressed = original if self._codec is None else int(self._codes.nbytes)
-        return CompressionReport(self.scheme, original, compressed)
+        return CompressionReport(str(self.scheme), original, compressed)
 
     def __len__(self) -> int:
         return len(self._ids)

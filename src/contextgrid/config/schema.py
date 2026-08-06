@@ -72,6 +72,7 @@ class GridConfig:
     retrieval: tuple[str | None, ...] = (None,)
     reranker: tuple[str | None, ...] = (None,)
     candidates: tuple[int, ...] = (50,)
+    generator: tuple[str | None, ...] = (None,)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> GridConfig:
@@ -89,6 +90,7 @@ class GridConfig:
             retrieval=_as_optional_strings(data.get("retrieval", (None,)), "grid.retrieval"),
             reranker=_as_optional_strings(data.get("reranker", (None,)), "grid.reranker"),
             candidates=_as_ints(data.get("candidates", (50,)), "grid.candidates"),
+            generator=_as_optional_strings(data.get("generator", (None,)), "grid.generator"),
         )
 
     def to_matrix(self, k: int) -> Matrix:
@@ -102,6 +104,7 @@ class GridConfig:
             retrieval=self.retrieval,
             reranker=self.reranker,
             candidates=self.candidates,
+            generator=self.generator,
             k=k,
         )
 

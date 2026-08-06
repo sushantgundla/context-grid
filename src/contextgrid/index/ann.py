@@ -401,6 +401,12 @@ class USearchIndex(_ANNIndex):
     `dtype` is where it differs usefully. Storing vectors as `f16` or `i8` inside the index
     halves or quarters the memory with a recall cost that is measurable here rather than
     assumed.
+
+    `b1` is deliberately absent. usearch's binary mode wants bit-packed input and a Hamming
+    metric, not the float vectors every other arm on this axis takes -- it was registered as a
+    valid dtype and raised `ValueError: The number of vector dimensions doesn't match!` on the
+    first attempt to build one. Binary quantization is available and works: `quantized:binary`
+    does it properly, with a rescoring pass to recover the recall it costs.
     """
 
     connectivity: int = 16
@@ -410,7 +416,7 @@ class USearchIndex(_ANNIndex):
 
     name: ClassVar[str] = "usearch"
 
-    DTYPES: ClassVar[tuple[str, ...]] = ("f32", "f16", "i8", "b1")
+    DTYPES: ClassVar[tuple[str, ...]] = ("f32", "f16", "i8")
 
     def __post_init__(self) -> None:
         # `_ANNIndex.__post_init__(self)`, not `super()`: a `slots=True` dataclass is rebuilt
@@ -458,7 +464,7 @@ class USearchIndex(_ANNIndex):
         """
         if self._index is None:
             return 0
-        width = {"f32": 4.0, "f16": 2.0, "i8": 1.0, "b1": 0.125}[self.dtype]
+        width = {"f32": 4.0, "f16": 2.0, "i8": 1.0}[self.dtype]
         vectors = len(self._ids) * self._dimensions * width
         graph = len(self._ids) * self.connectivity * 2 * 4  # neighbour ids, 4 bytes each
         return int(vectors + graph)

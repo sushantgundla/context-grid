@@ -38,18 +38,36 @@ parse = [
     "pdfplumber>=0.11",
     "pymupdf4llm>=0.0.17",
 ]
-# Layout-model parsers. Heavy -- they download and run vision models -- which is why they are
-# their own extra rather than part of [parse].
+# Layout-model parsing. Heavy -- it downloads and runs vision models -- which is why it is its
+# own extra rather than part of [parse].
 parse-ml = [
     "docling>=2.0",
+]
+# marker is deliberately NOT in [parse-ml], and this is not tidiness.
+#
+# marker-pdf pulls surya-ocr, which wants transformers>=5.12 and pillow<11; docling wants
+# transformers<5.9 and pdfplumber wants pillow>=12.2. pip will resolve all three onto one set
+# by backtracking -- and the set it lands on breaks docling at *runtime* with
+# `ConversionError: KeyError: torch.float64`. A resolver saying yes is not the same as the
+# combination working, and an extra that installs cleanly and then breaks another parser is
+# worse than one that refuses.
+#
+# Install it alone, in its own environment, when the marker arm is the one being measured.
+parse-marker = [
     "marker-pdf>=1.0",
 ]
 # The chunker libraries people actually deploy. chonkie is small (a few hundred KB) and
 # purpose-built; langchain-text-splitters is heavier but is what most production RAG is
 # running, which makes it the arm worth comparing against.
+# Exact token counting, for costing. `cl100k_base` named this extra before it existed, so
+# asking for it raised an install instruction for something unbuildable.
+embed = [
+    "tiktoken>=0.7",
+]
 chunk = [
     "chonkie>=1.7",
     "langchain-text-splitters>=0.3",
+    "tree-sitter-language-pack>=0.9",
     "litellm>=1.60",
 ]
 # Hosted embedding and generation models, through one interface. TEI needs nothing here --
@@ -95,6 +113,7 @@ dev = [
     "types-pyyaml",
     "chonkie>=1.7",
     "langchain-text-splitters>=0.3",
+    "tree-sitter-language-pack>=0.9",
     "litellm>=1.60",
     "faiss-cpu>=1.8",
     "usearch>=2.12",
@@ -102,6 +121,7 @@ dev = [
     "agno>=2.8",
     "pypdf>=4.0",
     "deepeval>=4.0",
+    "tiktoken>=0.7",
 ]
 
 [project.scripts]
@@ -172,5 +192,7 @@ module = [
     "pymupdf4llm.*",
     "agno.*",
     "deepeval.*",
+    "tiktoken.*",
+    "tree_sitter_language_pack.*",
 ]
 ignore_missing_imports = true

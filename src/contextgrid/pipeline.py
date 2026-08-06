@@ -21,15 +21,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
+from contextgrid.assemble.context import AssembledContext, ContextAssembler
 from contextgrid.cache.store import Cache, CacheStats, cache_key, cached
 from contextgrid.chunk import get_chunker
 from contextgrid.core.documents import Chunk, ParsedDocument, SourceFile
+from contextgrid.core.errors import ContextGridError
 from contextgrid.core.evalset import EvalSet, Qrels
 from contextgrid.core.protocols import Chunker, Parser
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
 from contextgrid.embed import Embedder, get_embedder
 from contextgrid.evalset.llm import LLM
+from contextgrid.generate import Answer, Generator, get_generator
 from contextgrid.index.base import Index, Scored
 from contextgrid.ingest import Ingested, IngestionContext, get_ingester
 from contextgrid.parse import get_parser
@@ -72,6 +75,13 @@ class Config:
     #: is public API and putting a new field ahead of `parser` would silently shift every
     #: positional argument anybody has already written.
     ingestion: str | None = None
+    #: Turns the retrieved, reranked passages into an answer. `None` means no generation at
+    #: all -- no assembly, no model call, no cost -- which is what every config meant before
+    #: this axis existed and what a config naming no generator still means.
+    #:
+    #: Last for the same reason `ingestion` is: a new field ahead of an existing one would
+    #: silently shift every positional argument anybody has already written against `Config`.
+    generator: str | None = None
 
     @property
     def label(self) -> str:
@@ -89,6 +99,8 @@ class Config:
         parts.append(self.index)
         if self.reranker:
             parts.append(f"{self.reranker}@{self.candidates}")
+        if self.generator:
+            parts.append(f"->{self.generator}")
         return " · ".join(parts)
 
     def as_dict(self) -> dict[str, Any]:
@@ -103,6 +115,7 @@ class Config:
             "reranker": self.reranker,
             "k": self.k,
             "candidates": self.candidates,
+            "generator": self.generator,
         }
 
     def with_(self, **changes: Any) -> Config:
@@ -169,6 +182,30 @@ class BuiltPipeline:
     #: What the strategies did, accumulated across every query. Two configurations with the
     #: same recall and different model-call counts are a decision, not a tie.
     trace: RetrievalTrace = field(default_factory=RetrievalTrace)
+    #: Turns retrieved chunks into the text a generator sees. Built even when there is no
+    #: generator -- it is cheap and stateless, and giving it a default keeps every caller from
+    #: needing to know whether generation is switched on.
+    assembler: ContextAssembler = field(default_factory=ContextAssembler)
+    #: `None` unless `config.generator` named one. Answering is opt in and this is the flag:
+    #: everything downstream checks `pipeline.generator is not None` rather than the config.
+    generator: Generator | None = None
+
+    def answer(self, question: str, chunk_ids: Sequence[str]) -> tuple[Answer, AssembledContext]:
+        """Assemble already-retrieved chunks and generate an answer from them.
+
+        Takes chunk ids rather than doing the retrieval itself, because `search` already did
+        that -- generation is one more thing done with a result the pipeline has, not a second
+        round trip through the index.
+        """
+        if self.generator is None:
+            raise ContextGridError(
+                "this pipeline has no generator configured -- check `pipeline.generator is "
+                "not None` before calling `answer`"
+            )
+        by_id = self.chunk_by_id()
+        retrieved = [by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in by_id]
+        context = self.assembler.assemble(retrieved)
+        return self.generator.answer(question, context), context
 
     def search(self, query: str, k: int | None = None) -> list[str]:
         """Chunk ids for one query, best first.
@@ -362,6 +399,9 @@ def build(
         # unreachable from the config file, which is the primary interface.
         transform=get_transform(config.transform, llm),
         retrieval=get_retriever(config.retrieval),
+        # Same story as `transform`: the `llm` generator cannot be built without a model, and
+        # `config.generator` is the only way to reach it from a config file.
+        generator=get_generator(config.generator, llm),
     )
 
 
