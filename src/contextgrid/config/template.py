@@ -65,6 +65,11 @@ run:
   headline: recall@5      # what the leaderboard sorts on
   cache: memory           # memory | disk | none
 
+  # Extra metrics to compute alongside the six built-ins (recall, precision, hit_rate,
+  # mrr, map, ndcg) and whatever `headline` names -- one value or a list, same as any
+  # axis. Only useful once you've registered a custom `Metric`; see extending.md.
+  # metrics: [weighted_recall]
+
   # Stop rather than run forever. Leave both out for no limit. A sweep containing a
   # strategy that decides its own number of model calls has no ceiling without them.
   # budget_seconds: 900

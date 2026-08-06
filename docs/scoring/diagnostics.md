@@ -86,6 +86,7 @@ Every code below comes from [`spans-and-anchors.md`](spans-and-anchors.md) or
 | `ANCHOR_AMBIGUOUS` | `AnchorResolver` | `CAUTION` | The quote appears more than once; `occurrence` was left at its default of `0`. |
 | `NO_PARSE_FOR_SOURCE` | `AnchorResolver.resolve_item` | `CAUTION` | An anchor's `source_id` has no matching parse, so its evidence can't be located. |
 | `SMALL_EVAL_SET` | eval-set generation and quality checks | varies | The eval set (or a slice of it, e.g. one question type) is too small for its numbers to be trustworthy. |
+| `METRIC_FAILED` | `evaluate()` (`score/metrics.py`) | `CAUTION` | A metric raised while scoring this run -- built-in or a registered custom one -- and was left out of `RunResult.metrics` entirely rather than scored as `0.0`. Check `RunResult.has(name)` before reading a metric that could be missing. See [metrics.md](metrics.md#metrics-are-a-plugin-family). |
 
 ### Codes from the rest of the pipeline
 

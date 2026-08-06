@@ -24,7 +24,7 @@ from contextgrid.grid.matrix import AXIS_ORDER, Matrix, SweepMode
 from contextgrid.pipeline import BuiltPipeline, Config, build, build_qrels, resolve_evalset
 from contextgrid.report.results import Results, RunResult
 from contextgrid.score.anchor import AnchorResolver
-from contextgrid.score.metrics import DEFAULT_KS, evaluate, per_query
+from contextgrid.score.metrics import BUILTIN_METRIC_NAMES, DEFAULT_KS, evaluate, per_query
 from contextgrid.score.resolve import SpanResolver, character_precision, character_recall
 
 Progress = Callable[[int, int, Config], None]
@@ -80,6 +80,9 @@ class Runner:
     span_resolver: SpanResolver = field(default_factory=SpanResolver)
     ks: tuple[int, ...] = DEFAULT_KS
     headline: str = "recall@5"
+    #: Extra registered metrics to compute alongside the built-ins, from `run.metrics` in the
+    #: config. The headline's own metric is always computed too -- see `metric_names` below.
+    extra_metrics: tuple[str, ...] = ()
     #: Shared by every stage that needs a model: transforms, agentic retrieval, LLM-backed
     #: ingestion, and the generation judge.
     llm: Any = None
@@ -100,6 +103,19 @@ class Runner:
         if cut.isdigit() and int(cut) not in self.ks:
             self.ks = tuple(sorted({*self.ks, int(cut)}))
 
+    @property
+    def metric_names(self) -> tuple[str, ...]:
+        """Every metric this runner computes: the built-ins, `extra_metrics`, and the
+        headline's own -- guaranteed present the same way `ks` guarantees the headline's
+        cut-off just above, so `Runner(headline="weighted_recall@5")` computes
+        `weighted_recall` even when nobody added it to `extra_metrics` too.
+        """
+        metric_name, _, _ = self.headline.partition("@")
+        names = {*BUILTIN_METRIC_NAMES, *self.extra_metrics}
+        if metric_name:
+            names.add(metric_name)
+        return tuple(sorted(names))
+
     # -- one configuration ---------------------------------------------------
 
     def run_one(self, config: Config, evalset: EvalSet) -> RunResult:
@@ -113,7 +129,12 @@ class Runner:
         qrels, span_log = build_qrels(resolved, pipeline.chunks, self.span_resolver)
 
         run = pipeline.run_queries(resolved)
-        metrics = evaluate(qrels, run, ks=self.ks)
+
+        # Built early so `evaluate()` can log into it directly: a custom metric that raises
+        # is left out of `metrics` rather than crashing the run, and this is what says why a
+        # column is missing instead of the gap speaking for itself.
+        warnings = WarningLog()
+        metrics = evaluate(qrels, run, ks=self.ks, metrics=self.metric_names, warnings=warnings)
 
         metric_name, _, k_text = self.headline.partition("@")
         headline_k = int(k_text or 5)
@@ -133,7 +154,6 @@ class Runner:
         generation_metrics, generation_log = self._score_generation(pipeline, resolved, run, qrels)
         metrics.update(generation_metrics)
 
-        warnings = WarningLog()
         warnings.extend(pipeline.warnings)
         warnings.extend(anchor_log)
         warnings.extend(span_log)

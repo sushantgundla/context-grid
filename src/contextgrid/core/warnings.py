@@ -55,6 +55,7 @@ class WarningCode(str, Enum):
     SPLIT_GOLD_SPAN = "split_gold_span"
     APPROXIMATE_RESOLUTION = "approximate_resolution"
     SMALL_EVAL_SET = "small_eval_set"
+    METRIC_FAILED = "metric_failed"
 
     # -- anchoring ground truth to a parse -----------------------------------
     ANCHOR_NOT_FOUND = "anchor_not_found"

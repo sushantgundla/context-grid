@@ -17,12 +17,29 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import ClassVar
 
 from contextgrid.core.evalset import Qrels
+from contextgrid.core.warnings import Severity, WarningCode, WarningLog
+from contextgrid.score.base import METRICS
 
 #: The cut-offs reported by default. Small values show precision, large ones show whether the
 #: evidence is present at all -- and for RAG the second question is usually the real one.
 DEFAULT_KS: tuple[int, ...] = (1, 3, 5, 10, 20)
+
+#: The default `metrics=` for `evaluate()` -- these six, regardless of what else has been
+#: registered into `METRICS` by the time it runs. A plugin somebody installed becoming part
+#: of every run's default columns just because it exists would be its own kind of surprise;
+#: `run.metrics` (see `config/schema.py`) is how it gets opted in.
+BUILTIN_METRIC_NAMES: tuple[str, ...] = (
+    "recall",
+    "precision",
+    "hit_rate",
+    "mrr",
+    "map",
+    "ndcg",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -133,18 +150,86 @@ def ndcg_at_k(judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> f
 
 
 # ---------------------------------------------------------------------------
+# the six built-ins, as `Metric` plugins
+# ---------------------------------------------------------------------------
+#
+# The functions above are the real public API -- `recall_at_k` and friends are what tests and
+# callers use directly, and that does not change. These are just enough wrapping to let the
+# `METRICS` registry resolve the same six by name, the way it resolves any other plugin.
+# `score/__init__.py` registers them, the way `chunk/__init__.py` registers `FixedTokenChunker`
+# and the rest into `CHUNKERS`.
+
+
+@dataclass(frozen=True, slots=True)
+class RecallMetric:
+    """Recall@k as a registered plugin. See `recall_at_k` for the definition."""
+
+    name: ClassVar[str] = "recall"
+    version: ClassVar[str] = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        return recall_at_k(judgements, ranked, k)
+
+
+@dataclass(frozen=True, slots=True)
+class PrecisionMetric:
+    """Precision@k as a registered plugin. See `precision_at_k` for the definition."""
+
+    name: ClassVar[str] = "precision"
+    version: ClassVar[str] = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        return precision_at_k(judgements, ranked, k)
+
+
+@dataclass(frozen=True, slots=True)
+class HitRateMetric:
+    """Hit rate@k as a registered plugin. See `hit_rate_at_k` for the definition."""
+
+    name: ClassVar[str] = "hit_rate"
+    version: ClassVar[str] = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        return hit_rate_at_k(judgements, ranked, k)
+
+
+@dataclass(frozen=True, slots=True)
+class MRRMetric:
+    """Reciprocal rank as a registered plugin. See `reciprocal_rank` for the definition."""
+
+    name: ClassVar[str] = "mrr"
+    version: ClassVar[str] = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        return reciprocal_rank(judgements, ranked, k)
+
+
+@dataclass(frozen=True, slots=True)
+class MAPMetric:
+    """Mean average precision as a registered plugin. See `average_precision` for the
+    definition, and the note on its denominator convention."""
+
+    name: ClassVar[str] = "map"
+    version: ClassVar[str] = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        return average_precision(judgements, ranked, k)
+
+
+@dataclass(frozen=True, slots=True)
+class NDCGMetric:
+    """Graded nDCG as a registered plugin. See `ndcg_at_k` for the definition."""
+
+    name: ClassVar[str] = "ndcg"
+    version: ClassVar[str] = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        return ndcg_at_k(judgements, ranked, k)
+
+
+# ---------------------------------------------------------------------------
 # aggregation
 # ---------------------------------------------------------------------------
-
-#: name -> (function, whether it takes a k)
-_METRICS = {
-    "recall": recall_at_k,
-    "precision": precision_at_k,
-    "hit_rate": hit_rate_at_k,
-    "mrr": reciprocal_rank,
-    "map": average_precision,
-    "ndcg": ndcg_at_k,
-}
 
 
 def evaluate(
@@ -152,7 +237,8 @@ def evaluate(
     run: Mapping[str, Sequence[str]],
     *,
     ks: Sequence[int] = DEFAULT_KS,
-    metrics: Sequence[str] = tuple(_METRICS),
+    metrics: Sequence[str] = BUILTIN_METRIC_NAMES,
+    warnings: WarningLog | None = None,
 ) -> dict[str, float]:
     """Score a whole run, averaged over queries.
 
@@ -162,12 +248,20 @@ def evaluate(
 
     A query in the qrels that the run never answered scores zero, because that is a real
     failure rather than a missing measurement.
+
+    `metrics` is resolved through `METRICS` -- the six built-ins by default, or any mix of
+    those and registered custom metrics. **A metric that raises is left out of the result
+    entirely, not scored as zero**: `RunResult.has(name)` exists precisely so a metric nobody
+    successfully computed reads as absent rather than as a measured 0.0, which is what let a
+    configuration with perfect recall score 0/100 on `composite()` the one time this was
+    gotten wrong. Pass `warnings` (a `WarningLog`) to have the failure recorded rather than
+    silently dropped -- `Runner.run_one` does.
     """
-    unknown = set(metrics) - set(_METRICS)
+    unknown = set(metrics) - set(METRICS.names())
     if unknown:
         raise ValueError(
             f"unknown metric(s): {', '.join(sorted(unknown))}. "
-            f"Available: {', '.join(sorted(_METRICS))}"
+            f"Available: {', '.join(METRICS.names())}"
         )
 
     scored = [query_id for query_id in qrels if qrels[query_id]]
@@ -176,10 +270,25 @@ def evaluate(
 
     results: dict[str, float] = {}
     for metric in metrics:
-        function = _METRICS[metric]
-        for k in ks:
-            total = sum(function(qrels[qid], run.get(qid, ()), k) for qid in scored)
-            results[f"{metric}@{k}"] = total / len(scored)
+        instance = METRICS.create(metric)
+        try:
+            per_k = {
+                k: sum(instance.evaluate(qrels[qid], run.get(qid, ()), k) for qid in scored)
+                / len(scored)
+                for k in ks
+            }
+        except Exception as error:  # a custom metric's bug must not take the whole run down
+            if warnings is not None:
+                warnings.add(
+                    WarningCode.METRIC_FAILED,
+                    f"the {metric!r} metric raised {error!r} and was left out of this run's "
+                    "results rather than silently scoring zero",
+                    severity=Severity.CAUTION,
+                    stage="score",
+                    subject=metric,
+                )
+            continue
+        results.update({f"{metric}@{k}": value for k, value in per_k.items()})
     return results
 
 
@@ -192,13 +301,14 @@ def per_query(
     """One metric for every query separately.
 
     The input to paired significance testing, and to finding the questions where two
-    configurations actually disagree.
+    configurations actually disagree. `metric` is resolved through `METRICS`, so a
+    registered custom metric works here exactly like a built-in one.
     """
-    if metric not in _METRICS:
-        raise ValueError(f"unknown metric {metric!r}. Available: {', '.join(sorted(_METRICS))}")
-    function = _METRICS[metric]
+    if metric not in METRICS:
+        raise ValueError(f"unknown metric {metric!r}. Available: {', '.join(METRICS.names())}")
+    instance = METRICS.create(metric)
     return {
-        query_id: function(judgements, run.get(query_id, ()), k)
+        query_id: instance.evaluate(judgements, run.get(query_id, ()), k)
         for query_id, judgements in qrels.items()
         if judgements
     }
@@ -227,4 +337,4 @@ def mean_rank_of_first_relevant(
 
 
 def available_metrics() -> tuple[str, ...]:
-    return tuple(sorted(_METRICS))
+    return tuple(METRICS.names())

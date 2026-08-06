@@ -166,7 +166,9 @@ def test_a_headline_with_a_word_cutoff_is_rejected() -> None:
 
 
 def test_an_unknown_metric_lists_the_real_ones() -> None:
-    with pytest.raises(ConfigError, match="Available: recall, precision"):
+    # `available_metrics()` is sorted, and `run.headline` now checks against the registry
+    # (so a registered custom metric is a valid headline too) instead of a hard-coded set.
+    with pytest.raises(ConfigError, match="Available: hit_rate, map"):
         loads("corpus: ./docs\nrun:\n  headline: f1@5\n")
 
 

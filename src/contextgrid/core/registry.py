@@ -140,6 +140,16 @@ class Registry(Generic[T]):
             )
         self._entries[registration.name] = registration
 
+    def unregister(self, name: str) -> None:
+        """Remove a registration, if there is one. A no-op otherwise.
+
+        For tests that register a throwaway plugin into a real, shared registry (rather than
+        a local one) and want it gone afterwards -- a plugin left registered leaks into every
+        other test that lists or validates against this registry for the rest of the process,
+        which is a real failure mode for a plugin that's registered only to prove it *fails*.
+        """
+        self._entries.pop(name, None)
+
     # -- lookup --------------------------------------------------------------
 
     def registration(self, name: str) -> Registration:

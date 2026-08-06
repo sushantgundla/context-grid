@@ -31,7 +31,7 @@ from typing import Any, ClassVar
 
 from contextgrid.core.errors import ContextGridError
 from contextgrid.grid.matrix import AXIS_ORDER, Matrix
-from contextgrid.score.metrics import DEFAULT_KS
+from contextgrid.score.metrics import DEFAULT_KS, available_metrics
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -130,6 +130,11 @@ class RunConfig:
     #: transforms, agentic retrieval, the LLM-backed ingestion strategies, and the generation
     #: judge. One name, so one key and one price.
     model: str | None = None
+    #: Extra registered metrics to compute alongside the six built-ins, one name or a list --
+    #: `metrics: weighted_recall` or `metrics: [weighted_recall, top1_only]`. The headline's
+    #: own metric is always computed whether or not it's named here, the same way its cut-off
+    #: is always added to `ks` below.
+    metrics: tuple[str, ...] = ()
 
     KNOWN: ClassVar[tuple[str, ...]] = (
         "mode",
@@ -143,6 +148,7 @@ class RunConfig:
         "resolution_threshold",
         "cache",
         "model",
+        "metrics",
     )
 
     @classmethod
@@ -163,6 +169,7 @@ class RunConfig:
             resolution_threshold=float(data.get("resolution_threshold", 0.5)),
             cache=str(data.get("cache", "memory")),
             model=str(data["model"]) if data.get("model") else None,
+            metrics=_as_strings(data.get("metrics", ()), "run.metrics"),
         )
         config.validate()
         return config
@@ -181,10 +188,16 @@ class RunConfig:
         metric, _, cut = self.headline.partition("@")
         if not cut.isdigit():
             raise ConfigError(f"run.headline has a non-numeric cut-off: {self.headline!r}")
-        if metric not in {"recall", "precision", "ndcg", "mrr", "map", "hit_rate"}:
+        known = available_metrics()
+        if metric not in known:
             raise ConfigError(
-                f"unknown metric {metric!r} in run.headline. Available: recall, precision, "
-                "ndcg, mrr, map, hit_rate"
+                f"unknown metric {metric!r} in run.headline. Available: {', '.join(known)}"
+            )
+        unknown_extra = set(self.metrics) - set(known)
+        if unknown_extra:
+            raise ConfigError(
+                f"unknown metric(s) in run.metrics: {', '.join(sorted(unknown_extra))}. "
+                f"Available: {', '.join(known)}"
             )
         if self.resolution_policy not in {"coverage", "iou", "containment"}:
             raise ConfigError(
@@ -217,6 +230,7 @@ class RunConfig:
             "resolution_threshold": self.resolution_threshold,
             "cache": self.cache,
             "model": self.model,
+            "metrics": list(self.metrics),
         }
 
 

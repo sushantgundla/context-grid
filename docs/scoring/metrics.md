@@ -113,8 +113,8 @@ Two exclusion rules that change what a mean actually means:
   failure — the configuration never answered it — so it counts against the mean.
 
 `evaluate` raises `ValueError` for an unknown metric name, listing the available ones
-(`available_metrics()` returns `("hit_rate", "map", "mrr", "ndcg", "precision", "recall")`,
-sorted).
+(`available_metrics()` returns `("hit_rate", "map", "mrr", "ndcg", "precision", "recall")` by
+default — sorted, and it grows if you register a custom metric; see below).
 
 `per_query(qrels, run, metric, k)` returns one score per query instead of a mean. This is
 the input [significance testing](significance.md) needs — a paired test operates on
@@ -125,6 +125,94 @@ questions where two configurations actually disagree.
 as a pair, deliberately — a mean rank of 2.1 computed over 90 of 100 queries means
 something very different from the same number over 40 of them, and reporting the mean
 alone would hide which one you're looking at.
+
+## Metrics are a plugin family
+
+Every other axis in this package — chunker, retriever, reranker, ingestion strategy — is a
+plugin behind a `Registry`. A metric is one too: `name`, `version`, and one method,
+`evaluate(judgements, ranked, k) -> float` — the same shape `recall_at_k` and the other five
+functions above already have, just wrapped so `METRICS` (`contextgrid.score.METRICS`) can
+resolve one by name the way `CHUNKERS` resolves `"recursive"`.
+
+```python
+>>> from contextgrid.score import METRICS, Metric, get_metric
+>>> {"recall", "precision", "hit_rate", "mrr", "map", "ndcg"} <= set(METRICS.names())
+True
+>>> built = get_metric("recall")
+>>> built.name, built.version
+('recall', '1')
+>>> isinstance(built, Metric)
+True
+```
+
+`evaluate()` and `per_query()` (above) resolve every metric name through `METRICS` — not a
+private, six-entry table — so a registered custom metric is computed for real, per question,
+alongside the built-ins. Registering one is exactly what registering a `Chunker` or a
+`RetrievalStrategy` looks like — see [registry.md](../internals/registry.md) — except a
+metric's `evaluate()` takes relevance judgements and a ranked list instead of a document or a
+searcher:
+
+```python
+>>> from collections.abc import Mapping, Sequence
+>>> from dataclasses import dataclass
+>>> from typing import ClassVar
+>>>
+>>> @dataclass(frozen=True, slots=True)
+... class Top1Only:
+...     '''1.0 only when the very first result is relevant -- ignores everything below rank 1.'''
+...     name: ClassVar[str] = "top1_only"
+...     version: ClassVar[str] = "1"
+...
+...     def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+...         if not ranked:
+...             return 0.0
+...         return 1.0 if judgements.get(ranked[0], 0) > 0 else 0.0
+...
+>>> if "top1_only" not in METRICS:
+...     _ = METRICS.register("top1_only", doc="1.0 only when the very first result is relevant.")(
+...         Top1Only
+...     )
+```
+
+`recall_at_k` can't tell these two runs apart — the same relevant chunk turns up in the top 5
+either way — but `top1_only` is exactly sensitive to *where*:
+
+```python
+>>> qrels = {"q1": {"a": 2, "b": 1, "z": 0}}
+>>> run_a_first = {"q1": ["a", "y", "b", "w"]}
+>>> run_a_second = {"q1": ["y", "a", "b", "w"]}
+>>> evaluate(qrels, run_a_first, ks=(5,), metrics=("recall", "top1_only"))
+{'recall@5': 1.0, 'top1_only@5': 1.0}
+>>> evaluate(qrels, run_a_second, ks=(5,), metrics=("recall", "top1_only"))
+{'recall@5': 1.0, 'top1_only@5': 0.0}
+```
+
+Cut-offs stay part of the *name*, not the metric — `evaluate()` calls `top1_only.evaluate(...)`
+once per `k` in `ks` and builds `top1_only@5` itself, the same as every built-in. A metric that
+needs its own `k` on top of that (an unusual case) takes it as an ordinary constructor
+parameter, resolved through the registry's spec-string parsing like any other plugin's
+parameters — see [registry.md](../internals/registry.md#spec-strings-create-and-parse_spec).
+
+Two things a registered metric gets for free, with no further wiring:
+
+- **`run.headline` accepts any registered name**, not a hard-coded list — `run.headline:
+  top1_only@5` works exactly like `run.headline: recall@5`. The config validator
+  (`RunConfig.validate` in `config/schema.py`) asks `available_metrics()`, so a typo is still
+  caught before a sweep starts, and the error names what's actually registered.
+- **`run.metrics` names extra metrics to compute** alongside the built-ins and the headline's
+  own — `run.metrics: [top1_only]`, or a list of several. See
+  [configuration.md](../guide/configuration.md#run--how-the-sweep-executes).
+
+A metric that fails does not take the run down, and does not silently score zero.
+`evaluate()` catches an exception from a metric's `evaluate()` and leaves that metric's keys
+out of the result rather than raising or reporting `0.0` — `RunResult.has(name)` is how a
+result says "this was never measured", the same guarantee `row()` and `leaderboard()` already
+make for a metric nobody computed. Pass a `WarningLog` (`evaluate(..., warnings=log)`) to have
+the failure recorded with a `METRIC_FAILED` warning; `Runner.run_one` does this for every
+sweep — see [diagnostics.md](diagnostics.md#codes-youll-see-from-scoring).
+
+A full metric written, registered, swept and shown on a leaderboard —
+[extending.md](../internals/extending.md) has the worked example end to end.
 
 ## Character-level precision, recall and F1
 

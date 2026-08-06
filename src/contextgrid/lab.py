@@ -224,6 +224,7 @@ class Lab:
         budget_seconds: float | None = None,
         budget_usd: float | None = None,
         headline: str = "recall@5",
+        metrics: Sequence[str] = (),
         on_progress: Any = None,
     ) -> Results:
         """Run the matrix and score every configuration.
@@ -231,12 +232,17 @@ class Lab:
         `budget_usd` is here for the same reason it is in a config file: an agentic strategy or
         an LLM generator decides its own number of model calls, so a sweep containing one has no
         ceiling anybody can work out in advance.
+
+        `metrics` mirrors `run.metrics` in a config file -- extra registered metrics to compute
+        alongside the built-ins and `headline`'s own, e.g. after registering a custom `Metric`
+        into `contextgrid.score.METRICS` (see `docs/internals/extending.md`).
         """
         runner = Runner(
             corpus=self.corpus,
             cache=self.cache,
             cost_model=self.cost_model,
             headline=headline,
+            extra_metrics=tuple(metrics),
             llm=self.llm,
             seed=self.seed,
         )

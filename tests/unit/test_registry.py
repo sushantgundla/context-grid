@@ -240,6 +240,17 @@ def test_every_registered_parser_can_actually_be_reached() -> None:
         )
 
 
+def test_unregister_removes_a_plugin(registry: Registry[Widget]) -> None:
+    registry.unregister("basic")
+    assert "basic" not in registry
+    assert registry.names() == []
+
+
+def test_unregister_an_absent_name_is_a_no_op(registry: Registry[Widget]) -> None:
+    registry.unregister("nope")
+    assert registry.names() == ["basic"]
+
+
 def test_registry_is_iterable_over_registrations(registry: Registry[Widget]) -> None:
     entries = list(registry)
     assert [entry.name for entry in entries] == ["basic"]

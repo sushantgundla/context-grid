@@ -39,11 +39,13 @@ from contextgrid.retrieve import RETRIEVERS
 from contextgrid.rerank import RERANKERS
 from contextgrid.evalset import LLMS
 from contextgrid.tokens import TOKENIZERS
+from contextgrid.score import METRICS
 
 for family, reg in {
     'parse': PARSERS, 'ingest': INGESTERS, 'chunk': CHUNKERS, 'embed': EMBEDDERS,
     'index': INDEXES, 'transform': TRANSFORMS, 'retrieve': RETRIEVERS,
     'rerank': RERANKERS, 'evalset (llm)': LLMS, 'tokenizer': TOKENIZERS,
+    'metric': METRICS,
 }.items():
     print(f'=== {family} ===')
     for r in sorted(reg, key=lambda x: x.name):
@@ -237,6 +239,27 @@ above, they're registered as ordinary in-tree factories (`LLMS.register(...)`), 
 calls", "llm", package="litellm")` on first use if it's missing. Functionally they still need
 the `llm` extra; the registry just doesn't know that about them the way it does for, say,
 `docling`.
+
+## A registration nobody sweeps: the metric
+
+Not a grid axis — set via `run.headline` and `run.metrics` (see
+[configuration.md](../guide/configuration.md#run--how-the-sweep-executes)), the way a
+`tokenizer:` parameter below is set on a chunker rather than swept on its own. Registered in
+`contextgrid.score.METRICS`:
+
+| Name | Description |
+|---|---|
+| `recall` | Fraction of relevant chunks that appear in the top k. |
+| `precision` | Fraction of the top k that is relevant. |
+| `hit_rate` | 1.0 when anything relevant is in the top k, else 0.0. |
+| `mrr` | 1 / the position of the first relevant result. |
+| `map` | Mean average precision, trec_eval's convention (see [metrics.md](../scoring/metrics.md)). |
+| `ndcg` | Graded nDCG against the best possible ordering. |
+
+All six are eager, in-tree registrations — no extra to install. `run.headline` and
+`run.metrics` both accept any name `METRICS` knows about, not just these six:
+[metrics.md](../scoring/metrics.md#metrics-are-a-plugin-family) is where a metric is written,
+registered and swept end to end.
 
 ## A registration nobody sweeps: the tokenizer
 

@@ -122,6 +122,7 @@ from contextgrid.report import (
     write_bundle,
 )
 from contextgrid.rerank import RERANKERS, Reranker, get_reranker
+from contextgrid.score import METRICS, Metric, get_metric
 from contextgrid.score.anchor import (
     AnchorMatch,
     AnchorResolver,
@@ -169,6 +170,7 @@ __all__ = [
     "DEFAULT_KS",
     "EMBEDDERS",
     "INDEXES",
+    "METRICS",
     "PARSERS",
     "PRICES",
     "RERANKERS",
@@ -234,6 +236,7 @@ __all__ = [
     "Matrix",
     "MediaType",
     "MemoryCache",
+    "Metric",
     "MissingExtraError",
     "MultiQuery",
     "NoTransform",
@@ -300,6 +303,7 @@ __all__ = [
     "get_chunker",
     "get_embedder",
     "get_index",
+    "get_metric",
     "get_parser",
     "get_reranker",
     "get_tokenizer",
