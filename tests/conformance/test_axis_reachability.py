@@ -704,3 +704,69 @@ def test_every_warning_code_is_documented() -> None:
         code.name for code in WarningCode if code.name not in text and code.value not in text
     )
     assert not missing, f"not explained anywhere in docs/: {missing}"
+
+
+def test_a_metric_nobody_computed_is_absent_rather_than_zero() -> None:
+    """The most dangerous number this package can print.
+
+    `RunResult.metric()` defaults to `0.0` so a leaderboard can sort on a metric some runs lack.
+    That default used to reach `row()`, so asking for `character_precision` on a run that never
+    measured it produced a confident zero -- and a zero is a *measurement* to `composite()`,
+    which uses a harmonic mean. A configuration with perfect recall came back as 0/100.
+    """
+    from contextgrid.core.documents import MediaType
+    from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor
+    from contextgrid.corpus import Corpus
+    from contextgrid.grid import Runner, matrix
+
+    corpus = Corpus.from_texts(
+        {"a.md": "# Refunds\n\nRefunds are issued within 30 days.\n"},
+        media_type=MediaType.MARKDOWN,
+        name="absent",
+    )
+    evalset = EvalSet(
+        id="absent",
+        items=(
+            EvalItem(
+                id="q",
+                question="refunds?",
+                anchors=(GoldAnchor(quote="within 30 days", source_id="a.md"),),
+            ),
+        ),
+    )
+    results = Runner(corpus=corpus, headline="recall@5").run(
+        matrix(chunker="recursive:128", index="bm25", embedder=None, k=5),
+        evalset,
+        mode="factorial",
+    )
+
+    row = results.leaderboard("recall@5", extra=["embedding_quality"])[0]
+    assert "embedding_quality" not in row
+    assert any("not a score of nought" in warning.message for warning in results.warnings)
+
+    # And the honest path reports what it actually measured.
+    score = results.composite()
+    assert score is not None
+    assert score.score == pytest.approx(100.0)
+    assert "embed" in score.missing
+
+
+def test_a_run_can_say_whether_it_measured_something() -> None:
+    """`metric()` cannot distinguish a measured zero from a metric nobody ran, so there has to
+    be a way to ask."""
+    from contextgrid.pipeline import Config
+    from contextgrid.report.results import RunResult
+
+    run = RunResult(config=Config(), metrics={"recall@5": 0.0})
+    assert run.has("recall@5")
+    assert run.metric("recall@5") == 0.0
+    assert not run.has("embedding_quality")
+
+
+def test_the_plugin_listing_pluralises_index_properly() -> None:
+    """It printed `indexs:`. Every page of the docs calls the axis `index` or `indexes`, so the
+    one heading somebody would search for was the one spelled wrong."""
+    from contextgrid.cli.__main__ import _plural
+
+    assert _plural("index") == "indexes"
+    assert _plural("chunker") == "chunkers"

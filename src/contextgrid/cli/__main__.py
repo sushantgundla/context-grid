@@ -243,6 +243,11 @@ def _sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+def _plural(name: str) -> str:
+    """The axis name as a heading. Only `index` is irregular."""
+    return "indexes" if name == "index" else f"{name}s"
+
+
 def _plugins(args: argparse.Namespace) -> int:
     from contextgrid.chunk import CHUNKERS
     from contextgrid.embed import EMBEDDERS
@@ -263,7 +268,10 @@ def _plugins(args: argparse.Namespace) -> int:
     for name, registry in families.items():
         if args.family and args.family != name:
             continue
-        print(f"{name}s:")
+        # Not `f"{name}s"`: that printed "indexs", and every page of the documentation calls
+        # this axis `index` or `indexes`. A heading nobody can search for is a small thing that
+        # makes a reference feel untrustworthy.
+        print(f"{_plural(name)}:")
         for plugin, description in registry.describe().items():
             print(f"  {plugin:24} {description}")
         print()

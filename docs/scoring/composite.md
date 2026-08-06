@@ -5,6 +5,26 @@ A leaderboard with fourteen columns is a leaderboard nobody reads to the end of.
 package to make dishonest, so `contextgrid.report.composite` follows three rules, stated
 plainly here because they're what makes the number worth trusting.
 
+## Getting one from a real run
+
+```python no-run: needs a Results object from a sweep; see docs/recipes/
+score = results.composite()  # the leading configuration
+score = results.runs[0].composite()  # or any particular one
+print(score.summary())
+```
+
+**Do not build the input by hand from `RunResult.metric()`.** That method takes a default,
+because a leaderboard sorting on a metric some runs lack needs *some* number to sort by. Feed
+that default into a composite and it stops being a placeholder and becomes a measurement --
+and since the mean is harmonic, one fabricated zero takes the whole score to nought. A
+configuration with perfect recall reporting 0/100 is not a hypothetical; it is what this API
+did until somebody tried to use it from the documentation alone.
+
+`RunResult.has(name)` answers the question `metric()` cannot: whether the run measured it at
+all. `leaderboard(extra=[...])` now omits a column no run computed, and says so, rather than
+filling it with zeroes.
+
+
 ## Rule 1: harmonic, not arithmetic
 
 A configuration retrieving at 0.95 and generating faithfully at 0.10 averages

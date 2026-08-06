@@ -12,10 +12,11 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from contextgrid.core.warnings import WarningLog
+from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.cost.model import CostBreakdown
 from contextgrid.diagnose.taxonomy import FailureReport
 from contextgrid.pipeline import Config, Timings
+from contextgrid.report.composite import CompositeScore
 from contextgrid.score.significance import (
     Comparison,
     Interval,
@@ -68,11 +69,39 @@ class RunResult:
         return self.warnings.is_sound
 
     def metric(self, name: str, default: float = 0.0) -> float:
+        """One metric, or `default` when this run never computed it.
+
+        The default exists for sorting, where a missing value has to be *some* number. Use
+        `has(name)` before treating the result as a measurement -- `metric()` cannot tell a
+        measured zero from a metric nobody ran.
+        """
         return self.metrics.get(name, default)
 
+    def has(self, name: str) -> bool:
+        """Whether this run actually computed a metric."""
+        return name in self.metrics
+
+    def composite(self, *, k: int = 5) -> CompositeScore:
+        """This run's 0-100 score, over the dimensions it actually measured.
+
+        The honest path from a run to a score. Building the input by hand invites reading
+        `metric()`'s zero-default as a result, which collapses the harmonic mean to nothing.
+        """
+        from contextgrid.report.composite import composite as _composite
+
+        return _composite(self.metrics, k=k)
+
     def row(self, metrics: Sequence[str]) -> dict[str, Any]:
+        """One leaderboard row.
+
+        A metric this run never computed is left **out**, not filled with zero. It used to be
+        filled: asking for `character_precision` on a run that never measured it produced a
+        confident `0.0`, and a `0.0` fed to `composite()` is a measurement rather than a gap --
+        so a configuration with perfect recall came back as 0/100. A number nobody measured is
+        the most dangerous thing this package can print.
+        """
         row: dict[str, Any] = {"config": self.label}
-        row.update({name: self.metrics.get(name, 0.0) for name in metrics})
+        row.update({name: self.metrics[name] for name in metrics if name in self.metrics})
         row["p95_ms"] = self.timings.percentile(0.95)
         row["cost_per_1k"] = self.cost.query_usd_per_1k
         row["chunks"] = self.chunk_count
@@ -121,9 +150,25 @@ class Results:
         Latency and cost are not optional columns. A leaderboard that omits them invites
         exactly the mistake this tool exists to prevent.
         """
-        columns = [metric, *extra]
+        wanted = list(extra)
+        unknown = [name for name in wanted if not any(run.has(name) for run in self.runs)]
+        if unknown:
+            self.warnings.add(
+                WarningCode.NON_DETERMINISTIC_STAGE,
+                f"no run computed {', '.join(sorted(unknown))}, so those columns are absent "
+                "rather than zero. A metric nobody ran is not a score of nought",
+                severity=Severity.CAUTION,
+                stage="report",
+            )
+
+        columns = [metric, *wanted]
         ordered = sorted(self.runs, key=lambda r: -r.metric(metric))
         return [run.row(columns) for run in ordered]
+
+    def composite(self, metric: str = "recall@5", *, k: int = 5) -> CompositeScore | None:
+        """The leading configuration's 0-100 score, over what it actually measured."""
+        best = self.best(metric)
+        return best.composite(k=k) if best is not None else None
 
     # -- the views worth having ----------------------------------------------
 
