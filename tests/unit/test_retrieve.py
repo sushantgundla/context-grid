@@ -13,6 +13,7 @@ existed.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from contextgrid.index.base import Scored
 from contextgrid.retrieve import (
     RETRIEVERS,
     DecomposedRetrieval,
+    RelevanceFeedbackRetrieval,
     RetrievalError,
     RetrievalTrace,
     SimpleRetrieval,
@@ -49,7 +51,29 @@ class FakeIndex:
         return [text for text, _ in self.calls]
 
 
-ALL = [SimpleRetrieval(), WidenedRetrieval(factor=3), DecomposedRetrieval()]
+class TextLookup:
+    """Stands in for `BuiltPipeline.chunk_by_id().get` -- a `Lookup` backed by a plain dict of
+    chunk id -> text, wrapped in something with a `.text` attribute since that is all a
+    strategy is promised about what `lookup` returns."""
+
+    def __init__(self, texts: dict[str, str]) -> None:
+        self.texts = texts
+
+    def __call__(self, chunk_id: str) -> object | None:
+        text = self.texts.get(chunk_id)
+        return None if text is None else SimpleNamespace(text=text)
+
+
+# `RelevanceFeedbackRetrieval` belongs in the seam tests below: called without a `lookup` (as
+# every one of them does), its default finds nothing to expand with and behaves exactly like
+# `simple` -- one search, fused, no crash. Its own behaviour, which only shows up once a real
+# `lookup` is handed in, is tested separately further down.
+ALL = [
+    SimpleRetrieval(),
+    WidenedRetrieval(factor=3),
+    DecomposedRetrieval(),
+    RelevanceFeedbackRetrieval(),
+]
 IDS = [strategy.name for strategy in ALL]
 
 
@@ -237,6 +261,89 @@ def test_decomposition_records_how_many_parts_it_used() -> None:
 
 
 # ---------------------------------------------------------------------------
+# relevance-feedback
+# ---------------------------------------------------------------------------
+
+
+def test_relevance_feedback_searches_again_with_the_best_hits_rarest_words() -> None:
+    """The whole mechanism: search, read the best hit through `lookup`, search again with
+    words from it the question did not already have."""
+    index = FakeIndex({"find gamma things": ["top"]})
+    lookup = TextLookup({"top": "alpha beta beta gamma gamma gamma delta"})
+    trace = RetrievalTrace()
+
+    RelevanceFeedbackRetrieval(terms=2).retrieve(
+        "find gamma things", ["find gamma things"], index, 5, trace, lookup
+    )
+
+    # "gamma" is already in the question, so it is never a candidate even though it is the
+    # commonest word in the hit. Of what is left, "alpha" and "delta" occur once each --
+    # rarer than "beta", which occurs twice -- so they are what the second search asks for.
+    assert index.queries == ["find gamma things", "find gamma things alpha delta"]
+    assert trace.notes["expansion_terms"] == ["alpha", "delta"]
+    assert trace.searches == 2
+
+
+def test_relevance_feedback_without_a_lookup_behaves_like_simple() -> None:
+    """A strategy that has not been handed a real `lookup` -- every call site written before
+    this parameter existed -- has nothing to read, and must not crash for lacking it."""
+    index = FakeIndex()
+    trace = RetrievalTrace()
+
+    found = RelevanceFeedbackRetrieval().retrieve("q", ["q"], index, 5, trace)
+
+    assert index.queries == ["q"]
+    assert trace.searches == 1
+    assert trace.notes["expansion_terms"] == []
+    assert found
+
+
+def test_relevance_feedback_with_no_initial_results_does_not_expand() -> None:
+    index = FakeIndex({"q": []})
+    trace = RetrievalTrace()
+
+    found = RelevanceFeedbackRetrieval().retrieve(
+        "q", ["q"], index, 5, trace, TextLookup({"top": "whatever"})
+    )
+
+    assert found == []
+    assert trace.searches == 1
+    assert trace.notes["expansion_terms"] == []
+
+
+def test_relevance_feedback_with_nothing_new_to_say_does_not_expand() -> None:
+    """The best hit is real text but every one of its words is already in the question --
+    there is nothing left to search for, and a second, identical search would only cost a
+    round trip to learn nothing."""
+    index = FakeIndex({"refund policy": ["top"]})
+    trace = RetrievalTrace()
+
+    RelevanceFeedbackRetrieval().retrieve(
+        "refund policy",
+        ["refund policy"],
+        index,
+        5,
+        trace,
+        TextLookup({"top": "refund policy refund policy refund"}),
+    )
+
+    assert trace.searches == 1
+    assert trace.notes["expansion_terms"] == []
+
+
+def test_relevance_feedback_makes_no_model_calls() -> None:
+    trace = RetrievalTrace()
+    RelevanceFeedbackRetrieval().retrieve("q", ["q"], FakeIndex(), 5, trace)
+    assert trace.model_calls == 0
+    assert not RelevanceFeedbackRetrieval().uses_model
+
+
+def test_relevance_feedback_terms_below_one_is_refused() -> None:
+    with pytest.raises(RetrievalError, match="at least 1"):
+        RelevanceFeedbackRetrieval(terms=0)
+
+
+# ---------------------------------------------------------------------------
 # the trace
 # ---------------------------------------------------------------------------
 
@@ -266,10 +373,24 @@ def test_a_trace_can_be_merged_across_queries() -> None:
 
 @pytest.mark.parametrize(
     "spec",
-    ["simple", "widened", "widened:8", "decomposed", "decomposed:2", "decomposed:min_words=3"],
+    [
+        "simple",
+        "widened",
+        "widened:8",
+        "decomposed",
+        "decomposed:2",
+        "decomposed:min_words=3",
+        "relevance-feedback",
+        "relevance-feedback:3",
+    ],
 )
 def test_every_strategy_is_reachable_from_one_config_line(spec: str) -> None:
-    assert get_retriever(spec).name in {"simple", "widened", "decomposed"}
+    assert get_retriever(spec).name in {
+        "simple",
+        "widened",
+        "decomposed",
+        "relevance-feedback",
+    }
 
 
 def test_none_means_plain_search() -> None:
@@ -432,4 +553,95 @@ def test_plain_search_never_triggers_the_warning() -> None:
         evalset,
         mode="factorial",
     )
+    assert not any("identically to plain search" in w.message for w in results.warnings)
+
+
+# ---------------------------------------------------------------------------
+# does relevance feedback find what plain search cannot rank?
+# ---------------------------------------------------------------------------
+
+
+def build_vocabulary_gap_workspace() -> tuple[object, object]:
+    """A corpus where the second relevant document shares *no words at all* with the
+    question -- only with the best hit's own vocabulary.
+
+    Which is the only situation relevance feedback can help in. Plain BM25 cannot rank a
+    document it shares zero terms with, however relevant it is; a second search built from
+    words the best hit actually used can reach it.
+    """
+    from contextgrid.core.documents import MediaType
+    from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor
+    from contextgrid.corpus import Corpus
+
+    corpus = Corpus.from_texts(
+        {
+            "security.md": (
+                "# Security\n\nSecurity measures at the company include SOC2 Type II audits "
+                "and PCI-DSS certification for protecting customer data.\n"
+            ),
+            "audits.md": (
+                "# Audits\n\nSOC2 Type II and PCI-DSS certification renewals happen annually "
+                "through an independent assessor.\n"
+            ),
+            "shipping.md": (
+                "# Shipping\n\nStandard shipping takes five business days for domestic orders.\n"
+            ),
+            "refunds.md": (
+                "# Refunds\n\nRefunds are processed within thirty days of the original "
+                "purchase date.\n"
+            ),
+            "privacy.md": (
+                "# Privacy\n\nWe retain user records for seven years as required by regulation.\n"
+            ),
+        },
+        media_type=MediaType.MARKDOWN,
+        name="vocabulary-gap",
+    )
+    evalset = EvalSet(
+        id="vocabulary-gap",
+        items=(
+            EvalItem(
+                id="q1",
+                question="what security measures does the company use?",
+                anchors=(
+                    GoldAnchor(
+                        quote="SOC2 Type II audits and PCI-DSS certification",
+                        source_id="security.md",
+                    ),
+                    GoldAnchor(
+                        quote="renewals happen annually through an independent assessor",
+                        source_id="audits.md",
+                    ),
+                ),
+            ),
+        ),
+    )
+    return corpus, evalset
+
+
+def test_relevance_feedback_finds_what_plain_search_cannot_rank() -> None:
+    """Measured, not asserted: `simple` finds only `security.md` (the only document sharing a
+    word with the question at all); `relevance-feedback` reads that hit, searches again with
+    its distinctive words, and reaches `audits.md` too -- a document plain search has no way
+    to distinguish from the three unrelated ones in this corpus."""
+    from contextgrid.grid import Runner, matrix
+
+    corpus, evalset = build_vocabulary_gap_workspace()
+    results = Runner(corpus=corpus, headline="recall@2").run(
+        matrix(
+            chunker="recursive:128",
+            index="bm25",
+            embedder=None,
+            retrieval=["simple", "relevance-feedback"],
+            k=2,
+        ),
+        evalset,
+        mode="factorial",
+    )
+
+    scores = {run.config.retrieval: run.metric("recall@2") for run in results.runs}
+    assert scores["simple"] < scores["relevance-feedback"]
+    assert scores["relevance-feedback"] == pytest.approx(1.0)
+    # The "did nothing" warning must not fire: the second search genuinely ran and changed
+    # what came back.
     assert not any("identically to plain search" in w.message for w in results.warnings)

@@ -18,7 +18,7 @@ from typing import ClassVar
 
 from contextgrid.core.errors import ContextGridError
 from contextgrid.index.base import Scored
-from contextgrid.retrieve.base import RetrievalTrace, Searcher, fuse
+from contextgrid.retrieve.base import Lookup, RetrievalTrace, Searcher, _no_lookup, fuse
 
 
 class RetrievalError(ContextGridError, ValueError):
@@ -45,8 +45,9 @@ class SimpleRetrieval:
         searcher: Searcher,
         k: int,
         trace: RetrievalTrace,
+        lookup: Lookup = _no_lookup,
     ) -> list[Scored]:
-        del query
+        del query, lookup
         results = []
         for text in queries:
             trace.record_search(text)
@@ -84,8 +85,9 @@ class WidenedRetrieval:
         searcher: Searcher,
         k: int,
         trace: RetrievalTrace,
+        lookup: Lookup = _no_lookup,
     ) -> list[Scored]:
-        del query
+        del query, lookup
         depth = k * self.factor
         results = []
         for text in queries:
@@ -201,8 +203,9 @@ class DecomposedRetrieval:
         searcher: Searcher,
         k: int,
         trace: RetrievalTrace,
+        lookup: Lookup = _no_lookup,
     ) -> list[Scored]:
-        del queries  # decomposition works from the question as asked
+        del queries, lookup  # decomposition works from the question as asked
         results = []
         for text in self.parts(query):
             trace.record_search(text)
@@ -218,3 +221,86 @@ def _signature(text: str) -> tuple[str, ...]:
 
 def _meaningful_words(text: str) -> list[str]:
     return [word for word in _WORD.findall(text.lower()) if word not in _STOPWORDS]
+
+
+@dataclass(frozen=True, slots=True)
+class RelevanceFeedbackRetrieval:
+    """Search once, read the best hit, search again with what it taught us.
+
+    Classic pseudo-relevance feedback: assume the top result is relevant, pull words out of it
+    that were not already in the question, and search again for those too. A strategy that only
+    ever sees ids and scores cannot do this -- it has to read the text of what it found, which
+    is exactly the gap `lookup` (`retrieve/base.py`) closes. Without it this strategy could not
+    exist in this package at all.
+
+    "Distinctive" is approximated, deliberately. A real implementation would weight words by
+    how rare they are *across the corpus* -- inverse document frequency -- but a strategy never
+    sees the index (see `RetrievalStrategy`'s docstring) and has no document frequencies to
+    draw on, only the text of the one chunk `lookup` hands back. So rarity is measured within
+    that one chunk instead: a word that shows up once outranks one that shows up five times.
+    It is a proxy for IDF, built from what a strategy is actually allowed to see, not IDF
+    itself -- and it costs nothing extra to compute, unlike the model call a real relevance
+    judgement would need.
+
+    Costs one more search than `simple`, and no model calls. Falls back to the first round's
+    results whenever there is nothing to learn from -- no hits at all, an unresolvable top hit,
+    or a top hit with no word the question did not already have.
+    """
+
+    #: How many expansion terms the second search adds, at most.
+    terms: int = 5
+
+    name: ClassVar[str] = "relevance-feedback"
+    version: ClassVar[str] = "1"
+    uses_model: ClassVar[bool] = False
+
+    def __post_init__(self) -> None:
+        if self.terms < 1:
+            raise RetrievalError(f"relevance-feedback terms must be at least 1, got {self.terms}")
+
+    def retrieve(
+        self,
+        query: str,
+        queries: Sequence[str],
+        searcher: Searcher,
+        k: int,
+        trace: RetrievalTrace,
+        lookup: Lookup = _no_lookup,
+    ) -> list[Scored]:
+        first: list[Sequence[Scored]] = []
+        for text in queries:
+            trace.record_search(text)
+            first.append(searcher(text, k))
+        initial = fuse(first, k)
+
+        expansion = self._expansion_terms(query, initial, lookup)
+        trace.notes["expansion_terms"] = expansion
+        if not expansion:
+            return initial
+
+        expanded_query = f"{query} {' '.join(expansion)}"
+        trace.record_search(expanded_query)
+        second = searcher(expanded_query, k)
+
+        return fuse([initial, second], k)
+
+    def _expansion_terms(self, query: str, ranked: Sequence[Scored], lookup: Lookup) -> list[str]:
+        """The best hit's most distinctive words that are not already in the question."""
+        if not ranked:
+            return []
+        top = lookup(ranked[0].chunk_id)
+        if top is None:
+            return []
+
+        asked = set(_meaningful_words(query))
+        counts: dict[str, int] = {}
+        for word in _meaningful_words(top.text):
+            if word not in asked:
+                counts[word] = counts.get(word, 0) + 1
+        if not counts:
+            return []
+
+        # Rarest within the chunk first (lowest count), alphabetical after that so the same
+        # chunk always expands the same way.
+        ranked_terms = sorted(counts.items(), key=lambda pair: (pair[1], pair[0]))
+        return [word for word, _ in ranked_terms[: self.terms]]

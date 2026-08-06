@@ -16,6 +16,13 @@ one search against whatever index the configuration chose -- and returns ranked 
 never sees the index type, so every strategy works with every store, and adding a store does
 not touch any strategy.
 
+A strategy that wants to *read* what it found -- relevance feedback, pseudo-relevance
+expansion, anything that decides its next move from the text of a hit rather than just its id
+-- is handed a second, equally narrow thing: `Lookup`. It resolves a chunk id to the `Chunk`
+behind it and nothing else. Neither `Searcher` nor `Lookup` can reach the index itself, an
+embedder, or another chunk's text -- a strategy can search, and it can read what came back, and
+that is the entire surface.
+
 **Every strategy that costs model calls reports them.** A strategy that quietly makes four
 calls per query looks identical on a recall chart to one that makes none, and the entire point
 of this package is that those two things are not the same.
@@ -27,11 +34,37 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from contextgrid.core.documents import Chunk
 from contextgrid.index.base import Scored
 
 #: Runs one search. Given the query text and how many results to return, hands back a ranked
 #: list. The strategy neither knows nor cares whether that was BM25, HNSW or Postgres.
 Searcher = Callable[[str, int], Sequence[Scored]]
+
+#: Reads one already-retrieved chunk by id. Backed by `BuiltPipeline.chunk_by_id()`, so it
+#: returns exactly what a strategy would expect a `Searcher` hit to mean: the *retrievable*
+#: chunk for a plain id, or the wider *presentation* passage for an id a sibling-merge produced
+#: -- whichever one the hit actually stands for. Returns `None` for an id it does not
+#: recognise, which should not normally happen for an id a `Searcher` call just returned, but a
+#: strategy must not assume it never will.
+#:
+#: A strategy can only ever look up a chunk it already has the id for -- there is no way to
+#: enumerate or browse through `Lookup`, which is what keeps it from being the index in
+#: disguise.
+Lookup = Callable[[str], "Chunk | None"]
+
+
+def _no_lookup(chunk_id: str) -> Chunk | None:
+    """The default `lookup`: every call site written before this parameter existed.
+
+    Defaulting to "nothing found" rather than making `lookup` required means the three
+    strategies that have no use for chunk text, and every test that calls `.retrieve(...)`
+    directly, keep compiling and behaving exactly as they did. Only a strategy that actually
+    reads text -- and the pipeline, which always passes a real one -- needs to know this
+    parameter is there at all.
+    """
+    del chunk_id
+    return None
 
 
 @dataclass(slots=True)
@@ -90,12 +123,18 @@ class RetrievalStrategy(Protocol):
         searcher: Searcher,
         k: int,
         trace: RetrievalTrace,
+        lookup: Lookup = _no_lookup,
     ) -> list[Scored]:
         """Rank chunks for one question.
 
         `query` is the question as asked. `queries` is what the transform axis made of it --
         usually one string, sometimes several. A strategy is free to ignore `queries` and work
         from `query` alone, and an agentic one will.
+
+        `lookup` reads the text behind a `chunk_id` a `searcher` call returned -- for a
+        strategy that decides its next search from what the last one found (relevance
+        feedback, pseudo-relevance expansion) rather than from ids and scores alone. Most
+        strategies have no use for it and can ignore the parameter entirely.
         """
         ...
 

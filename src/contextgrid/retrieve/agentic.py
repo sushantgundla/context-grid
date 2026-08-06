@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from contextgrid.index.base import Scored
-from contextgrid.retrieve.base import RetrievalTrace, Searcher, fuse
+from contextgrid.retrieve.base import Lookup, RetrievalTrace, Searcher, _no_lookup, fuse
 from contextgrid.retrieve.strategies import RetrievalError
 
 if TYPE_CHECKING:
@@ -151,8 +151,9 @@ class AgenticRetrieval:
         searcher: Searcher,
         k: int,
         trace: RetrievalTrace,
+        lookup: Lookup = _no_lookup,
     ) -> list[Scored]:
-        del queries  # the model plans from the question as asked
+        del queries, lookup  # the model plans from the question as asked
         planner = self.planner()
 
         results: list[Sequence[Scored]] = []

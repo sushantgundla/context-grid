@@ -29,6 +29,22 @@ That's the whole seam. It's why a new store (say, a future vector database) neve
 any strategy, and why every strategy below works identically whether the searcher underneath is
 `bm25` or `pgvector:hnsw`.
 
+A strategy that wants to *read* what it found — not just its id and score, but the text — is
+handed a second, equally narrow thing: `Lookup`.
+
+```python
+from contextgrid.core.documents import Chunk
+
+Lookup = Callable[[str], "Chunk | None"]
+```
+
+Given a `chunk_id` a `searcher` call already returned, `lookup` hands back the `Chunk` behind
+it, or `None` for an id it doesn't recognise. There is no way to enumerate or browse through
+it — a strategy can only look up an id it already has, which is what keeps `Lookup` from being
+the index in disguise. It defaults to a function that always returns `None`, so a strategy with
+no use for chunk text — `simple`, `widened`, `decomposed`, `agentic` — never has to know the
+parameter exists. `relevance-feedback`, below, is the strategy this exists for.
+
 ## `RetrievalTrace`: what a strategy actually did
 
 A recall number alone can't tell two strategies apart if they tie. `RetrievalTrace` is what
@@ -82,13 +98,14 @@ decomposed   searches=3  queries=['what is the refund window and are digital goo
 `widened` made one search too, but asked the index for 20 results instead of 5 (`depth` in the
 notes); `decomposed` made three, splitting the question. Neither made a model call.
 
-## The four strategies
+## The five strategies
 
 | Spec | Class | `uses_model` | What it does |
 |---|---|---|---|
 | `simple` | `SimpleRetrieval` | `False` | One search per query, fused if the transform produced several. |
 | `widened` | `WidenedRetrieval` | `False` | Search deeper than asked, cut back to `k`. |
 | `decomposed` | `DecomposedRetrieval` | `False` | Split a multi-part question mechanically, search each part. |
+| `relevance-feedback` | `RelevanceFeedbackRetrieval` | `False` | Search, read the best hit, search again with its distinctive words. |
 | `agentic` | `AgenticRetrieval` | `True` | A model plans the searches, over one or more rounds. |
 
 `get_retriever(None)` returns `SimpleRetrieval()`, so a config that has never heard of this axis
@@ -143,6 +160,77 @@ leads — decomposition adds recall, it doesn't replace the search that was alre
 Splitting is deliberately mechanical rather than model-driven. A model would split better and
 would cost a call per query; this arm exists to show how much of that gain is free, which is the
 comparison `agentic` has to be judged against.
+
+### `relevance-feedback` — read the best hit, search again
+
+```python
+retrieval = get_retriever("relevance-feedback:3")  # terms=3 (shorthand)
+```
+
+Parameters: `terms: int = 5`. Every strategy above decides its searches from the question
+alone. This one reads what the first search actually found: it assumes the top result is
+relevant, pulls the words out of it that the question didn't already have, and searches again
+with those added. Classic pseudo-relevance feedback — and the reason it belongs on this axis at
+all is that it needs something no other strategy here does: [`lookup`](#the-index-versus-the-strategy),
+the text of a hit, not just its id and score.
+
+"Distinctive" has to be approximated. A real implementation would weight words by how rare they
+are *across the whole corpus* — inverse document frequency — but a strategy never sees the
+index (that's the seam this whole page opens with), so it has no document frequencies to draw
+on, only the text of the one chunk `lookup` hands back. `RelevanceFeedbackRetrieval` measures
+rarity *within that chunk* instead: a word appearing once outranks one appearing five times,
+ties broken alphabetically so the same chunk always expands the same way. It's a proxy for IDF
+built from what a strategy is actually allowed to see, not IDF itself.
+
+```python
+>>> from contextgrid.index.base import Scored
+>>> from contextgrid.retrieve import RelevanceFeedbackRetrieval
+>>> from types import SimpleNamespace
+>>> texts = {"top": "alpha beta beta gamma gamma gamma delta"}
+>>> lookup = lambda chunk_id: SimpleNamespace(text=texts[chunk_id])
+>>> searcher = lambda text, k: [Scored("top", 0.9)] if text == "find gamma things" else []
+>>> trace = RetrievalTrace()
+>>> found = RelevanceFeedbackRetrieval(terms=2).retrieve(
+...     "find gamma things", ["find gamma things"], searcher, 5, trace, lookup
+... )
+>>> trace.notes["expansion_terms"]  # "gamma" was already in the question, so it's never a candidate
+['alpha', 'delta']
+>>> trace.queries
+['find gamma things', 'find gamma things alpha delta']
+```
+
+If the best hit has nothing new to say — every one of its words is already in the question, or
+`lookup` returns `None` because it was never handed a real one — there is nothing to search
+for, and the strategy costs exactly one search, same as `simple`. It never crashes for lacking
+a `lookup`: the default always returns `None`, which is why the four strategies above never had
+to change to make room for this one.
+
+#### Measured: does reading the best hit find what plain search cannot rank?
+
+A corpus where the second relevant document shares *no words at all* with the question — only
+with the best hit's own vocabulary — scored with `index="bm25"`, `k=2`,
+`headline="recall@2"`:
+
+```
+question: "what security measures does the company use?"
+security.md: "Security measures at the company include SOC2 Type II audits and
+              PCI-DSS certification for protecting customer data."
+audits.md:   "SOC2 Type II and PCI-DSS certification renewals happen annually
+              through an independent assessor."
+```
+
+```
+simple                recall@2=0.500
+relevance-feedback     recall@2=1.000
+```
+
+`simple` finds `security.md` — the only document sharing a word with the question — and then
+whatever ties for second on a BM25 score of zero. `relevance-feedback` reads `security.md`,
+searches again for `certification`, `dss` and the rest of its distinctive words, and reaches
+`audits.md`: a document plain search has no term in common with, however relevant it is. See
+`test_relevance_feedback_finds_what_plain_search_cannot_rank` in `tests/unit/test_retrieve.py`
+for the full corpus and the assertion that the "identically to plain search" warning correctly
+does *not* fire — the second search genuinely ran and changed what came back.
 
 ### `agentic` — a model decides what to search for, and when to stop
 
@@ -237,7 +325,7 @@ earn. Ranks have no such problem.
 Every strategy is a spec string, so a sweep over the whole axis is one line:
 
 ```
-retrieval: [simple, widened:8, decomposed:3, agentic:gpt-4o-mini,rounds=2]
+retrieval: [simple, widened:8, decomposed:3, relevance-feedback:3, agentic:gpt-4o-mini,rounds=2]
 ```
 
 A config's label only names the strategy when it isn't `simple` — `Config(retrieval="simple").label`

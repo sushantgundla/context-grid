@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextgrid.core.registry import Registry
 from contextgrid.retrieve.agentic import AgenticRetrieval
 from contextgrid.retrieve.base import (
+    Lookup,
     RetrievalStrategy,
     RetrievalTrace,
     Searcher,
@@ -16,6 +17,7 @@ from contextgrid.retrieve.base import (
 )
 from contextgrid.retrieve.strategies import (
     DecomposedRetrieval,
+    RelevanceFeedbackRetrieval,
     RetrievalError,
     SimpleRetrieval,
     WidenedRetrieval,
@@ -42,6 +44,11 @@ RETRIEVERS.register(
     shorthand="max_parts",
     doc="Split a multi-part question and search each. Mechanical, so it costs nothing.",
 )(DecomposedRetrieval)
+RETRIEVERS.register(
+    "relevance-feedback",
+    shorthand="terms",
+    doc="Search, read the best hit, search again with its most distinctive words. No model calls.",
+)(RelevanceFeedbackRetrieval)
 
 
 def get_retriever(spec: str | RetrievalStrategy | None) -> RetrievalStrategy:
@@ -55,6 +62,8 @@ __all__ = [
     "RETRIEVERS",
     "AgenticRetrieval",
     "DecomposedRetrieval",
+    "Lookup",
+    "RelevanceFeedbackRetrieval",
     "RetrievalError",
     "RetrievalStrategy",
     "RetrievalTrace",

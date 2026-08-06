@@ -221,6 +221,10 @@ class BuiltPipeline:
         limit = k or self.config.k
         rewritten = self.transform.transform(query)
         depth = max(self.config.candidates, limit) if self.reranker else limit
+        # Built once and reused for both `lookup` and reranking below -- a strategy that reads
+        # every hit it finds should not double the cost of a lookup the reranker branch was
+        # going to build anyway.
+        by_id = self.chunk_by_id()
 
         def searcher(text: str, wanted: int) -> Sequence[Scored]:
             # Asks for more than it needs: several indexed units can stand for the same
@@ -230,12 +234,18 @@ class BuiltPipeline:
             hits = self.index.search(text, self._vector_for(text), depth)
             return self._to_retrievable(hits, wanted)
 
-        ranked = self.retrieval.retrieve(query, rewritten.queries, searcher, depth, self.trace)
+        def lookup(chunk_id: str) -> Chunk | None:
+            # The only way a strategy sees text rather than an id -- and it is the same map
+            # reranking and generation use, so a strategy reads exactly what they would.
+            return by_id.get(chunk_id)
+
+        ranked = self.retrieval.retrieve(
+            query, rewritten.queries, searcher, depth, self.trace, lookup
+        )
 
         if self.reranker is None:
             return [scored.chunk_id for scored in ranked[:limit]]
 
-        by_id = self.chunk_by_id()
         candidates = [by_id[scored.chunk_id] for scored in ranked if scored.chunk_id in by_id]
         return [scored.chunk_id for scored in self.reranker.rerank(query, candidates, limit)]
 
