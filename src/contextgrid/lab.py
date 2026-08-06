@@ -50,6 +50,8 @@ class Lab:
     corpus: Corpus
     cache: Cache = field(default_factory=MemoryCache)
     cost_model: CostModel = field(default_factory=CostModel)
+    llm: Any = None
+    seed: int = 0
     _matrix: Matrix = field(default_factory=Matrix)
 
     def __init__(
@@ -58,11 +60,31 @@ class Lab:
         *,
         cache: Cache | None = None,
         machine_usd_per_hour: float = 0.0,
+        model: str | Any | None = None,
+        seed: int = 0,
     ) -> None:
+        """`model` and `seed` mirror the `run:` section of a config file.
+
+        One model for the whole lab, as in the YAML: query transforms, agentic retrieval, the
+        LLM-backed ingestion strategies and the generation judge all share it. The alternative
+        is four places to set a key and four prices to reconcile.
+
+        Without it, four of the six transforms, `agentic` retrieval, four of the eight ingestion
+        strategies and the `llm` generator cannot be built at all -- so the Python API could
+        reach barely half the plugins the YAML could, and nothing said so.
+        """
         self.corpus = _as_corpus(corpus)
         self.cache = cache or MemoryCache()
         self.cost_model = CostModel(machine_usd_per_hour=machine_usd_per_hour)
+        self.seed = seed
         self._matrix = Matrix()
+
+        if model is None or not isinstance(model, str):
+            self.llm = model
+        else:
+            from contextgrid.evalset.llm import get_llm
+
+            self.llm = get_llm(model)
 
     # -- looking before you leap ---------------------------------------------
 
@@ -157,8 +179,18 @@ class Lab:
         reranker: str | Sequence[str | None] | None = None,
         candidates: int | Sequence[int] = 50,
         k: int = 10,
+        *,
+        ingestion: str | Sequence[str | None] | None = None,
+        retrieval: str | Sequence[str | None] | None = None,
+        generator: str | Sequence[str | None] | None = None,
     ) -> Matrix:
-        """Set the axes. Any of them takes a single value or a list."""
+        """Set the axes. Any of them takes a single value or a list.
+
+        All ten, matching `grid:` in a config file. The three keyword-only ones arrived after
+        the positional signature was public, and go at the end for the same reason `ingestion`
+        sits last on `Config`: shifting a positional argument silently changes what every call
+        anybody has already written means.
+        """
         self._matrix = matrix(
             parser=parser,
             chunker=chunker,
@@ -168,6 +200,9 @@ class Lab:
             reranker=reranker,
             candidates=candidates,
             k=k,
+            ingestion=ingestion,
+            retrieval=retrieval,
+            generator=generator,
         )
         return self._matrix
 
@@ -187,21 +222,30 @@ class Lab:
         *,
         mode: SweepMode | str = SweepMode.OFAT,
         budget_seconds: float | None = None,
+        budget_usd: float | None = None,
         headline: str = "recall@5",
         on_progress: Any = None,
     ) -> Results:
-        """Run the matrix and score every configuration."""
+        """Run the matrix and score every configuration.
+
+        `budget_usd` is here for the same reason it is in a config file: an agentic strategy or
+        an LLM generator decides its own number of model calls, so a sweep containing one has no
+        ceiling anybody can work out in advance.
+        """
         runner = Runner(
             corpus=self.corpus,
             cache=self.cache,
             cost_model=self.cost_model,
             headline=headline,
+            llm=self.llm,
+            seed=self.seed,
         )
         return runner.run(
             self._matrix,
             evalset,
             mode=mode,
             budget_seconds=budget_seconds,
+            budget_usd=budget_usd,
             on_progress=on_progress,
         )
 

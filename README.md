@@ -81,6 +81,20 @@ results = lab.run(evalset, headline="recall@3")
 print(results.summary("recall@3"))
 ```
 
+`lab.grid()` takes all ten axes, the same ones a config file does. The strategies that call a
+model — `hyde`, `agentic` retrieval, `contextual` ingestion, an `llm` generator — need one
+naming it, and `budget_usd` is worth setting whenever a sweep contains one:
+
+```python no-run: needs an API key; the offline equivalent is in docs/recipes/
+lab = cg.Lab(corpus="./documents", model="openai:gpt-4o-mini", seed=7)
+lab.grid(
+    ingestion=["plain", "parent-document:4", "contextual"],
+    retrieval=["simple", "decomposed", "agentic"],
+    transform=[None, "hyde"],
+)
+results = lab.run(evalset, budget_usd=5.00)
+```
+
 ```
 markdown · recursive:256 · tfidf · dense scored best on recall@3 at 1.000, across 6 configurations on 3 questions. [...] It runs locally at no cost per query, answering at under 1 ms p95.
 ```

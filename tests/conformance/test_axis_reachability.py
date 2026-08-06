@@ -558,3 +558,100 @@ def test_every_lazily_registered_package_is_in_the_extra_it_names() -> None:
                 )
 
     assert not wrong, "\n".join(wrong)
+
+
+# ---------------------------------------------------------------------------
+# the two front doors have to reach the same things
+# ---------------------------------------------------------------------------
+
+
+def test_the_python_api_reaches_every_axis_the_config_file_does() -> None:
+    """`Lab.grid()` had seven of the ten axes.
+
+    Ingestion, retrieval and generation were reachable from a YAML file and not from Python, so
+    half the plugins in the package were invisible to anybody using the library directly. The
+    axis list grew three times and this signature did not follow, which is exactly the kind of
+    drift nothing was watching for.
+    """
+    import inspect
+
+    from contextgrid.grid.matrix import AXIS_ORDER
+    from contextgrid.lab import Lab
+
+    accepted = set(inspect.signature(Lab.grid).parameters)
+    missing = [axis for axis in AXIS_ORDER if axis not in accepted]
+    assert not missing, f"Lab.grid() cannot set: {missing}"
+
+
+def test_the_python_api_reaches_every_run_setting_the_config_file_does() -> None:
+    """The same drift on the other half. A `run:` key with no way to say it from Python is a
+    feature half the users cannot use."""
+    import inspect
+
+    from contextgrid.config.schema import RunConfig
+    from contextgrid.lab import Lab
+
+    # `cache` is a Lab constructor argument, `resolution_*` belong to the scorer, and `k` is a
+    # property of the matrix rather than of the run.
+    elsewhere = {"cache", "resolution_policy", "resolution_threshold", "k"}
+    wanted = set(RunConfig.KNOWN) - elsewhere
+
+    reachable = (
+        set(inspect.signature(Lab.run).parameters)
+        | set(inspect.signature(Lab.__init__).parameters)
+        | {"mode"}
+    )
+    missing = sorted(wanted - reachable)
+    assert not missing, f"no way to set {missing} through Lab"
+
+
+def test_a_model_given_to_the_lab_reaches_the_stages_that_need_one() -> None:
+    """Four of the six transforms, `agentic` retrieval, four of the eight ingestion strategies
+    and the `llm` generator cannot be built without a model. Before this, Python users could
+    reach none of them."""
+    from contextgrid.evalset.llm import LiteLLMChat
+    from contextgrid.lab import Lab
+    from contextgrid.pipeline import Config, build
+
+    scripted = LiteLLMChat(
+        model="scripted", transport=lambda prompt, limit: "a hypothetical answer"
+    )
+    lab = Lab({"a.md": "# Refunds\n\nRefunds are issued within 30 days.\n"}, model=scripted)
+
+    assert lab.llm is scripted
+    pipeline = build(
+        Config(chunker="recursive:128", index="bm25", embedder=None, transform="hyde"),
+        lab.corpus,
+        llm=lab.llm,
+    )
+    assert pipeline.transform.name == "hyde"
+
+
+def test_a_model_named_as_a_string_is_resolved() -> None:
+    from contextgrid.lab import Lab
+
+    lab = Lab({"a.md": "text"}, model="openai:gpt-4o-mini")
+    assert lab.llm is not None
+    assert lab.llm.name == "openai/gpt-4o-mini"
+
+
+def test_the_labs_seed_reaches_the_results() -> None:
+    """So a significance verdict from the Python API is reproducible from the same number the
+    manifest records, rather than from a hidden zero."""
+    from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor
+    from contextgrid.lab import Lab
+
+    lab = Lab({"a.md": "# Refunds\n\nRefunds are issued within 30 days.\n"}, seed=42)
+    lab.grid(chunker="recursive:128", index="bm25", embedder=None, k=3)
+
+    evalset = EvalSet(
+        id="seeded",
+        items=(
+            EvalItem(
+                id="q1",
+                question="refunds?",
+                anchors=(GoldAnchor(quote="within 30 days", source_id="a.md"),),
+            ),
+        ),
+    )
+    assert lab.run(evalset, headline="recall@3").seed == 42
