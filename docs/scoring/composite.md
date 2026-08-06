@@ -1,0 +1,122 @@
+# The composite score
+
+A leaderboard with fourteen columns is a leaderboard nobody reads to the end of. A single
+0–100 number is what people actually want — and it is also the easiest thing in this
+package to make dishonest, so `contextgrid.report.composite` follows three rules, stated
+plainly here because they're what makes the number worth trusting.
+
+## Rule 1: harmonic, not arithmetic
+
+A configuration retrieving at 0.95 and generating faithfully at 0.10 averages
+*arithmetically* to 0.53 — which reads as middling. It is not middling. It's a system that
+confidently invents answers, and 0.53 hides that behind a good retriever. The harmonic
+mean puts it at 18, because a chain is worth what its weakest link is worth. Every
+composite score built on an arithmetic mean is a way of not noticing the worst thing about
+a system.
+
+```python
+>>> from contextgrid.report.composite import composite
+>>> metrics = {
+...     "recall@5": 0.95,
+...     "ndcg@5": 0.95,
+...     "faithfulness": 0.10,
+...     "answer_relevancy": 0.10,
+... }
+>>> result = composite(metrics)
+>>> result.score
+18.095238095238095
+>>> result.parts
+{'retrieval': 0.95, 'generation': 0.1}
+>>> 100 * (0.95 + 0.10) / 2   # what an arithmetic mean would have said instead
+52.5
+```
+
+`harmonic_mean(values)` — `len(values) / sum(1/v for v in values)` — is the piece doing
+this. **Zero anywhere gives zero**, deliberately: a system that generates nothing faithful
+has no score worth reporting, however well it retrieves.
+
+```python
+>>> from contextgrid.report.composite import harmonic_mean
+>>> harmonic_mean({"retrieval": 0.95, "generation": 0.0})
+0.0
+```
+
+## Rule 2: only what ran
+
+Somebody sweeping ingestion and retrieval alone has no generator in the run. Scoring the
+missing generation dimension as zero would punish them for a question they never asked.
+`composite` scores the dimensions that produced numbers, and it names which ones those
+were — so a 73 over three dimensions is never mistaken for a 73 over six.
+
+```python
+>>> partial_metrics = {"recall@5": 0.8, "ndcg@5": 0.7, "character_precision": 0.6}
+>>> partial = composite(partial_metrics)
+>>> partial.summary()
+'67/100 over 2 dimension(s): chunk, retrieval (not measured: embed, generation, parse)'
+>>> partial.parts
+{'chunk': 0.6, 'retrieval': 0.75}
+>>> partial.missing
+{'parse': 'no value for evidence_resolvable', 'embed': 'no value for embedding_quality', 'generation': 'no value for faithfulness or answer_relevancy'}
+```
+
+`CompositeScore.summary()` is the right thing to print or log — never the bare number.
+`.dimensions` (`tuple(sorted(self.parts))`) and `.missing` travel with `.score` for
+exactly this reason: a 73 over `retrieval, generation` is a different claim from a 73 over
+all four dimensions, and printing them identically invites the comparison that's wrong.
+
+## Rule 3: comparable only within a run
+
+Two scores computed over different dimension sets are not comparable — a 67 that measured
+`chunk, retrieval` and an 82 that measured all five dimensions are not "82 beats 67". This
+is why `.dimensions` and `.missing` are attached to every `CompositeScore` rather than
+left as a footnote the reader has to go find.
+
+## The five dimensions
+
+```python
+DIMENSION_METRICS: dict[str, tuple[str, ...]] = {
+    "parse": ("evidence_resolvable",),
+    "chunk": ("character_precision",),
+    "embed": ("embedding_quality",),
+    "retrieval": ("recall", "ndcg"),
+    "generation": ("faithfulness", "answer_relevancy"),
+}
+```
+
+| Dimension | Metric name(s) | What it asks |
+|---|---|---|
+| `parse` | `evidence_resolvable` | Did the parse make the evidence findable at all? Comes out of [anchor resolution](spans-and-anchors.md#the-failure-case-is-the-measurement) — the only dimension whose failure makes every later number meaningless. |
+| `chunk` | `character_precision` | Of the characters returned, how many were the ones asked for? See [character precision](metrics.md#character-level-precision-recall-and-f1) — the chunker's honest score. |
+| `embed` | `embedding_quality` | Can this embedder discriminate on this corpus at all? Measurable with no eval set, which makes it the only dimension you can score before writing a single question. |
+| `retrieval` | `recall`, `ndcg` | Did the right passages come back? See [metrics](metrics.md). |
+| `generation` | `faithfulness`, `answer_relevancy` | Is the answer supported by the retrieved evidence, and does it address the question? |
+
+**One metric per dimension is deliberate.** Averaging four retrieval metrics into a
+retrieval score and then averaging *that* with generation would give retrieval four votes
+and generation one — an opinion about what matters, dressed up as arithmetic. When a
+dimension does list more than one metric name (`retrieval`, `generation`), those are two
+views of the *same* thing and average arithmetically with each other before the harmonic
+mean runs across dimensions — one being low is not the same kind of failure as a whole
+dimension being low.
+
+`composite(metrics, k=5, dimensions=None)` looks up each metric by name, trying the bare
+name first and then `f"{name}@{k}"` — so `recall` finds `recall@5` from a normal
+[`evaluate()`](metrics.md#aggregating-over-a-run) run without the caller spelling out the
+cut-off. Pass a custom `dimensions` mapping to score a different set — the same shape as
+`DIMENSION_METRICS` above.
+
+### Values outside 0–1 are ignored, not clamped
+
+```python
+>>> composite({"recall@5": 3.2}).missing["retrieval"]   # not a 0-1 value; something is wrong upstream
+'no value for recall or ndcg'
+```
+
+A composite is a comparison of like-scaled things. `3.2` isn't on that scale, and silently
+squashing it to `1.0` would put a number into the score that nothing actually measured —
+`_lookup` treats it as absent instead, and it shows up in `.missing` like any other
+unmeasured dimension (here, every dimension is missing, since the input supplied only one
+unusable value).
+
+Next: what `.missing` and low dimension scores mean question-by-question, not just in
+aggregate — see [diagnostics](diagnostics.md).
