@@ -112,7 +112,7 @@ Spec string form: `mmr:0.5` sets `diversity=0.5`.
 A cross-encoder served by [text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference)
 (TEI). No API key, no extra Python dependency — it's reached over plain `urllib`.
 
-```bash
+```bash no-run: needs a running Docker daemon and pulls an image from ghcr.io
 docker run -p 8081:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
     --model-id BAAI/bge-reranker-base
 ```

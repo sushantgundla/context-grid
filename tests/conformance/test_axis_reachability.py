@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -452,3 +453,73 @@ def test_every_ingestion_strategy_is_reachable(name: str) -> None:
     strategy = get_ingester(name)
     llm = SCRIPTED_LLM if strategy.uses_model else None
     _reachable(_run(ingestion=name, llm=llm))
+
+
+# ---------------------------------------------------------------------------
+# the install instruction has to be the one that works
+# ---------------------------------------------------------------------------
+
+
+def test_every_extra_named_in_an_error_actually_exists() -> None:
+    """An error naming an extra that does not exist -- or one that does not contain the package
+    it promises -- is worse than no error: it costs an install and changes nothing.
+
+    Three of these have been found. `unstructured` named `parse-ml`, which never contained it.
+    `cl100k_base` named `embed`, which was not declared at all. And when `marker` moved to its
+    own extra the registration was updated and the runtime `MissingExtraError` was not, so the
+    message told you to install the extra marker had just been taken out of.
+    """
+    import re
+    from pathlib import Path
+
+    import tomllib
+
+    root = Path(__file__).resolve().parents[2]
+    with (root / "pyproject.toml").open("rb") as handle:
+        declared = set(tomllib.load(handle)["project"]["optional-dependencies"])
+
+    pattern = re.compile(r'MissingExtraError\(\s*[^,]+,\s*"([a-z0-9-]+)"')
+    named: dict[str, set[str]] = {}
+    for source in (root / "src").rglob("*.py"):
+        for extra in pattern.findall(source.read_text(encoding="utf-8")):
+            named.setdefault(extra, set()).add(str(source.relative_to(root)))
+
+    assert named, "found no MissingExtraError calls at all -- has the pattern drifted?"
+    unknown = {extra: sorted(files) for extra, files in named.items() if extra not in declared}
+    assert not unknown, f"errors name extras that do not exist: {unknown}"
+
+
+def test_every_lazily_registered_package_is_in_the_extra_it_names() -> None:
+    """The other half of the same promise. A registration can name a real extra that does not
+    contain its package -- which is exactly how `unstructured` and `marker` went wrong."""
+    from pathlib import Path
+
+    import tomllib
+
+    from contextgrid.chunk import CHUNKERS
+    from contextgrid.embed import EMBEDDERS
+    from contextgrid.index import INDEXES
+    from contextgrid.parse import PARSERS
+    from contextgrid.rerank import RERANKERS
+    from contextgrid.tokens import TOKENIZERS
+
+    root = Path(__file__).resolve().parents[2]
+    with (root / "pyproject.toml").open("rb") as handle:
+        extras = tomllib.load(handle)["project"]["optional-dependencies"]
+
+    def base(requirement: str) -> str:
+        return re.split(r"[<>=!\[;]", requirement, maxsplit=1)[0].strip().lower()
+
+    wrong: list[str] = []
+    for registry in (PARSERS, CHUNKERS, EMBEDDERS, INDEXES, RERANKERS, TOKENIZERS):
+        for entry in registry:
+            if not entry.extra or not entry.package:
+                continue
+            provided = {base(req) for req in extras.get(entry.extra, [])}
+            if entry.package.lower() not in provided:
+                wrong.append(
+                    f"{entry.name!r} needs {entry.package!r} but [{entry.extra}] provides "
+                    f"{sorted(provided)}"
+                )
+
+    assert not wrong, "\n".join(wrong)

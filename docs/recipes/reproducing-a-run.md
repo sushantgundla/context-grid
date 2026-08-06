@@ -151,7 +151,8 @@ wrote 3 files to ./results-x
 
 ```python
 import json
-print(json.load(open("results-x/manifest.json"))["seeds"])   # {"run": 7}
+
+print(json.load(open("results-x/manifest.json"))["seeds"])  # {"run": 7}
 ```
 
 That's the reproducibility claim, checked rather than assumed: two independent `contextgrid run`
@@ -168,7 +169,7 @@ from contextgrid.report.results import Results, RunResult
 from contextgrid.pipeline import Config
 
 left = {f"q{i}": 1.0 for i in range(24)}
-right = {**left, **{f"q{i}": 0.0 for i in range(5)}}   # a small, real, paired gap
+right = {**left, **{f"q{i}": 0.0 for i in range(5)}}  # a small, real, paired gap
 
 left_run = RunResult(config=Config(chunker="recursive:512"), per_query=left)
 right_run = RunResult(config=Config(chunker="sentence:3"), per_query=right)

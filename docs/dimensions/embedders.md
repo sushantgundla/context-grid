@@ -30,6 +30,7 @@ and no default that quietly makes them the same:
 from collections.abc import Sequence
 from contextgrid.embed.base import EmbeddingResult
 
+
 def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult: ...
 def embed_queries(self, texts: Sequence[str]) -> EmbeddingResult: ...
 ```
@@ -72,7 +73,10 @@ because it learns its vocabulary and IDF from the corpus:
 ```python
 from contextgrid.embed import TfidfEmbedder
 
-DOCS = ["Refunds are issued within thirty days of purchase.", "Shipping takes five to seven business days."]
+DOCS = [
+    "Refunds are issued within thirty days of purchase.",
+    "Shipping takes five to seven business days.",
+]
 model = TfidfEmbedder()
 model.prepare(DOCS)  # learns the vocabulary
 model.embed_documents(DOCS)  # now this works

@@ -270,7 +270,9 @@ class MarkerParser(_MarkdownParser):
             from marker.models import create_model_dict
             from marker.output import text_from_rendered
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise MissingExtraError("The marker parser", "parse-ml", package="marker-pdf") from exc
+            raise MissingExtraError(
+                "The marker parser", "parse-marker", package="marker-pdf"
+            ) from exc
 
         import tempfile
         from pathlib import Path

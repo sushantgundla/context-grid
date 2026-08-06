@@ -17,7 +17,15 @@ Both are why `Registry` has two ways to register a plugin.
 
 ## `register` — eager
 
+A fresh `Registry` here, rather than the real `CHUNKERS`, so registering `"fixed"` a second
+time below doesn't collide with the one `contextgrid.chunk` already registered at import time:
+
 ```python
+from contextgrid.chunk.fixed import FixedTokenChunker
+from contextgrid.core.registry import Registry
+
+CHUNKERS = Registry(family="chunker")
+
 CHUNKERS.register("fixed", shorthand="size", doc="Fixed-size token windows with overlap.")(
     FixedTokenChunker
 )

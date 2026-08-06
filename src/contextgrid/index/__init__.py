@@ -73,7 +73,8 @@ INDEXES.register_lazy(
     module="contextgrid.index.ann",
     attr="FaissIndex",
     extra="index",
-    package="faiss",
+    # The distribution, not the import name -- `pip install faiss` fetches something else.
+    package="faiss-cpu",
     shorthand="kind",
     doc="faiss: flat, hnsw, ivf or ivfpq. Four index types on one axis.",
 )

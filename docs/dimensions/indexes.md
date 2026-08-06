@@ -35,6 +35,7 @@ until it felt fast" into a number:
 from collections.abc import Sequence
 from contextgrid.index.base import Scored
 
+
 def recall_against_exact(approximate: Sequence[Scored], exact: Sequence[Scored], k: int) -> float:
     """What fraction of exact search's top k the approximate index also found."""
 ```

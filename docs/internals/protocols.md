@@ -45,6 +45,9 @@ Why `token_spans` and not just `count`: a chunker that cuts "every 512 tokens" h
 > Turns a source file into text with structure.
 
 ```python
+from contextgrid.core.documents import MediaType, ParsedDocument, SourceFile
+
+
 @property
 def name(self) -> str: ...
 @property
@@ -69,6 +72,9 @@ inside the document, are in reading order, don't overlap, aren't empty, and — 
 > Cuts a parsed document into retrievable units.
 
 ```python
+from contextgrid.core.documents import Chunk, ParsedDocument
+
+
 @property
 def name(self) -> str: ...
 @property
@@ -93,6 +99,11 @@ chunker built from scratch on top of it.
 > Decides what is indexed and what a hit on it returns.
 
 ```python
+from collections.abc import Sequence
+from contextgrid.core.documents import Chunk
+from contextgrid.ingest.base import Ingested, IngestionContext
+
+
 @property
 def name(self) -> str: ...
 @property
@@ -123,6 +134,11 @@ docstring on `Ingested.presentation` in `ingest/base.py` for the full argument.
 > Turns a question into ranked chunks, using whatever index it was given.
 
 ```python
+from collections.abc import Sequence
+from contextgrid.index.base import Scored
+from contextgrid.retrieve.base import RetrievalTrace, Searcher
+
+
 @property
 def name(self) -> str: ...
 @property

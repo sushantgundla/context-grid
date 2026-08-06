@@ -309,11 +309,22 @@ def check_file(path: Path, venv_python: Path) -> list[Result]:
         finally:
             os.chdir(old_cwd)
             sys.path.remove(str(tmp))
-            # Don't let a module imported from this file's temp dir (now about to be
-            # deleted) linger in the cache for the next file's fresh import of the same
-            # name -- each file's python blocks should start from a clean slate.
+            # Don't let a module imported *from this file's temp dir* (now about to be
+            # deleted) linger in the cache under a name a later file might reuse -- e.g.
+            # `tests/pdf_fixtures.py` reached via the symlink above. Only that: deleting
+            # sys.modules entries for ordinary packages (numpy, torch, ...) and re-importing
+            # them is a different thing from a fresh process starting up, and at least one
+            # of them (numpy's C extension) explicitly refuses a second init with
+            # "cannot load module more than once per process" -- so those must stay put.
             for name in set(sys.modules) - modules_before:
-                del sys.modules[name]
+                module = sys.modules.get(name)
+                module_file = getattr(module, "__file__", None)
+                module_path = getattr(module, "__path__", None)
+                under_tmp = (module_file and str(tmp) in module_file) or (
+                    module_path and any(str(tmp) in p for p in module_path)
+                )
+                if under_tmp:
+                    del sys.modules[name]
 
         # -- bash/sh: one shared temp dir per file, each block its own subprocess --
         # Docs often write `.venv/bin/python ...` (relative to the repo root, as a reader

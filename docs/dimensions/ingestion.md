@@ -37,6 +37,7 @@ list of chunks, it returns an `Ingested`
 from dataclasses import dataclass
 from contextgrid.core.documents import Chunk
 
+
 @dataclass(slots=True)
 class Ingested:
     indexed: list[Chunk]  # embedded and searched
