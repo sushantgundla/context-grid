@@ -510,11 +510,8 @@ def test_every_extra_named_in_an_error_actually_exists() -> None:
     import re
     from pathlib import Path
 
-    import tomllib
-
     root = Path(__file__).resolve().parents[2]
-    with (root / "pyproject.toml").open("rb") as handle:
-        declared = set(tomllib.load(handle)["project"]["optional-dependencies"])
+    declared = set(_declared_extras(root))
 
     pattern = re.compile(r'MissingExtraError\(\s*[^,]+,\s*"([a-z0-9-]+)"')
     named: dict[str, set[str]] = {}
