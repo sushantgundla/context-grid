@@ -176,8 +176,8 @@ question calls `BuiltPipeline.answer()`:
 
 ```python no-run: excerpt from inside BuiltPipeline.answer() -- self/retrieved are method context, not standalone
 # BuiltPipeline.answer(), pipeline.py -- assembles then generates, in one call
-context = self.assembler.assemble(retrieved)      # assemble/context.py:ContextAssembler
-return self.generator.answer(question, context), context   # the configured Generator
+context = self.assembler.assemble(retrieved)  # assemble/context.py:ContextAssembler
+return self.generator.answer(question, context), context  # the configured Generator
 ```
 
 `score_answer()` (`generate/answer.py`) scores the reply lexically against the gold chunks —

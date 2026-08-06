@@ -460,6 +460,44 @@ def test_every_ingestion_strategy_is_reachable(name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _declared_extras(root: Any) -> dict[str, list[str]]:
+    """The optional dependencies, read from pyproject.
+
+    `tomllib` only arrived in Python 3.11 and this package supports 3.10, so the parse falls
+    back to reading the one table it needs. Skipping on 3.10 would have been simpler and would
+    have meant the guard covered four of the five Pythons in CI -- which is exactly the shape
+    of hole it exists to close.
+    """
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+    try:
+        import tomllib
+
+        loaded: dict[str, list[str]] = tomllib.loads(text)["project"]["optional-dependencies"]
+        return loaded
+    except ModuleNotFoundError:
+        pass
+
+    extras: dict[str, list[str]] = {}
+    inside = False
+    current: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            inside = stripped == "[project.optional-dependencies]"
+            continue
+        if not inside or not stripped or stripped.startswith("#"):
+            continue
+        if stripped.endswith("= ["):
+            current = stripped.split("=", 1)[0].strip()
+            extras[current] = []
+        elif stripped == "]":
+            current = None
+        elif current is not None:
+            extras[current].append(stripped.strip('",'))
+    return extras
+
+
 def test_every_extra_named_in_an_error_actually_exists() -> None:
     """An error naming an extra that does not exist -- or one that does not contain the package
     it promises -- is worse than no error: it costs an install and changes nothing.
@@ -494,8 +532,6 @@ def test_every_lazily_registered_package_is_in_the_extra_it_names() -> None:
     contain its package -- which is exactly how `unstructured` and `marker` went wrong."""
     from pathlib import Path
 
-    import tomllib
-
     from contextgrid.chunk import CHUNKERS
     from contextgrid.embed import EMBEDDERS
     from contextgrid.index import INDEXES
@@ -504,8 +540,7 @@ def test_every_lazily_registered_package_is_in_the_extra_it_names() -> None:
     from contextgrid.tokens import TOKENIZERS
 
     root = Path(__file__).resolve().parents[2]
-    with (root / "pyproject.toml").open("rb") as handle:
-        extras = tomllib.load(handle)["project"]["optional-dependencies"]
+    extras = _declared_extras(root)
 
     def base(requirement: str) -> str:
         return re.split(r"[<>=!\[;]", requirement, maxsplit=1)[0].strip().lower()

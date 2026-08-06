@@ -175,6 +175,7 @@ Both are `run:` config keys (`RunConfig.budget_seconds`, `RunConfig.budget_usd` 
 ```python
 from dataclasses import dataclass
 
+
 @dataclass(slots=True)
 class Budget:
     seconds: float | None = None

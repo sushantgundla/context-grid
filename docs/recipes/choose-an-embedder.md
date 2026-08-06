@@ -113,8 +113,10 @@ import numpy as np
 
 def fake_embed(batch):
     """Stands in for a running TEI server -- deterministic, no docker, no download."""
+
     def seed_for(text: str) -> int:
         return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+
     vecs = [np.random.default_rng(seed_for(t)).standard_normal(64).tolist() for t in batch]
     return vecs, 0  # (vectors, token_count)
 

@@ -66,6 +66,7 @@ costs and results — a manifest that changed every run couldn't be compared wit
 from dataclasses import dataclass, field
 from typing import Any
 
+
 @dataclass(frozen=True, slots=True)
 class Manifest:
     config: dict[str, Any]
@@ -245,6 +246,7 @@ for chunk_id in pipeline.search("your question here"):
 
 ```python
 from pathlib import Path
+
 
 def write_bundle(results, directory, *, metric="recall@5", manifest=None) -> list[Path]: ...
 ```

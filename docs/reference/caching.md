@@ -16,6 +16,7 @@ from typing import Any
 
 from contextgrid.cache.store import CACHE_FORMAT, _canonical
 
+
 def cache_key(
     stage: str,
     version: str,
