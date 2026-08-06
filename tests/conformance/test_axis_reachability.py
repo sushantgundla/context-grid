@@ -652,3 +652,55 @@ def test_the_labs_seed_reaches_the_results() -> None:
         ),
     )
     assert lab.run(evalset, headline="recall@3").seed == 42
+
+
+def test_every_warning_code_is_actually_raised_somewhere() -> None:
+    """A code nobody raises is a promise to report a condition nothing detects.
+
+    Six were dead when this was written. Two mattered and were implemented -- `ANN_RECALL_LOSS`,
+    for a sweep measuring approximate search with nothing exact to judge it against, and
+    `MISSING_QUERY_PREFIX`, for a model whose prefixes nobody knows. Four described conditions
+    already carried better elsewhere and were deleted. Declaring one and leaving it unraised
+    reads as coverage from the outside.
+    """
+    from pathlib import Path
+
+    from contextgrid.core.warnings import WarningCode
+
+    src = Path(__file__).resolve().parents[2] / "src" / "contextgrid"
+    used = set()
+    for source in src.rglob("*.py"):
+        if source.name == "warnings.py":
+            continue
+        text = source.read_text(encoding="utf-8")
+        used.update(re.findall(r"WarningCode\.([A-Z_]+)", text))
+
+    dead = sorted(code.name for code in WarningCode if code.name not in used)
+    assert not dead, f"declared and never raised: {dead}"
+
+
+def test_every_warning_code_is_documented() -> None:
+    """A user who sees a CAUTION in their report needs somewhere to look it up.
+
+    Fourteen of twenty-seven were undocumented: the scoring page covered the anchor and span
+    codes because a scoring writer wrote it, and nobody owned the parse, chunk, embed, index or
+    run codes.
+    """
+    from pathlib import Path
+
+    from contextgrid.core.warnings import WarningCode
+
+    docs = Path(__file__).resolve().parents[2] / "docs"
+    # COVERAGE.md is excluded, and finding that out was the point of running this twice. It
+    # *lists* the undocumented names, so searching it made every gap look filled -- a coverage
+    # report counting itself as coverage.
+    text = "\n".join(
+        page.read_text(encoding="utf-8")
+        for page in docs.rglob("*.md")
+        if page.name != "COVERAGE.md"
+    )
+
+    missing = sorted(
+        code.name for code in WarningCode if code.name not in text and code.value not in text
+    )
+    assert not missing, f"not explained anywhere in docs/: {missing}"

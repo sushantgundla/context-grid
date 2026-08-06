@@ -35,17 +35,17 @@ def test_add_returns_the_warning_it_recorded() -> None:
 
 def test_severity_defaults_to_caution() -> None:
     log = WarningLog()
-    warning = log.add(WarningCode.OCR_APPLIED, "ocr ran on 3 pages")
+    warning = log.add(WarningCode.QUANTIZATION_APPLIED, "vectors were compressed")
     assert warning.severity is Severity.CAUTION
 
 
 def test_invalidating_warnings_make_a_log_unsound() -> None:
     log = WarningLog()
-    log.add(WarningCode.OCR_APPLIED, "fine", severity=Severity.INFO)
+    log.add(WarningCode.QUANTIZATION_APPLIED, "fine", severity=Severity.INFO)
     assert log.is_sound
 
     log.add(
-        WarningCode.APPROXIMATE_OFFSETS,
+        WarningCode.INPUT_TRUNCATED,
         "offsets are guesses, this comparison is not valid",
         severity=Severity.INVALID,
     )
@@ -55,9 +55,9 @@ def test_invalidating_warnings_make_a_log_unsound() -> None:
 
 def test_at_least_filters_up_the_severity_ladder() -> None:
     log = WarningLog()
-    log.add(WarningCode.OCR_APPLIED, "info", severity=Severity.INFO)
+    log.add(WarningCode.QUANTIZATION_APPLIED, "info", severity=Severity.INFO)
     log.add(WarningCode.ANN_RECALL_LOSS, "caution", severity=Severity.CAUTION)
-    log.add(WarningCode.APPROXIMATE_OFFSETS, "invalid", severity=Severity.INVALID)
+    log.add(WarningCode.INPUT_TRUNCATED, "invalid", severity=Severity.INVALID)
 
     assert len(log.at_least(Severity.INFO)) == 3
     assert len(log.at_least(Severity.CAUTION)) == 2
@@ -77,7 +77,7 @@ def test_of_code_selects_by_kind() -> None:
 
 def test_extend_and_merge() -> None:
     first = WarningLog()
-    first.add(WarningCode.OCR_APPLIED, "a")
+    first.add(WarningCode.QUANTIZATION_APPLIED, "a")
     second = WarningLog()
     second.add(WarningCode.ANN_RECALL_LOSS, "b")
 
@@ -93,10 +93,10 @@ def test_counts_and_summary() -> None:
     log = WarningLog()
     log.add(WarningCode.INPUT_TRUNCATED, "a")
     log.add(WarningCode.INPUT_TRUNCATED, "b")
-    log.add(WarningCode.OCR_APPLIED, "c")
+    log.add(WarningCode.QUANTIZATION_APPLIED, "c")
 
-    assert log.counts() == {"input_truncated": 2, "ocr_applied": 1}
-    assert log.summary() == "input_truncated x2, ocr_applied x1"
+    assert log.counts() == {"input_truncated": 2, "quantization_applied": 1}
+    assert log.summary() == "input_truncated x2, quantization_applied x1"
 
 
 def test_warning_renders_readably() -> None:

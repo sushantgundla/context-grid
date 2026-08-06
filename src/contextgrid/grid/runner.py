@@ -294,6 +294,8 @@ class Runner:
         configs, dropped = matrix.expand_with_dropped(chosen)
         results = self._flat(configs, evalset, chosen, budget, on_progress)
 
+        _warn_if_approximate_alone(matrix, results)
+
         unbounded = matrix.meta.get("unbounded_model_calls")
         if unbounded:
             results.warnings.add(
@@ -424,6 +426,40 @@ class Runner:
         results.warnings.extend(self.cost_model.warnings)
         results.meta["final"] = current.as_dict()
         return results
+
+
+def _warn_if_approximate_alone(matrix: Matrix, results: Results) -> None:
+    """Say so when a sweep measures approximate search with no exact arm to judge it against.
+
+    An approximate index returning 92% of what exhaustive search would have found is a perfectly
+    good trade -- and only if somebody measured the 8%. On its own the number looks like a
+    retrieval score, reads like one, and is one *plus* an unstated loss. `efSearch` and `nprobe`
+    get tuned until the latency looks good, and this is the arm that would have said what it
+    cost.
+    """
+    from contextgrid.index import get_index
+
+    approximate: list[str] = []
+    exact = False
+    for value in matrix.index:
+        try:
+            index = get_index(value)
+        except Exception:  # pragma: no cover - a bad spec fails later, more helpfully
+            continue
+        if getattr(index, "is_exact", True):
+            exact = True
+        else:
+            approximate.append(str(value))
+
+    if approximate and not exact:
+        results.warnings.add(
+            WarningCode.ANN_RECALL_LOSS,
+            f"every index on this axis is approximate ({', '.join(sorted(set(approximate)))}) "
+            "and none is exact, so nothing here measures what the approximation cost. Add "
+            "`dense`, or `faiss:flat`, to find out",
+            severity=Severity.CAUTION,
+            stage="index",
+        )
 
 
 def _warn_if_unbounded(matrix: Matrix, budget: Budget) -> None:

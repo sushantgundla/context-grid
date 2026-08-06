@@ -19,6 +19,14 @@ from enum import Enum
 from typing import Any
 
 
+#: Four codes were removed rather than documented: APPROXIMATE_OFFSETS, OCR_APPLIED,
+#: CHUNK_TEXT_REWRITTEN and ANCHOR_OCCURRENCE_MISSING. Every one was declared and raised
+#: nowhere, so each was a promise to tell somebody about a condition that nothing detects.
+#: What they described is already carried better elsewhere -- `offsets_exact` on the chunk or
+#: the parse says whether text is a literal slice, and `GoldAnchor.occurrence` failures come
+#: back as ANCHOR_NOT_FOUND with the reason attached.
+#:
+#: A code nobody raises is worse than a missing one: it reads as coverage.
 class WarningCode(str, Enum):
     """Machine-readable warning kinds.
 
@@ -26,14 +34,11 @@ class WarningCode(str, Enum):
     """
 
     # -- parsing -------------------------------------------------------------
-    APPROXIMATE_OFFSETS = "approximate_offsets"
-    OCR_APPLIED = "ocr_applied"
     EMPTY_TEXT_LAYER = "empty_text_layer"
     PARSER_FALLBACK = "parser_fallback"
 
     # -- chunking ------------------------------------------------------------
     CHUNK_EXCEEDS_MODEL_CONTEXT = "chunk_exceeds_model_context"
-    CHUNK_TEXT_REWRITTEN = "chunk_text_rewritten"
     EMPTY_CHUNK_SET = "empty_chunk_set"
 
     # -- embedding -----------------------------------------------------------
@@ -56,7 +61,6 @@ class WarningCode(str, Enum):
     ANCHOR_NORMALISED = "anchor_normalised"
     ANCHOR_BOUNDED = "anchor_bounded"
     ANCHOR_AMBIGUOUS = "anchor_ambiguous"
-    ANCHOR_OCCURRENCE_MISSING = "anchor_occurrence_missing"
     NO_PARSE_FOR_SOURCE = "no_parse_for_source"
 
     # -- generation ------------------------------------------------------------

@@ -124,6 +124,7 @@ class _RemoteEmbedder:
             return EmbeddingResult(vectors=np.zeros((0, self.dimensions), dtype=np.float32))
 
         cut, log, truncated = truncate(texts, self.max_tokens, model=self.name)
+        self._warn_about_prefixes(log)
         prefixed = [prefix + text for text in cut] if prefix else list(cut)
 
         rows: list[list[float]] = []
@@ -148,6 +149,33 @@ class _RemoteEmbedder:
             warnings=log,
             input_tokens=tokens,
             truncated=truncated,
+        )
+
+    def _warn_about_prefixes(self, log: WarningLog) -> None:
+        """Say so when nothing is known about whether this model wants prefixes.
+
+        E5 was trained with `query:` and `passage:`, BGE with an instruction on the query alone.
+        Get it wrong and nothing fails -- the numbers come out several points low, uniformly,
+        and *unevenly across the arms of a sweep*, which turns a model comparison into a
+        comparison of one model against a handicapped version of another.
+
+        Silence is the right default for a name nobody recognises, since inventing a prefix is
+        as wrong as omitting one. Silence with no warning is not.
+        """
+        if self._prefixes.used or self.query_prefix is not None:
+            return
+        if for_model(self.model).used:  # pragma: no cover - unreachable while the rule matched
+            return
+
+        log.add(
+            WarningCode.MISSING_QUERY_PREFIX,
+            f"nothing is known about whether {self.model!r} wants query and document prefixes, "
+            "so none were added. If it was trained with them, every score for this arm is "
+            "several points low. Set `query_prefix=` and `document_prefix=` explicitly, or "
+            'silence this with `query_prefix=""`',
+            severity=Severity.CAUTION,
+            stage="embed",
+            subject=self.model,
         )
 
     def _check_dimensions(self, matrix: Vectors, log: WarningLog) -> None:

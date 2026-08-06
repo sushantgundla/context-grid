@@ -87,6 +87,42 @@ Every code below comes from [`spans-and-anchors.md`](spans-and-anchors.md) or
 | `NO_PARSE_FOR_SOURCE` | `AnchorResolver.resolve_item` | `CAUTION` | An anchor's `source_id` has no matching parse, so its evidence can't be located. |
 | `SMALL_EVAL_SET` | eval-set generation and quality checks | varies | The eval set (or a slice of it, e.g. one question type) is too small for its numbers to be trustworthy. |
 
+### Codes from the rest of the pipeline
+
+The scoring codes above tell you the eval set or the resolution is shaky. These tell you the
+*run* is — something was cut, skipped, approximated or given up on, and the number beside it is
+smaller than it looks.
+
+| Code | Stage | Severity | What happened, and what to do |
+|---|---|---|---|
+| `empty_text_layer` | parse | CAUTION | Pages with no extractable text — almost always scans. Nothing on them can be retrieved without OCR, so recall is capped by the corpus rather than by the config. |
+| `parser_fallback` | parse | CAUTION | The chosen parser could not read a file and another one did. That row mixes two parsers, so the parser axis is not measuring what it claims for those documents. |
+| `empty_chunk_set` | chunk | INVALID | A configuration produced no chunks at all, so every query scores zero. Either the parser found no text or the chunker rejected all of it. Not a bad configuration — a broken one. |
+| `chunk_exceeds_model_context` | assemble | CAUTION | A chunk is larger than the generator's context window, so part of what was retrieved never reaches the model. Reduce the chunk size or raise `k`'s budget. |
+| `input_truncated` | embed | CAUTION | Text longer than the model's context was cut before embedding. If the answer was after the cut, it cannot be retrieved — and nothing else in the run will say so. |
+| `missing_query_prefix` | embed | CAUTION | Nothing is known about whether this model wants `query:`/`passage:` prefixes. If it was trained with them, every score for that arm is several points low, and low *unevenly* against the other arms. Set them explicitly, or pass `query_prefix=""` to say none are needed. |
+| `unnormalised_vectors` | embed | CAUTION | The model returned a different width than the config declared. Usually a wrong model name; always worth checking before trusting a cached run. |
+| `ann_recall_loss` | index | CAUTION | Every index on the axis is approximate and none is exact, so nothing measures what the approximation cost. Add `dense` or `faiss:flat`. |
+| `quantization_applied` | index | INFO | Vectors were compressed. Real memory saved, real recall lost — `recall_against_exact` is how much. |
+| `impossible_combination` | run | INFO | Combinations that cannot be built were dropped, such as a dense index with no embedder. The axes are almost certainly what you meant; this is the product of them that is not. |
+| `budget_reached` | run | CAUTION | `budget_seconds` or `budget_usd` ran out and the sweep stopped early. The leaderboard is partial. Also raised when a model has no published price and is therefore costed at zero. |
+| `generation_failed` | generate | CAUTION | A generator or judge failed on a question. The rest of the run stands; that question has no answer score. |
+| `cache_miss_storm` | cache | INFO | Very little was reused. Usually means something in the cache key changed — a tokenizer, a parser version — and the sweep is slower than it needs to be. |
+| `non_deterministic_stage` | varies | CAUTION | A stage did something a rerun may not repeat. Raised by the LLM-backed ingestion strategies when a model call fails and the chunk is indexed as written, so the row mixes two strategies. |
+
+**Six codes were deleted rather than documented.** Each was declared and raised nowhere, which
+is worse than a missing code: from the outside it reads as coverage. Two of them described
+conditions worth reporting and are now real — `ann_recall_loss` and `missing_query_prefix`,
+both in the table above. The other four described things already carried better elsewhere:
+`offsets_exact` on a chunk or a parse says whether text is a literal slice, and a failed
+`GoldAnchor.occurrence` comes back as `anchor_not_found` with the reason attached.
+
+Two tests keep this page honest. One asserts every `WarningCode` is raised somewhere in `src/`;
+the other asserts every one appears here. The second passed for a while by accident, because
+`docs/COVERAGE.md` lists undocumented names and the search was finding them there — a coverage
+report counting as its own coverage.
+
+
 ## The failure taxonomy: Seven Failure Points
 
 A leaderboard says a configuration scored 0.62. It doesn't say *why* the other 0.38
