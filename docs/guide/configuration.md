@@ -54,9 +54,43 @@ accepted as JSON. `contextgrid init` always writes YAML.
 | `corpus` | path | *(required)* | A directory of documents, or a single file. The only required key. |
 | `evalset` | path or `null` | `null` | A JSONL or CSV file of questions. Required to actually score a sweep — `check` works without it, `run` doesn't. |
 | `name` | string | the filename, or `"experiment"` | Shows up in `describe()` / `check` output and in the report. |
+| `plugins` | string or list of strings | `[]` | Your own modules, imported before any name in this file is resolved. Needed to name a plugin you wrote yourself — see below. |
 | `grid` | mapping | *(see below)* | The axes and the values to try on each. |
 | `run` | mapping | *(see below)* | How the sweep is executed. |
 | `report` | mapping | *(see below)* | What to write out, and where. |
+
+## `plugins:` — using code you wrote yourself
+
+Every axis in this package is a registry, and you can [write your own](../internals/extending.md)
+chunker, metric, embedder or reranker. To name one in a config file, list the module that
+registers it:
+
+```yaml
+plugins:
+  - my_project.metrics     # a module on sys.path
+  - ./local_plugins.py     # or a file sitting beside this config
+
+run:
+  headline: sharp_mrr@5
+  metrics: [sharp_mrr]
+```
+
+**Without this, `contextgrid run` cannot see your plugin.** It starts a fresh process that
+imports `contextgrid` and nothing else, so your `register` call never runs and the name is
+rejected exactly as if you had misspelled it:
+
+```
+error: unknown metric 'sharp_mrr' in run.headline.
+Available: hit_rate, map, mrr, ndcg, precision, recall
+```
+
+Paths are resolved against the config file's own directory, not your working directory, so the
+config stays portable. Loading happens before `grid:` and `run:` are parsed, because parsing
+those is what validates names against the registries.
+
+**This runs the code you point at.** That is the feature — registering a plugin *means*
+executing a `register` call — but it does mean a config file is as trusted as a script. Read a
+`contextgrid.yaml` you did not write before running it.
 
 ## `grid:` — the axes
 
@@ -89,8 +123,8 @@ with defaults.
 |---|---|---|---|
 | `mode` | `ofat` \| `factorial` \| `staged` | `ofat` | `ofat` (one-factor-at-a-time) changes one axis from a baseline per run — cheap, good for a first pass. `factorial` runs every combination the axes describe — expensive, exhaustive. `staged` runs axes in a fixed order, carrying the best of each stage forward. |
 | `k` | int (≥ 1) | `10` | How many chunks reach the generator / count as "retrieved" for top-level metrics. |
-| `headline` | string, `metric@cutoff` | `recall@5` | What the leaderboard sorts on. Metric must be a name registered in `contextgrid.score.METRICS` — `recall`, `precision`, `ndcg`, `mrr`, `map`, `hit_rate` out of the box, or a custom metric you registered yourself (see [metrics.md](../scoring/metrics.md#metrics-are-a-plugin-family)); the cutoff must be a number, e.g. `ndcg@10`. The cutoff is always included in the metrics reported, even if not in the default set. |
-| `metrics` | string or list of strings | `[]` | Extra registered metrics to compute alongside the six built-ins and `headline`'s own — e.g. `metrics: [my_custom_metric]`. Only useful once you've registered a `Metric`; unknown names are rejected the same way an unknown `headline` is. |
+| `headline` | string, `metric@cutoff` | `recall@5` | What the leaderboard sorts on. Metric must be a name registered in `contextgrid.score.METRICS` — `recall`, `precision`, `ndcg`, `mrr`, `map`, `hit_rate` out of the box, or a custom metric you registered yourself (see [metrics.md](../scoring/metrics.md#metrics-are-a-plugin-family)) — which needs a `plugins:` entry, or `contextgrid run` will not have imported it; the cutoff must be a number, e.g. `ndcg@10`. The cutoff is always included in the metrics reported, even if not in the default set. |
+| `metrics` | string or list of strings | `[]` | Extra registered metrics to compute alongside the six built-ins and `headline`'s own — e.g. `metrics: [my_custom_metric]`. Only useful once you've registered a `Metric` and named its module in `plugins:`; unknown names are rejected the same way an unknown `headline` is. |
 | `budget_seconds` | float or `null` | `null` (no limit) | Stop the sweep after this many wall-clock seconds. A sweep containing a strategy that decides its own number of model calls has no ceiling without this or `budget_usd`. |
 | `budget_usd` | float or `null` | `null` (no limit) | Stop the sweep after this much estimated spend. `0.0` means "already spent" — nothing runs, and the report says why rather than showing an empty leaderboard as if the matrix had been covered. |
 | `seed` | int | `0` | Random seed, recorded in the manifest for reproducibility. |

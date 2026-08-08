@@ -285,8 +285,19 @@ class ExperimentConfig:
     report: ReportConfig = field(default_factory=ReportConfig)
     name: str = "experiment"
     source_path: Path | None = None
+    #: Modules imported before any name in this config is resolved. What was loaded, not what
+    #: was asked for -- a `./plugins.py` comes back as the absolute path it resolved to.
+    plugins: tuple[str, ...] = ()
 
-    KNOWN: ClassVar[tuple[str, ...]] = ("corpus", "evalset", "grid", "run", "report", "name")
+    KNOWN: ClassVar[tuple[str, ...]] = (
+        "corpus",
+        "evalset",
+        "grid",
+        "run",
+        "report",
+        "name",
+        "plugins",
+    )
 
     @classmethod
     def from_mapping(
@@ -304,6 +315,14 @@ class ExperimentConfig:
                 "every config needs a `corpus`: a directory of documents, or a list of files."
             )
 
+        # Before anything else is parsed, and that ordering is the whole point: parsing `run`
+        # is what checks `headline` against the metric registry, and parsing `grid` is what
+        # checks every axis value against its own. A plugin loaded after those runs would be
+        # rejected as a typo by the very validation it exists to satisfy.
+        from contextgrid.config.plugins import load_plugins
+
+        plugins = load_plugins(_as_strings(data.get("plugins", ()), "plugins"), base=base)
+
         return cls(
             corpus=_resolve(data["corpus"], base),
             evalset=_resolve(data["evalset"], base) if data.get("evalset") else None,
@@ -312,6 +331,7 @@ class ExperimentConfig:
             report=ReportConfig.from_mapping(_section(data, "report"), base=base),
             name=str(data.get("name", source.stem if source else "experiment")),
             source_path=source,
+            plugins=plugins,
         )
 
     def validate_paths(self) -> None:
@@ -330,6 +350,9 @@ class ExperimentConfig:
             "name": self.name,
             "corpus": str(self.corpus),
             "evalset": str(self.evalset) if self.evalset else None,
+            # In the manifest because a result produced with a custom metric cannot be
+            # reproduced, or even read, without knowing which code defined it.
+            "plugins": list(self.plugins),
             "grid": self.grid.as_dict(),
             "run": self.run.as_dict(),
             "report": self.report.as_dict(),
