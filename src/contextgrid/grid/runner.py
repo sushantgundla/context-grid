@@ -17,6 +17,7 @@ from contextgrid.cache.store import Cache, CacheStats, MemoryCache
 from contextgrid.core.evalset import EvalSet, Qrels
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
+from contextgrid.cost.metering import MeteredLLM, exact_tokenizer_or_none
 from contextgrid.cost.model import CostModel
 from contextgrid.diagnose.taxonomy import diagnose
 from contextgrid.generate import GenerationReport, score_answer
@@ -28,6 +29,9 @@ from contextgrid.score.metrics import BUILTIN_METRIC_NAMES, DEFAULT_KS, evaluate
 from contextgrid.score.resolve import SpanResolver, character_precision, character_recall
 
 Progress = Callable[[int, int, Config], None]
+
+#: Distinguishes "not looked up yet" from "looked up, and there is no exact tokenizer".
+_UNSET: Any = object()
 
 
 @dataclass(slots=True)
@@ -54,10 +58,19 @@ class Budget:
         self._started = time.perf_counter()
 
     def charge(self, result: RunResult, queries: int) -> None:
-        """Add what one configuration cost: building its index, and serving the eval set."""
+        """Add what one configuration actually spent.
+
+        `spent_now(queries)`, not `total_at(queries)`. The two ask different questions:
+        `total_at` is "what would this cost to serve in production"; a spending limit is
+        asking "how much money has this sweep burnt". `total_at` both over-counts, by
+        projecting a serving rate over queries nobody ran, and under-counts, by omitting the
+        judge entirely. With a local embedder and a hosted generator it came to zero however
+        many dollars had just gone through -- which is why a positive `budget_usd` could never
+        fire on the one axis that spends real money.
+        """
         cost = getattr(result, "cost", None)
         if cost is not None:
-            self.spent_usd += float(cost.total_at(queries))
+            self.spent_usd += float(cost.spent_now(queries))
 
     def exceeded(self) -> str | None:
         """Why the sweep should stop, or None to keep going."""
@@ -89,6 +102,10 @@ class Runner:
     #: Carried onto the results, so significance testing resamples with the seed the run
     #: recorded rather than a hidden zero.
     seed: int = 0
+    #: Cached tokenizer for cost metering. `_UNSET` rather than `None` because `None` is a
+    #: real answer here -- it means "tiktoken is not installed" and must not be retried on
+    #: every configuration in the sweep.
+    _tokenizer: Any = _UNSET
 
     def __post_init__(self) -> None:
         if self.cache is None:
@@ -102,6 +119,17 @@ class Runner:
         _, _, cut = self.headline.partition("@")
         if cut.isdigit() and int(cut) not in self.ks:
             self.ks = tuple(sorted({*self.ks, int(cut)}))
+
+    def _token_counter(self) -> Any:
+        """The tokenizer used to count what a model consumed, or `None`.
+
+        Built once per configuration and handed to both meters. `None` when `tiktoken` is not
+        installed, which downgrades the cost to approximate rather than failing a run that
+        would otherwise have succeeded.
+        """
+        if self._tokenizer is _UNSET:
+            self._tokenizer = exact_tokenizer_or_none()
+        return self._tokenizer
 
     @property
     def metric_names(self) -> tuple[str, ...]:
@@ -121,7 +149,18 @@ class Runner:
     def run_one(self, config: Config, evalset: EvalSet) -> RunResult:
         """Build a configuration, answer every question, and score it."""
         started = time.perf_counter()
-        pipeline = build(config, self.corpus, cache=self.cache, stats=self.stats, llm=self.llm)
+
+        # Every model call this configuration makes goes through here, so it can be counted
+        # and priced. A fresh wrapper per configuration, because the numbers are per-run --
+        # sharing one across a sweep would charge the whole sweep's spend to every row.
+        #
+        # Generation and the judge are metered separately: one is what serving costs, the
+        # other is what evaluating cost, and adding them together would tell somebody their
+        # production system needs a judge call per question.
+        metered_llm = MeteredLLM(self.llm, self._token_counter()) if self.llm is not None else None
+        pipeline = build(
+            config, self.corpus, cache=self.cache, stats=self.stats, llm=metered_llm or self.llm
+        )
 
         # The evidence has to be located again in *this* parse. Two parsers produce
         # different text, so a span that was right for one is meaningless for the other.
@@ -151,7 +190,10 @@ class Runner:
         # A no-op when `config.generator` is unset: no assembly, no model call, no cost, same
         # as before this axis existed. Folds `faithfulness` and `answer_relevancy` in when a
         # judge ran, which is what lets DIMENSION_METRICS["generation"] find them later.
-        generation_metrics, generation_log = self._score_generation(pipeline, resolved, run, qrels)
+        judge_llm = MeteredLLM(self.llm, self._token_counter()) if self.llm is not None else None
+        generation_metrics, generation_log = self._score_generation(
+            pipeline, resolved, run, qrels, judge_llm=judge_llm
+        )
         metrics.update(generation_metrics)
 
         warnings.extend(pipeline.warnings)
@@ -191,6 +233,12 @@ class Runner:
             index_tokens=pipeline.embed_tokens,
             query_tokens_per_query=_mean_query_tokens(resolved),
             compute_seconds=elapsed,
+            # The object, not a name: `price_key` asks an instance what it is called, and the
+            # LLM is the only place that knows which model `run.model` resolved to.
+            model=self.llm,
+            generation=metered_llm.usage if metered_llm is not None else None,
+            judge=judge_llm.usage if judge_llm is not None else None,
+            queries=len(resolved),
         )
 
         return RunResult(
@@ -218,6 +266,7 @@ class Runner:
         evalset: EvalSet,
         run: Mapping[str, Sequence[str]],
         qrels: Qrels,
+        judge_llm: object | None = None,
     ) -> tuple[dict[str, float], WarningLog]:
         """Answer every question with the configured generator, and score it.
 
@@ -235,7 +284,7 @@ class Runner:
 
         chunks_by_id = pipeline.chunk_by_id()
         report = GenerationReport(generator=generator.name)
-        judge = self._generation_judge()
+        judge = self._generation_judge(judge_llm)
         judge_scores: dict[str, list[float]] = {}
 
         for item in evalset:
@@ -285,7 +334,7 @@ class Runner:
         metrics.update({name: sum(v) / len(v) for name, v in judge_scores.items() if v})
         return metrics, log
 
-    def _generation_judge(self) -> Any:
+    def _generation_judge(self, llm: object | None = None) -> Any:
         """The DeepEval judge, built once per configuration, or `None` when it cannot run.
 
         Checked here rather than inside the per-question loop: a missing `deepeval` install
@@ -295,7 +344,11 @@ class Runner:
         sweep with a generator configured gets `faithfulness` and `answer_relevancy` without
         a second key or an unpriced call to whatever DeepEval defaults to.
         """
-        if self.llm is None:
+        # `llm` is the metered wrapper around `self.llm`, so judge calls are counted
+        # separately from generation calls -- evaluation cost and serving cost are different
+        # questions and must not be added together.
+        model = llm if llm is not None else self.llm
+        if model is None:
             return None
         try:
             import deepeval  # noqa: F401
@@ -304,7 +357,7 @@ class Runner:
 
         from contextgrid.generate import GenerationJudge
 
-        return GenerationJudge(llm=self.llm)
+        return GenerationJudge(llm=model)
 
     # -- a whole matrix ------------------------------------------------------
 

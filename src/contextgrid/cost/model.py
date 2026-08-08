@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
+from contextgrid.cost.metering import Usage
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,10 +161,46 @@ class CostBreakdown:
     query_tokens_per_query: float = 0.0
     compute_seconds: float = 0.0
     metered: bool = True
+    #: What the generator costs to *serve*, per thousand queries. Kept apart from the
+    #: embedder's `query_usd_per_1k` because they are different models at different prices --
+    #: a run that answers with a language model is typically orders of magnitude dearer per
+    #: query than one that only searches, and one merged number hides exactly that.
+    generation_usd_per_1k: float = 0.0
+    #: What this configuration actually spent, right now, to produce these numbers: the
+    #: generation calls it made and the judge calls that scored them.
+    #:
+    #: Deliberately not part of `total_at()`. The judge runs once, during evaluation, and
+    #: never again in production -- charging it to serving cost would overstate what the
+    #: configuration costs to run by however many judge calls the eval set happened to need.
+    #: This is the number a spending limit has to watch.
+    evaluation_usd: float = 0.0
+    generation_tokens: int = 0
+    judge_tokens: int = 0
 
     def total_at(self, queries: int) -> float:
-        """Total cost of building the index and serving `queries` queries."""
-        return self.index_usd + self.query_usd_per_1k * (queries / 1000)
+        """Total cost of building the index and serving `queries` queries.
+
+        Serving, not evaluating -- `evaluation_usd` is left out on purpose, see its comment.
+        """
+        return self.index_usd + (self.query_usd_per_1k + self.generation_usd_per_1k) * (
+            queries / 1000
+        )
+
+    def spent_now(self, queries: int) -> float:
+        """Money already burnt running this configuration over `queries` questions.
+
+        What `budget_usd` has to be checked against, and not the same as `total_at()`. The two
+        differ in both directions:
+
+        * `total_at` projects the generator's *serving* rate over however many queries you ask
+          about. That is a forecast, not a bill.
+        * `total_at` leaves out `evaluation_usd` -- the judge. Real money, already spent, that
+          never recurs in production.
+
+        Everything actually paid for is here: building the index, embedding the questions that
+        were asked, generating the answers, and judging them.
+        """
+        return self.index_usd + self.query_usd_per_1k * (queries / 1000) + self.evaluation_usd
 
     def as_dict(self) -> dict[str, float | bool | int]:
         return {
@@ -173,6 +210,10 @@ class CostBreakdown:
             "query_tokens_per_query": self.query_tokens_per_query,
             "compute_seconds": self.compute_seconds,
             "metered": self.metered,
+            "generation_usd_per_1k": self.generation_usd_per_1k,
+            "evaluation_usd": self.evaluation_usd,
+            "generation_tokens": self.generation_tokens,
+            "judge_tokens": self.judge_tokens,
         }
 
 
@@ -225,20 +266,48 @@ class CostModel:
         index_tokens: int,
         query_tokens_per_query: float,
         compute_seconds: float = 0.0,
+        model: str | object | None = None,
+        generation: Usage | None = None,
+        judge: Usage | None = None,
+        queries: int = 0,
     ) -> CostBreakdown:
-        """Cost one configuration, given what it embedded and how long it took."""
+        """Cost one configuration, given what it embedded, what it generated, and how long.
+
+        `model` is what answered and what judged -- the same one, since the runner gives the
+        judge the model already configured for generation. `queries` is how many questions
+        were asked, needed to turn a total spend into a per-query serving rate.
+        """
         pricing = self.pricing_for(embedder)
         machine_usd = compute_seconds * (self.machine_usd_per_hour / 3600)
 
+        # Priced first and added to *both* branches below. The embedder being free per token
+        # says nothing about the generator: a `tfidf` index answering with `gpt-4o-mini` used
+        # to take the unmetered path and come back at exactly zero, which is the case that
+        # made the leaderboard claim an OpenAI configuration "runs locally at no cost".
+        generation_usd = self._generation_usd(model, generation)
+        judge_usd = self._generation_usd(model, judge)
+        evaluation_usd = generation_usd + judge_usd
+        per_1k = (generation_usd / queries * 1000) if queries else 0.0
+        generation_tokens = generation.total_tokens if generation else 0
+        judge_tokens = judge.total_tokens if judge else 0
+        # An approximate token count makes the dollar figure a guess, and a guess must not be
+        # presented as a measurement -- the same rule the embedder side already follows.
+        counted_exactly = all(u.exact for u in (generation, judge) if u is not None)
+
         if not pricing.metered:
-            # Free per token, not free to run. All of the cost is time.
+            # Free per token, not free to run. The embedder's cost is time; the generator's
+            # is still dollars.
             return CostBreakdown(
                 index_usd=machine_usd,
                 query_usd_per_1k=0.0,
                 index_tokens=index_tokens,
                 query_tokens_per_query=query_tokens_per_query,
                 compute_seconds=compute_seconds,
-                metered=False,
+                metered=evaluation_usd > 0 and counted_exactly,
+                generation_usd_per_1k=per_1k,
+                evaluation_usd=evaluation_usd,
+                generation_tokens=generation_tokens,
+                judge_tokens=judge_tokens,
             )
 
         rate = pricing.embed_per_million / 1_000_000
@@ -248,5 +317,26 @@ class CostModel:
             index_tokens=index_tokens,
             query_tokens_per_query=query_tokens_per_query,
             compute_seconds=compute_seconds,
-            metered=True,
+            metered=counted_exactly,
+            generation_usd_per_1k=per_1k,
+            evaluation_usd=evaluation_usd,
+            generation_tokens=generation_tokens,
+            judge_tokens=judge_tokens,
         )
+
+    def _generation_usd(self, model: str | object | None, usage: Usage | None) -> float:
+        """Dollars for one model's traffic, input and output priced separately.
+
+        Output runs three to five times input on most providers, so a single blended rate
+        would misprice anything with short questions and long answers -- which is every RAG
+        system.
+        """
+        if usage is None or usage.calls == 0:
+            return 0.0
+        pricing = self.pricing_for(model)
+        if not pricing.metered:
+            return 0.0
+        return (
+            usage.prompt_tokens * pricing.generate_input_per_million
+            + usage.completion_tokens * pricing.generate_output_per_million
+        ) / 1_000_000
