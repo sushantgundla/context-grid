@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import re
 import sys
+import zlib
 from pathlib import Path
 
 from contextgrid.config.schema import ConfigError
@@ -83,6 +85,25 @@ def _load_module(name: str) -> str:
     return name
 
 
+def _module_name_for(path: Path) -> str:
+    """The name a plugin file is imported under. Stable, readable, and keyed by full path.
+
+    Keyed by the *full* path so two `plugins.py` files in different directories do not collide,
+    and so re-running the same config in one process is a no-op rather than a second execution
+    of everything in the file -- which for a registry means a duplicate-name error the user did
+    nothing to cause.
+
+    `zlib.crc32` rather than the builtin `hash()`, which `PYTHONHASHSEED` randomises per
+    process. Within one process either works, since that is the only scope a module name has to
+    be unique in. But this name is what appears in tracebacks from the user's own plugin code,
+    and one that changes on every run makes two reports of the same crash look like two
+    different crashes. The file's stem is kept in front for the same reason: a name like
+    `contextgrid_plugin_my_metrics_66c5a80e` says which file raised, and a bare number does not.
+    """
+    stem = re.sub(r"\W", "_", path.stem) or "plugin"
+    return f"contextgrid_plugin_{stem}_{zlib.crc32(str(path).encode()):08x}"
+
+
 def _load_file(spec: str, *, base: Path) -> str:
     """Import a `.py` file by path, without it needing to be on `sys.path`."""
     path = Path(spec).expanduser()
@@ -96,10 +117,7 @@ def _load_file(spec: str, *, base: Path) -> str:
             f"plugins: {path} is a directory. Name the file itself, or use a dotted module name."
         )
 
-    # Keyed by full path, so two plugin files with the same basename in different directories
-    # do not collide, and so re-running the same config in one process is a no-op rather than a
-    # second execution of everything in the file.
-    module_name = f"contextgrid_plugin_{abs(hash(str(path)))}"
+    module_name = _module_name_for(path)
     if module_name in sys.modules:
         return str(path)
 

@@ -216,3 +216,45 @@ def test_what_was_loaded_is_recorded_for_the_manifest(workspace: Path) -> None:
 def test_no_plugins_key_changes_nothing(workspace: Path) -> None:
     config = loads("corpus: ./corpus\n", base=workspace)
     assert config.plugins == ()
+
+
+def test_the_module_name_is_stable_across_processes(workspace: Path) -> None:
+    """It used to be `abs(hash(str(path)))`, and `PYTHONHASHSEED` randomises `hash()` per
+    process. That works -- a module name only has to be unique within one process -- but the
+    name shows up in tracebacks raised by the user's own plugin, so the same crash looked
+    different on every run. Nothing caught it, because every test ran in one process.
+    """
+    import subprocess
+    import sys as _sys
+
+    path = _write_metric(workspace, "named.py", "plug_stable")
+    program = (
+        "from pathlib import Path;"
+        "from contextgrid.config.plugins import _module_name_for;"
+        f"print(_module_name_for(Path({str(path)!r})))"
+    )
+    runs = {
+        subprocess.run(
+            [_sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={"PYTHONHASHSEED": seed, "PATH": "/usr/bin:/bin"},
+        ).stdout.strip()
+        for seed in ("0", "1", "12345")
+    }
+
+    assert len(runs) == 1, f"module name moved between processes: {runs}"
+    # And it says which file it came from, so a traceback names something recognisable.
+    assert "named" in runs.pop()
+
+
+def test_two_plugin_files_with_the_same_name_do_not_collide(tmp_path: Path) -> None:
+    """Both called `plugins.py`, in different directories. Keyed by full path, so the second
+    is loaded rather than silently treated as already-imported."""
+    from contextgrid.config.plugins import _module_name_for
+
+    first = tmp_path / "a" / "plugins.py"
+    second = tmp_path / "b" / "plugins.py"
+
+    assert _module_name_for(first) != _module_name_for(second)
