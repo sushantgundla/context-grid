@@ -131,6 +131,26 @@ class Runner:
             self._tokenizer = exact_tokenizer_or_none()
         return self._tokenizer
 
+    def _embedding_quality(self, pipeline: BuiltPipeline) -> float | None:
+        """Score this embedder against this corpus, or `None` when there is nothing to score.
+
+        Never raises. `assess` refuses corpora too small to describe the shape of -- three
+        points have no shape -- and a diagnostic declining to answer must not take down a run
+        whose retrieval numbers are perfectly good.
+        """
+        vectors = getattr(pipeline, "vectors", None)
+        if vectors is None or pipeline.embedder is None or pipeline.ingested is None:
+            return None
+        try:
+            from contextgrid.embed.quality import assess
+
+            # The *indexed* units, because those are what was embedded. For a strategy that
+            # indexes something narrower than it returns, scoring the returned passages would
+            # assess vectors that were never built.
+            return float(assess(pipeline.ingested.indexed, vectors).score)
+        except Exception:
+            return None
+
     @property
     def metric_names(self) -> tuple[str, ...]:
         """Every metric this runner computes: the built-ins, `extra_metrics`, and the
@@ -191,7 +211,7 @@ class Runner:
         # as before this axis existed. Folds `faithfulness` and `answer_relevancy` in when a
         # judge ran, which is what lets DIMENSION_METRICS["generation"] find them later.
         judge_llm = MeteredLLM(self.llm, self._token_counter()) if self.llm is not None else None
-        generation_metrics, generation_log = self._score_generation(
+        generation_metrics, generation_log, answers = self._score_generation(
             pipeline, resolved, run, qrels, judge_llm=judge_llm
         )
         metrics.update(generation_metrics)
@@ -216,6 +236,18 @@ class Runner:
         with_anchors = sum(1 for item in resolved if item.anchors)
         if with_anchors:
             metrics["evidence_resolvable"] = (with_anchors - unresolved) / with_anchors
+
+        # The embed dimension's score: can this embedder tell anything apart on this corpus?
+        # Measured from the vectors the run already built, so it costs one pass over an array
+        # that is sitting in memory rather than a second embedding of anything.
+        #
+        # `DIMENSION_METRICS["embed"]` has always asked for this and no sweep has ever
+        # produced it -- the number existed only in `contextgrid.embed.assess`, which nothing
+        # in a sweep called. Absent rather than zero when there is no embedder at all, since
+        # `bm25` has not embedded badly, it has not embedded.
+        quality = self._embedding_quality(pipeline)
+        if quality is not None:
+            metrics["embedding_quality"] = quality
 
         if not qrels:
             warnings.add(
@@ -253,6 +285,7 @@ class Runner:
             unresolved_gold=unresolved,
             run=run,
             per_query=scores,
+            answers=answers,
             by_type=by_type,
             failures=failures,
             seed=self.seed,
@@ -267,7 +300,7 @@ class Runner:
         run: Mapping[str, Sequence[str]],
         qrels: Qrels,
         judge_llm: object | None = None,
-    ) -> tuple[dict[str, float], WarningLog]:
+    ) -> tuple[dict[str, float], WarningLog, dict[str, dict[str, Any]]]:
         """Answer every question with the configured generator, and score it.
 
         Returns nothing at all when `pipeline.generator` is unset -- the cheapest possible
@@ -280,10 +313,11 @@ class Runner:
         log = WarningLog()
         generator = pipeline.generator
         if generator is None:
-            return {}, log
+            return {}, log, {}
 
         chunks_by_id = pipeline.chunk_by_id()
         report = GenerationReport(generator=generator.name)
+        answers: dict[str, dict[str, Any]] = {}
         judge = self._generation_judge(judge_llm)
         judge_scores: dict[str, list[float]] = {}
 
@@ -306,6 +340,14 @@ class Runner:
             gold_ids = {cid for cid, grade in qrels.get(item.id, {}).items() if grade > 0}
             gold_chunks = [chunks_by_id[cid] for cid in gold_ids if cid in chunks_by_id]
             report.scores.append(score_answer(item, answer, context, gold_chunks))
+            # Kept, not just scored. A sweep with a generator spends real money and used to
+            # save nothing you could read afterwards -- no answer, no per-question judgement,
+            # so there was no way to check whether a faithfulness of 0.83 meant one bad answer
+            # or fifteen mediocre ones.
+            answers[item.id] = {
+                "answer": answer.text,
+                "chunk_ids": [chunk.id for chunk in context.chunks],
+            }
 
             if judge is None:
                 continue
@@ -329,10 +371,11 @@ class Runner:
                 continue
             for name, value in judged.scores.items():
                 judge_scores.setdefault(name, []).append(value)
+            answers[item.id]["judge"] = dict(judged.scores)
 
         metrics = dict(report.metrics())
         metrics.update({name: sum(v) / len(v) for name, v in judge_scores.items() if v})
-        return metrics, log
+        return metrics, log, answers
 
     def _generation_judge(self, llm: object | None = None) -> Any:
         """The DeepEval judge, built once per configuration, or `None` when it cannot run.

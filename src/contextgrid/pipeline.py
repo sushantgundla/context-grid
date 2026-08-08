@@ -174,6 +174,13 @@ class BuiltPipeline:
     warnings: WarningLog
     index_bytes: int = 0
     embed_tokens: int = 0
+    #: The chunk vectors, kept so the embedder can be scored on this corpus without a second
+    #: pass. A reference to what the index already holds, not a copy -- and `None` whenever
+    #: the configuration has no embedder, which is what `bm25` looks like.
+    #:
+    #: Without this, `DIMENSION_METRICS["embed"]` asked for a number no sweep could produce,
+    #: so the composite reported "not measured: embed" on every run there has ever been.
+    vectors: Any = None
     reranker: Reranker | None = None
     transform: QueryTransform = field(default_factory=NoTransform)
     retrieval: RetrievalStrategy = field(default_factory=SimpleRetrieval)
@@ -402,6 +409,7 @@ def build(
         warnings=warnings,
         index_bytes=index.size_bytes(),
         embed_tokens=embed_tokens,
+        vectors=vectors,
         reranker=get_reranker(config.reranker) if config.reranker else None,
         # The model has to reach here. Four of the five transforms -- HyDE, multi-query,
         # decompose, step-back -- cannot be built without one, so a config naming any of them

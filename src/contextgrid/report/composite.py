@@ -34,14 +34,24 @@ DIMENSION_METRICS: dict[str, tuple[str, ...]] = {
     # Did the parse make the evidence findable at all? Falls out of anchor resolution, and it
     # is the only dimension whose failure makes every later number meaningless.
     "parse": ("evidence_resolvable",),
-    # Of the characters returned, how many were the ones asked for? The chunker's honest score:
-    # a huge chunk can hold the answer and still waste most of a context window.
+    # Did the chunking keep the evidence whole and reachable? A chunker that cuts a quoted
+    # passage down the middle loses half of it however good the retriever is.
     #
-    # `char_precision`, not `character_precision`: the runner emits the short spelling, and this
-    # table spent its whole existence asking for the long one. Nothing matched, so the chunk
-    # dimension was silently dropped from every composite score ever computed -- reported as
-    # "not measured" on runs that had measured it perfectly well.
-    "chunk": ("char_precision",),
+    # `char_recall`, not `char_precision`, and that choice is the difference between a score
+    # and a ranking that runs backwards. Character *precision* is bounded above by roughly
+    # `gold_chars / (k * chunk_size)`: with 512-token chunks, k=5 and a 60-character quote it
+    # cannot exceed about 0.005 no matter how good the chunker is. Feeding that into a
+    # harmonic mean makes it the only dimension that matters, and since the bound loosens as
+    # chunks get smaller, the composite rewards tiny chunks rather than good ones -- on the
+    # run that exposed this, the leaderboard winner scored 2/100 and the leaderboard loser
+    # scored 10/100.
+    #
+    # Recall has no such ceiling: 1.0 means the evidence came back intact, which is a thing a
+    # chunker can actually achieve and a thing worth scoring. Precision is still computed and
+    # still reported, as `char_precision@k` -- it measures wasted context, which is a real
+    # cost and a genuinely useful column. It is just not a 0-1 quality score, so it does not
+    # belong in a mean with things that are.
+    "chunk": ("char_recall",),
     # Can this embedder discriminate on this corpus at all? Measurable with no eval set, which
     # makes it the only dimension somebody choosing a model can score before writing questions.
     "embed": ("embedding_quality",),

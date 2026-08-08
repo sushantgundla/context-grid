@@ -257,6 +257,11 @@ def test_a_perfect_run_scores_one_hundred() -> None:
     This test used to say `character_precision`, which is what `DIMENSION_METRICS` asked for
     and what nothing has ever produced -- so it agreed with the typo instead of with the
     runner, and passed while the chunk dimension was unscoreable in every real run.
+
+    The chunk dimension is `char_recall` rather than `char_precision`: precision is bounded
+    above by roughly `gold_chars / (k * chunk_size)` and so cannot reach 1.0 for any realistic
+    chunker, which made a "perfect run" unrepresentable here and inverted the ranking in real
+    sweeps. See the comment on `DIMENSION_METRICS`.
     """
     result = composite(
         {
@@ -264,7 +269,7 @@ def test_a_perfect_run_scores_one_hundred() -> None:
             "ndcg@5": 1.0,
             "faithfulness": 1.0,
             "answer_relevancy": 1.0,
-            "char_precision@5": 1.0,
+            "char_recall@5": 1.0,
             "evidence_resolvable": 1.0,
             "embedding_quality": 1.0,
         }

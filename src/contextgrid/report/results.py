@@ -41,6 +41,14 @@ class RunResult:
     unresolved_gold: int = 0
     run: dict[str, list[str]] = field(default_factory=dict)
     per_query: dict[str, float] = field(default_factory=dict)
+    #: What the generator actually said, per question, with the chunks it was given and the
+    #: judge's per-question scores. Empty for a run with no generator.
+    #:
+    #: Kept because a sweep with a generator spends real money and used to save nothing you
+    #: could read: a faithfulness of 0.83 could be one invented answer or fifteen slightly
+    #: loose ones, and there was no way to tell which, or to check a single sentence the
+    #: model produced.
+    answers: dict[str, dict[str, Any]] = field(default_factory=dict)
     by_type: dict[str, dict[str, float]] = field(default_factory=dict)
     failures: FailureReport | None = None
     #: The seed the run was configured with. `interval()` resamples with it by default, so the

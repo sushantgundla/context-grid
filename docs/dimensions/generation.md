@@ -329,6 +329,14 @@ checking character precision on before trusting the retrieval number at all).
 
 ## DeepEval-backed generation metrics
 
+> **Telemetry is switched off for you.** DeepEval reports usage analytics to PostHog by
+> default, which turning on generation metrics would otherwise start doing without saying so —
+> the only visible sign was a stray `[PostHog] analytics lane flush ran out of budget` line on
+> stderr. `contextgrid` sets `DEEPEVAL_TELEMETRY_OPT_OUT=YES` before importing DeepEval, since
+> the import reads it at module scope and opting out afterwards is too late. It uses
+> `setdefault`, so `export DEEPEVAL_TELEMETRY_OPT_OUT=NO` still turns it back on if you want
+> it. Nothing about your corpus, questions or answers is sent anywhere by this package.
+
 `contextgrid.generate.GenerationJudge` scores generated answers using
 [DeepEval](https://github.com/confident-ai/deepeval), for the questions the lexical checks
 above can't reach — is this answer actually faithful to the retrieved text, and is it relevant

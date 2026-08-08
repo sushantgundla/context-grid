@@ -26,6 +26,7 @@ answers scores them generously, and the effect is largest on exactly the answers
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -77,6 +78,16 @@ NEEDS_REFERENCE: frozenset[str] = frozenset({"contextual_recall"})
 
 
 def _deepeval() -> Any:
+    # Set before the import, because DeepEval reads this at module scope -- opting out
+    # afterwards is too late. Turning on generation metrics used to start sending analytics to
+    # PostHog with nothing in this package's docs or output saying so; the only clue was a
+    # stray `[PostHog] analytics lane flush ran out of budget` line on stderr. Somebody
+    # measuring a private corpus is entitled to know that, and more than entitled to have it
+    # off by default.
+    #
+    # `setdefault`, so anybody who actively wants DeepEval's telemetry can still have it by
+    # exporting `DEEPEVAL_TELEMETRY_OPT_OUT=NO` themselves.
+    os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "YES")
     try:
         import deepeval  # noqa: F401
         from deepeval import metrics

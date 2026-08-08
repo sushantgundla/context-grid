@@ -263,13 +263,16 @@ def test_a_generator_that_fails_on_one_question_does_not_fail_the_run(
 
     runner = Runner(corpus=corpus, headline="recall@5")
     run = pipeline.run_queries(evalset)
-    metrics, log = runner._score_generation(pipeline, evalset, run, {})
+    metrics, log, answers = runner._score_generation(pipeline, evalset, run, {})
 
     # Every question failed, so nothing was scored -- but the call itself did not raise,
     # which is the point.
     assert metrics["groundedness"] == 0.0
     assert any(w.stage == "generate" and "broken" in w.message for w in log.entries)
     assert all(w.code == WarningCode.GENERATION_FAILED for w in log.entries)
+    # Nothing is saved as an answer either. An empty string recorded for a question the
+    # generator refused would read afterwards as a model that replied with silence.
+    assert answers == {}
 
 
 # ---------------------------------------------------------------------------

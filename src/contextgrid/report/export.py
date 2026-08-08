@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from contextgrid.core.warnings import Severity
 from contextgrid.pipeline import Config
 from contextgrid.report.manifest import Manifest
 from contextgrid.report.results import Results, RunResult
@@ -118,16 +119,56 @@ def results_to_markdown(
             "",
         ]
 
+    score = results.composite(metric)
+    if score is not None and score.parts:
+        lines += [
+            "## Score",
+            "",
+            f"**{score.summary()}**",
+            "",
+            "| Dimension | Score |",
+            "|---|---:|",
+            *(f"| `{name}` | {score.parts[name]:.3f} |" for name in score.dimensions),
+            "",
+            "Comparable only against another score computed over the same dimensions.",
+            "",
+        ]
+
     lines += ["## Leaderboard", ""]
-    header = f"| Configuration | {metric} | p95 ms | $/1k queries | Chunks |"
-    lines += [header, "|---|---:|---:|---:|---:|"]
-    for row in results.leaderboard(metric)[:limit]:
-        lines.append(
-            f"| `{row['config']}` | {row.get(metric, 0):.3f} | "
-            f"{row.get('p95_ms', 0):.1f} | {row.get('cost_per_1k', 0):.4f} | "
+    # Generation columns appear only when something generated. A retrieval-only sweep should
+    # not carry five empty columns; a generator sweep that omits them -- which is what this
+    # did -- tells the reader the axis they swept made no difference at all.
+    generation_columns = [
+        name
+        for name in ("faithfulness", "answer_relevancy", "groundedness", "citation_accuracy")
+        if any(run.has(name) for run in results.runs)
+    ]
+    header = f"| Configuration | {metric} |"
+    align = "|---|---:|"
+    for name in generation_columns:
+        header += f" {name} |"
+        align += "---:|"
+    header += " p95 ms | $/1k queries | Chunks |"
+    align += "---:|---:|---:|"
+    lines += [header, align]
+    for row in results.leaderboard(metric, extra=generation_columns)[:limit]:
+        cells = f"| `{row['config']}` | {row.get(metric, 0):.3f} |"
+        for name in generation_columns:
+            cells += f" {row[name]:.3f} |" if name in row else " — |"
+        cells += (
+            f" {row.get('p95_ms', 0):.1f} | {row.get('cost_per_1k', 0):.4f} | "
             f"{row.get('chunks', 0)} |"
         )
+        lines.append(cells)
     lines.append("")
+
+    if generation_columns:
+        lines += [
+            "> **`p95 ms` is retrieval only.** It excludes the generator, which dominates "
+            "wall-clock on anything calling a model — a row showing well under a millisecond "
+            "here can still take seconds to answer. `$/1k queries` does include generation.",
+            "",
+        ]
 
     axes = [
         ("parser", "Parser"),
@@ -135,6 +176,10 @@ def results_to_markdown(
         ("embedder", "Embedder"),
         ("index", "Index"),
         ("reranker", "Reranker"),
+        # Swept as often as any of the above, and left out of this section entirely -- so a
+        # sweep whose *only* varying axis was the generator got no "which decision mattered"
+        # section at all.
+        ("generator", "Generator"),
     ]
     effects = [(label, results.axis_effect(axis, metric)) for axis, label in axes]
     informative = [(label, effect) for label, effect in effects if len(effect) > 1]
@@ -143,18 +188,42 @@ def results_to_markdown(
         for label, effect in informative:
             spread = max(effect.values()) - min(effect.values())
             best = max(effect, key=lambda value: effect[value])
-            lines.append(
-                f"- **{label}**: `{best}` was best, {spread:+.3f} over the worst value tried."
-            )
+            if spread < 5e-4:
+                # "`markdown` was best, +0.000 over the worst" reads as a recommendation for a
+                # benefit that measurably does not exist, and invites somebody to standardise
+                # on a value that changed nothing.
+                lines.append(f"- **{label}**: no measurable difference between the values tried.")
+            else:
+                lines.append(
+                    f"- **{label}**: `{best}` was best, {spread:+.3f} over the worst value tried."
+                )
         lines.append("")
+        if results.mode == "ofat":
+            lines += [
+                "> **These are averages over runs, not controlled comparisons.** In `ofat` "
+                "mode each value appears in a different number of configurations, so a value "
+                "that happens to sit in the baseline arm is averaged over different company "
+                "than one that does not. Treat this as a pointer to what to sweep properly in "
+                "`factorial` mode, not as a measured effect.",
+                "",
+            ]
 
     winner = results.best(metric)
     if winner is not None and winner.failures is not None and winner.failures.failures():
         lines += ["## Why the rest failed", "", winner.failures.summary(), ""]
 
-    if not results.warnings.is_sound:
+    # Everything that changed what this sweep covered, not only what invalidated it. A run
+    # stopped by `budget_usd` produces a `budget_reached` warning at CAUTION severity, so the
+    # old `is_sound` check hid it -- and the report showed "No configurations were run." with
+    # an empty table and no reason, which is the one thing the docs promise it will not do.
+    reportable = [
+        warning
+        for warning in results.warnings.entries
+        if warning.severity is not Severity.INFO or not results.runs
+    ]
+    if reportable:
         lines += ["## Warnings", ""]
-        for warning in results.warnings.invalidating:
+        for warning in reportable:
             lines.append(f"- **{warning.code.value}**: {warning.message}")
         lines.append("")
 
@@ -241,6 +310,9 @@ def _run_payload(run: RunResult) -> dict[str, Any]:
         "failures": (None if run.failures is None else run.failures.counts()),
         # The per-question scores, so somebody can re-run the statistics themselves.
         "per_query": run.per_query,
+        # And what the model actually said, so a generation score can be checked rather than
+        # believed. Absent entirely for a run with no generator.
+        "answers": run.answers,
         "warnings": run.warnings.to_list(),
     }
 

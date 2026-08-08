@@ -69,7 +69,7 @@ missing generation dimension as zero would punish them for a question they never
 were — so a 73 over three dimensions is never mistaken for a 73 over six.
 
 ```python
->>> partial_metrics = {"recall@5": 0.8, "ndcg@5": 0.7, "char_precision@5": 0.6}
+>>> partial_metrics = {"recall@5": 0.8, "ndcg@5": 0.7, "char_recall@5": 0.6}
 >>> partial = composite(partial_metrics)
 >>> partial.summary()
 '67/100 over 2 dimension(s): chunk, retrieval (not measured: embed, generation, parse)'
@@ -96,7 +96,7 @@ left as a footnote the reader has to go find.
 ```python
 DIMENSION_METRICS: dict[str, tuple[str, ...]] = {
     "parse": ("evidence_resolvable",),
-    "chunk": ("char_precision",),
+    "chunk": ("char_recall",),
     "embed": ("embedding_quality",),
     "retrieval": ("recall", "ndcg"),
     "generation": ("faithfulness", "answer_relevancy"),
@@ -106,7 +106,7 @@ DIMENSION_METRICS: dict[str, tuple[str, ...]] = {
 | Dimension | Metric name(s) | What it asks |
 |---|---|---|
 | `parse` | `evidence_resolvable` | Did the parse make the evidence findable at all? Comes out of [anchor resolution](spans-and-anchors.md#the-failure-case-is-the-measurement) — the only dimension whose failure makes every later number meaningless. |
-| `chunk` | `char_precision` | Of the characters returned, how many were the ones asked for? See [character precision](metrics.md#character-level-precision-recall-and-f1) — the chunker's honest score. |
+| `chunk` | `char_recall` | Did the chunking return the evidence intact? See [character recall](metrics.md#character-level-precision-recall-and-f1). **Not** `char_precision`: that is bounded above by roughly `gold_chars / (k × chunk_size)` — about 0.005 for 512-token chunks — so putting it in a harmonic mean makes it the only dimension that counts, and rewards tiny chunks over good ones. Precision is still computed and still reported as a column; it measures wasted context, which is a real cost but not a 0–1 quality score. |
 | `embed` | `embedding_quality` | Can this embedder discriminate on this corpus at all? Measurable with no eval set, which makes it the only dimension you can score before writing a single question. |
 | `retrieval` | `recall`, `ndcg` | Did the right passages come back? See [metrics](metrics.md). |
 | `generation` | `faithfulness`, `answer_relevancy` | Is the answer supported by the retrieved evidence, and does it address the question? |

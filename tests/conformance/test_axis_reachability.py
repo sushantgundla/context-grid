@@ -752,15 +752,19 @@ def test_a_metric_nobody_computed_is_absent_rather_than_zero() -> None:
     assert score.score > 0.0
     assert "embed" in score.missing
 
-    # This used to assert exactly 100.0, which held only because `parse` and `chunk` could
-    # never be scored at all: nothing emitted `evidence_resolvable`, and `DIMENSION_METRICS`
-    # asked for `character_precision` while the runner emits `char_precision`. With both
-    # reachable the honest score is lower, because the chunker really is not perfect -- and
-    # that is exactly the thing the composite exists to stop a good retriever from hiding.
+    # `parse` and `chunk` were unscoreable for the whole life of the package: nothing emitted
+    # `evidence_resolvable`, and `DIMENSION_METRICS` asked for `character_precision` while the
+    # runner emits `char_precision`. Both are reachable now, and on this corpus all three are
+    # perfect -- one short document, one quote, and a chunker that returns it whole.
+    #
+    # `embed` is legitimately absent: `assess` refuses a corpus this small, because three
+    # points do not describe the shape of anything.
     assert set(score.parts) == {"parse", "chunk", "retrieval"}
     assert score.parts["parse"] == pytest.approx(1.0)
     assert score.parts["retrieval"] == pytest.approx(1.0)
-    assert 0.0 < score.parts["chunk"] < 1.0
+    # char_recall, so 1.0 means the evidence came back intact. Were this char_precision it
+    # could not exceed about 0.005 here, which is why it is not the chunk dimension.
+    assert score.parts["chunk"] == pytest.approx(1.0)
 
 
 def test_a_run_can_say_whether_it_measured_something() -> None:
@@ -837,3 +841,55 @@ def test_every_composite_dimension_can_actually_be_scored() -> None:
             f"DIMENSION_METRICS[{dimension!r}] wants {names!r} and this run emitted none of "
             f"them. It emitted: {sorted(result.metrics)}"
         )
+
+
+def test_the_composite_ranks_the_same_way_the_headline_does() -> None:
+    """The guard against a score that runs backwards.
+
+    These are the real numbers from the sweep that exposed it. `DIMENSION_METRICS["chunk"]`
+    was `char_precision`, which is bounded above by roughly `gold_chars / (k * chunk_size)` --
+    0.0052 on the winning configuration. In a harmonic mean that made it the only dimension
+    that counted, and because the bound loosens as chunks shrink, the composite rewarded small
+    chunks rather than good ones: the configuration that won on recall scored 1.53/100 and the
+    one that came last scored 10.23/100.
+
+    A single number that ranks configurations the opposite way to the metric it summarises is
+    worse than no number, because it is read as a summary of it.
+    """
+    from contextgrid.report.composite import composite
+
+    # recall@5, char_precision@5, char_recall@5 -- as measured, best-on-recall first.
+    observed = [
+        ("recursive:512", 1.000, 0.0052, 1.000),
+        ("structural", 1.000, 0.0201, 1.000),
+        ("sentence:5", 0.759, 0.0371, 0.933),
+    ]
+
+    scored = [
+        (
+            label,
+            recall,
+            composite(
+                {
+                    "recall@5": recall,
+                    "ndcg@5": recall,
+                    "char_precision@5": precision,
+                    "char_recall@5": char_recall,
+                    "evidence_resolvable": 1.0,
+                }
+            ).score,
+        )
+        for label, recall, precision, char_recall in observed
+    ]
+
+    best_on_recall = max(scored, key=lambda row: row[1])[0]
+    best_on_composite = max(scored, key=lambda row: row[2])[0]
+    assert best_on_recall == best_on_composite, (
+        f"the composite disagrees with the headline it summarises: {scored}"
+    )
+
+    worst_on_recall = min(scored, key=lambda row: row[1])[0]
+    worst_on_composite = min(scored, key=lambda row: row[2])[0]
+    assert worst_on_recall == worst_on_composite, (
+        f"the composite ranks the worst configuration best: {scored}"
+    )
