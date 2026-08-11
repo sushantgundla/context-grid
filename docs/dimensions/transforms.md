@@ -62,7 +62,7 @@ transform built with no model would silently fall back to doing nothing, and a c
 >>> get_transform("hyde")
 Traceback (most recent call last):
     ...
-contextgrid.evalset.llm.LLMError: the 'hyde' transform needs a model. Pass one to `get_transform`, or use one of the model-free transforms: expand, none
+contextgrid.evalset.llm.LLMError: the 'hyde' transform needs a model. Set `run.model` in your config, or use one of the model-free transforms: expand, none
 ```
 
 In a config file, the model comes from `run.model` — one name, so the model-backed transforms,

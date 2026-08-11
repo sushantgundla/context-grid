@@ -61,6 +61,53 @@ FENCE_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 
+#: Commands that install, remove or otherwise rewrite what is installed in an environment.
+#:
+#: Bash blocks run with the real `.venv` symlinked in and its `bin/` first on `PATH` (see
+#: `check_file`), which is what makes a documented `.venv/bin/python ...` resolve. The cost of
+#: that convenience is that `pip` in a doc block is the *developer's own* pip, and an install
+#: command lands in the environment this script was launched from.
+#:
+#: That is not hypothetical. README's quickstart is `git clone ... && cd context-grid && pip
+#: install -e .`, and running it here pointed the editable install at the temp directory the
+#: clone had just been made in. The temp directory is deleted when the file finishes, so every
+#: later `import contextgrid` -- in this process, in pytest, in the developer's shell -- died
+#: with `ModuleNotFoundError: No module named 'contextgrid'` until someone reinstalled by hand.
+#: A docs checker that breaks the environment it is checking is worse than no docs checker.
+ENV_MUTATING_RE = re.compile(
+    r"""(?:^|[;&|(]|\&\&|\|\|)      # start of a command, not the middle of a word
+        [ \t]*
+        (?:sudo[ \t]+)?
+        (?:
+            (?:python[0-9.]*[ \t]+-m[ \t]+)?pip[0-9.]*[ \t]+(?:install|uninstall|download)
+          | uv[ \t]+pip[ \t]+(?:install|uninstall)
+          | uv[ \t]+(?:add|remove|sync)
+          | poetry[ \t]+(?:add|remove|install)
+          | conda[ \t]+(?:install|remove|create)
+          | pipx[ \t]+(?:install|uninstall)
+        )\b
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+
+def env_mutating_reason(body: str) -> str | None:
+    """The command that would rewrite the shared environment, or `None` if there is none.
+
+    Comment lines are stripped first: `# pip install "context-grid[parse]"` inside an otherwise
+    ordinary block is documentation about installing, not an install, and skipping the whole
+    block over it would quietly stop checking a block that is fine.
+    """
+    live = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+    match = ENV_MUTATING_RE.search(live)
+    if match is None:
+        return None
+    command = match.group(0).strip(" \t;&|()")
+    return (
+        f"installs packages (`{command} ...`), which would rewrite the .venv this checker "
+        f"is running from -- see ENV_MUTATING_RE in scripts/check_docs.py"
+    )
+
 
 # ---------------------------------------------------------------------------
 # extraction
@@ -350,6 +397,15 @@ def check_file(path: Path, venv_python: Path) -> list[Result]:
             if block.skip:
                 results.append(Result(block, "SKIP", block.skip_reason))
                 continue
+            # Refused rather than sandboxed. Sandboxing pip (a `PIP_TARGET`, a shim earlier on
+            # `PATH`) would let the block report PASS while doing nothing, which is a worse
+            # failure than not checking it: the report would claim a documented install command
+            # works when nothing had tried it. A visible SKIP naming the command is honest about
+            # what was not checked.
+            mutation = env_mutating_reason(block.body)
+            if mutation is not None:
+                results.append(Result(block, "SKIP", mutation))
+                continue
             run_bash_block(block, tmp, env, results)
 
     return results
@@ -358,6 +414,31 @@ def check_file(path: Path, venv_python: Path) -> list[Result]:
 # ---------------------------------------------------------------------------
 # reporting
 # ---------------------------------------------------------------------------
+
+
+def _installed_contextgrid(venv_python: Path) -> str:
+    """Where `import contextgrid` resolves to, asked of the venv in a fresh process.
+
+    A separate process on purpose: this one already has `contextgrid` imported, so its own
+    `__file__` would keep reporting the path from before anything changed.
+    """
+    probe = "import contextgrid, sys; sys.stdout.write(contextgrid.__file__ or '')"
+    try:
+        proc = subprocess.run(
+            [str(venv_python), "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - defensive
+        return f"<could not probe: {exc}>"
+    if proc.returncode != 0:
+        # An unimportable package is itself the damage this check exists to catch, so the
+        # failure text has to be the value we compare -- not an exception that hides it.
+        stderr_lines = [line for line in proc.stderr.strip().splitlines() if line.strip()]
+        last = stderr_lines[-1] if stderr_lines else "no stderr"
+        return f"<not importable: {_short(last)}>"
+    return proc.stdout.strip()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -392,9 +473,29 @@ def main(argv: list[str] | None = None) -> int:
     else:
         files = sorted(DEFAULT_DOCS_DIR.rglob("*.md"))
 
+    installed_before = _installed_contextgrid(venv_python)
+
     all_results: list[Result] = []
     for file_path in files:
         all_results.extend(check_file(file_path, venv_python))
+
+    # The belt to `ENV_MUTATING_RE`'s braces. That regex has to anticipate every spelling of
+    # "install something", and it will not: a `make install`, a shell script, a python block
+    # calling `subprocess`. This asks the environment itself whether it still resolves the way
+    # it did before, so an escape route nobody predicted is caught here rather than by a
+    # developer wondering why `import contextgrid` stopped working an hour later.
+    installed_after = _installed_contextgrid(venv_python)
+    if installed_after != installed_before:
+        print(
+            "\nerror: this run changed where `contextgrid` is installed.\n"
+            f"  before: {installed_before}\n"
+            f"  after:  {installed_after}\n"
+            "A doc example installed or uninstalled a package into the shared .venv. Repair it\n"
+            f"with `{venv_python} -m pip install -e . --no-deps`, then extend ENV_MUTATING_RE in\n"
+            "scripts/check_docs.py so that block is refused like the other install commands.",
+            file=sys.stderr,
+        )
+        return 2
 
     all_results.sort(key=lambda r: (str(r.block.path), r.block.fence_line))
 

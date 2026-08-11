@@ -347,9 +347,7 @@ def test_the_configured_model_beats_anything_in_the_spec() -> None:
     planner = ScriptedPlanner('["planned"]')
     index = FakeIndex()
 
-    get_retriever("agentic:some-other-model", planner).retrieve(
-        "q", [], index, 5, RetrievalTrace()
-    )
+    get_retriever("agentic:some-other-model", planner).retrieve("q", [], index, 5, RetrievalTrace())
 
     assert index.queries == ["planned"]
 

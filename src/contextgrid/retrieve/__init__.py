@@ -126,9 +126,18 @@ def get_retriever(
     # having to know that injection is a thing.
     if llm is not None:
         object.__setattr__(strategy, "_llm", llm)
-    elif getattr(strategy, "_llm", None) is None:
-        # Nothing was passed and the strategy is not carrying one already (a factory that
-        # wires in its own planner, which is how the tests run this axis with no key).
+    elif getattr(strategy, "_llm", None) is None and getattr(strategy, "model", None) is None:
+        # Nothing was passed, the strategy is not carrying a planner already (a factory that
+        # wires in its own, which is how the tests run this axis with no key), and its spec
+        # named no model either.
+        #
+        # That last clause is the line this refusal is actually drawing. The bug was never
+        # "built a model without being handed one" -- it was *choosing a provider on the
+        # user's behalf*: `AgenticRetrieval.model` used to default to `openai:gpt-4o-mini`, so
+        # `retrieval: agentic` alone spent real money on a model nobody named. `agentic:gpt-4o-
+        # mini` is the opposite of that. It is someone naming one, and it is a documented spec
+        # (see docs/dimensions/retrieval.md), so refusing it would break a working feature to
+        # fix a bug it never had.
         raise needs_model_error(strategy.name)
     return strategy
 

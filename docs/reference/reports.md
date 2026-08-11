@@ -307,8 +307,14 @@ from pathlib import Path
 
 
 def write_bundle(
-    results, directory, *, metric="recall@5", manifest=None, name=None,
-    corpus=None, evalset=None,
+    results,
+    directory,
+    *,
+    metric="recall@5",
+    manifest=None,
+    name=None,
+    corpus=None,
+    evalset=None,
 ) -> list[Path]: ...
 ```
 

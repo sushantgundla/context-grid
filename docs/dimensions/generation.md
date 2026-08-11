@@ -54,7 +54,7 @@ testing an LLM generator while testing nothing is worse than an error.
 >>> get_generator("llm")
 Traceback (most recent call last):
     ...
-contextgrid.evalset.llm.LLMError: the 'llm' generator needs a model. Pass one to `get_generator`, or use one of the model-free generators: extractive
+contextgrid.evalset.llm.LLMError: the 'llm' generator needs a model. Set `run.model` in your config, or use one of the model-free generators: extractive
 ```
 
 `None` is different from every other axis's `None`. `NoTransform` and `NoReranker` are real

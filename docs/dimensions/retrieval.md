@@ -253,8 +253,16 @@ does *not* fire — the second search genuinely ran and changed what came back.
 retrieval = get_retriever("agentic:gpt-4o-mini,rounds=2")
 ```
 
-Parameters: `model: str = "openai:gpt-4o-mini"`, `rounds: int = 1`, `max_queries: int = 4`,
+Parameters: `model: str | None = None`, `rounds: int = 1`, `max_queries: int = 4`,
 `backend: str = "auto"` (`auto` / `agno` / `llm`).
+
+`model` has no default, and `agentic` with no model anywhere — none in the spec, none in
+`run.model` — raises rather than picking one. It used to default to `openai:gpt-4o-mini`, which
+meant `retrieval: agentic` on its own spent real money on a provider nobody had named, against
+whatever key happened to be in the environment, and reported the run's cost as `$0.0000` because
+calls it made itself were never metered. Naming one is fine, either way round: `agentic:gpt-4o-mini`
+here, or `run.model` for every model-backed stage at once. When both are set, `run.model` wins,
+because that is the one the sweep can meter.
 
 Every other strategy above decides its searches in advance. `agentic` reads what came back and
 decides what to look for next — the number of searches isn't knowable before the run, which is

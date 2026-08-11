@@ -56,6 +56,7 @@ def needs_model_error(name: str) -> LLMError:
         f"use one of the model-free strategies: {', '.join(model_free_retrievers())}"
     )
 
+
 #: Runs one search. Given the query text and how many results to return, hands back a ranked
 #: list. The strategy neither knows nor cares whether that was BM25, HNSW or Postgres.
 Searcher = Callable[[str, int], Sequence[Scored]]
