@@ -135,10 +135,20 @@ retrieval = get_retriever("widened:8")  # factor=8 (shorthand)
 ```
 
 Parameters: `factor: int = 4`. Asks the index for `k * factor` results, then cuts back to `k`
-after fusion. On its own this changes nothing — the same top-`k` comes back — but it changes a
-great deal once a reranker sits downstream, and it's the cheapest way to find out whether a
-configuration is limited by the retriever's *ordering* or its *reach*. Costs a little index time,
-zero model calls: the first thing to try before reaching for anything that bills per query.
+after fusion. On a plain single-query search this changes nothing — the same top-`k` comes back
+— but it changes a great deal once a reranker sits downstream, and it's the cheapest way to find
+out whether a configuration is limited by the retriever's *ordering* or its *reach*. Costs a
+little index time, zero model calls: the first thing to try before reaching for anything that
+bills per query.
+
+"Changes nothing" is exact rather than a figure of speech, and a sweep acts on it: where the
+extra reach is provably thrown away, `widened` is
+[canonicalised to plain search](README.md#when-widened-is-a-duplicate) rather than run as a row
+of its own — otherwise `retrieval: [simple, widened:2, widened:8]` with `reranker: null` measures
+the same arm three times. It is *not* thrown away as soon as anything else is in play: a
+transform returning several queries, an ingestion strategy, or an approximate index each make the
+deeper search return a genuinely different top-`k` with no reranker anywhere, and those rows are
+left to run.
 
 ### `decomposed` — split, search, fuse, mechanically
 

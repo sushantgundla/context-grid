@@ -12,6 +12,7 @@ adoption path that matters: nobody adopts a tool, they adopt an argument that ca
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -48,21 +49,31 @@ def config_to_python(config: Config) -> str:
 
     Not a template with holes in it -- this actually runs, which is the difference between an
     export somebody uses and one they read once and retype.
+
+    The field list is read off `Config` rather than written out here. The version that spelled
+    out six field names by hand fell behind the dataclass and exported a winner of
+    `parent-document:4 · markdown · recursive:96 · ~relevance-feedback:3 · bm25 · lexical@20`
+    with no `ingestion=` and no `retrieval=` line -- so the snippet built plain chunking and
+    plain search while `winning-config.yaml` next to it described the real pipeline. Two files
+    from one run, two different answers, and the wrong one is the one people paste.
     """
-    reranker = f"\n    reranker={config.reranker!r}," if config.reranker else ""
-    candidates = f"\n    candidates={config.candidates}," if config.reranker else ""
+    defaults = Config()
+    # Anything left out is provably at its default, so the constructor puts it back. That is
+    # the only omission rule this function has; there is no name in it to forget to update.
+    settings = [
+        f"    {name}={getattr(config, name)!r},"
+        for name in _config_field_names()
+        if getattr(config, name) != getattr(defaults, name)
+    ]
+    arguments = "\n" + "\n".join(settings) + "\n" if settings else ""
 
     return f'''"""The winning configuration, as context-grid found it."""
 
 import contextgrid as cg
 
-config = cg.Config(
-    parser={config.parser!r},
-    chunker={config.chunker!r},
-    embedder={config.embedder!r},
-    index={config.index!r},{reranker}{candidates}
-    k={config.k},
-)
+# {config.label}
+# Any field not named below is at its default; `winning-config.yaml` spells out all of them.
+config = cg.Config({arguments})
 
 corpus = cg.Corpus.from_dir("./documents")
 pipeline = cg.build(config, corpus)
@@ -95,14 +106,27 @@ def results_to_markdown(
     metric: str = "recall@5",
     manifest: Manifest | None = None,
     limit: int = 15,
+    name: str | None = None,
 ) -> str:
     """A one-page report to paste into a decision doc.
 
     Ordered the way somebody reads it rather than the way it was computed: the conclusion
     first, then the evidence, then the caveats. A report that opens with a methodology section
     does not get read.
+
+    `name` is the experiment's name -- `name:` in an experiment config. Falls back to
+    `results.meta["name"]` so a runner can carry it without every call site passing it.
     """
-    lines = ["# Retrieval configuration comparison", ""]
+    # A fixed title meant a directory of experiments was a directory of files all called
+    # "Retrieval configuration comparison", with nothing above the fold to say which sweep
+    # produced which. The name is the one thing that tells them apart.
+    titled = name if name is not None else results.meta.get("name")
+    heading = (
+        f"{titled} — retrieval configuration comparison"
+        if titled
+        else "Retrieval configuration comparison"
+    )
+    lines = [f"# {heading}", ""]
 
     lines += ["## What to use", "", results.summary(metric), ""]
 
@@ -252,6 +276,7 @@ def write_bundle(
     *,
     metric: str = "recall@5",
     manifest: Manifest | None = None,
+    name: str | None = None,
 ) -> list[Path]:
     """Write everything: the report, the raw results, the winning config and the manifest.
 
@@ -263,7 +288,9 @@ def write_bundle(
     written: list[Path] = []
 
     report = root / "report.md"
-    report.write_text(results_to_markdown(results, metric=metric, manifest=manifest), "utf-8")
+    report.write_text(
+        results_to_markdown(results, metric=metric, manifest=manifest, name=name), "utf-8"
+    )
     written.append(report)
 
     raw = root / "results.json"
@@ -318,6 +345,19 @@ def _run_payload(run: RunResult) -> dict[str, Any]:
         "retrieval": run.retrieval,
         "warnings": run.warnings.to_list(),
     }
+
+
+def _config_field_names() -> list[str]:
+    """Every field on `Config`, in the order a person reads a pipeline.
+
+    `as_dict()` already puts them in that order -- ingestion, then parse, chunk, embed, search
+    -- so follow it, but take the set of names from the dataclass itself and append anything
+    `as_dict()` has not been taught about. Both of them are hand-written orderings of the same
+    fields, and the export must survive either one falling behind.
+    """
+    declared = [f.name for f in fields(Config)]
+    ordered = [name for name in Config().as_dict() if name in declared]
+    return ordered + [name for name in declared if name not in ordered]
 
 
 def _yaml_value(value: Any) -> str:

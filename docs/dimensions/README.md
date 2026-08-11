@@ -153,6 +153,10 @@ spellings of the same run collapse into one:
 - `candidates` is only meaningful when something reranks the candidates. Without a reranker,
   sweeping `candidates` would run identical configurations under different names — it gets
   reset to the default (`50`).
+- `retrieval: widened` asks the index for `k × factor` results and hands back the top `k`.
+  Where the extra reach is provably thrown away it is plain search under a second name, and is
+  reset to `None`. "Provably" is doing real work here — see
+  [when `widened` is a duplicate](#when-widened-is-a-duplicate) below.
 - BM25 never looks at a vector, so `bm25 + tfidf` and `bm25 + hash` are the same run under two
   names. Left alone they would waste two-thirds of the sparse arm of a sweep, and worse, they
   would poison the embedder axis's measured effect — averaging three identical BM25 scores into
@@ -164,8 +168,7 @@ spellings of the same run collapse into one:
 factorial expansion also produces `null` with `dense`, which cannot run at all: a dense index
 has no vectors to search. Those combinations are dropped rather than errored, because forcing
 the two intentions to be written as two separate configs is worse than quietly not running the
-one that can't work. `expand_with_dropped` returns how many were dropped, so a matrix that
-shrank does not do so silently.
+one that can't work.
 
 ```python
 >>> from contextgrid.grid.matrix import deduplicate
@@ -180,6 +183,76 @@ shrank does not do so silently.
 
 Both configs above collapse to the same one — `ingestion="plain"` canonicalises to `None` — so
 `deduplicate` keeps a single row rather than two identical ones under different names.
+
+### Where the missing rows went
+
+The two mechanisms above shrink a matrix for two quite different reasons, and a count that
+merges them explains neither. `Matrix.expand_with_report` hands back a `DedupeReport` that keeps
+them apart and always reconciles — `kept + impossible + collapsed + repeated` is exactly what
+went in:
+
+```python
+>>> from contextgrid.grid import matrix
+>>> grid = matrix(embedder=["tfidf", "hash", None], index=["dense", "bm25"])
+>>> configs, report = grid.expand_with_report("factorial")
+>>> report.considered, report.kept, report.impossible, report.collapsed
+(6, 3, 1, 2)
+```
+
+Six on paper, three to run. One is impossible (`dense` with no embedder), and two collapsed onto
+rows already in the list (`bm25` ignores the vector, so all three embedder arms are one run).
+`report.note()` writes that as a line to print, naming every category that fired:
+
+```python
+>>> report.note()
+'1 impossible combination(s) skipped, 2 collapsed onto an identical run'
+```
+
+`report.considered` is the honest denominator: for a factorial sweep it is `Matrix.shape()`'s
+product, and for OFAT it is the far smaller set OFAT actually walks, rather than a product no
+mode was ever going to run.
+
+`Matrix.expand_with_dropped` is still there and still returns the **impossible** count alone —
+which is why a line built from it could read `20 on paper, 10 to run (5 impossible combination(s)
+skipped)` and leave a reader working out where the other five went. Use the report for anything
+a person reads.
+
+### When `widened` is a duplicate
+
+[`widened`](retrieval.md#widened--free-recall-sometimes) is the one canonicalisation with a
+condition attached, and it is worth spelling out why. Its own page says "on its own this changes
+nothing — the same top-`k` comes back," which is true of the common case and not true in
+general. It is reset to plain search only when all four of these hold:
+
+| Condition | Why the surplus is wasted without it |
+|---|---|
+| no reranker | with one, the wider net is exactly what it reorders |
+| no transform | one that returns several queries makes the deeper lists fuse differently |
+| no ingestion | a deeper pool can merge runs of siblings a shallow one never had the pieces for |
+| an exact index | an approximate one searches more of its structure when asked for more |
+
+A `factor` of `1` needs none of them: the depth is `k` itself, so the searches are the ones plain
+search would have made.
+
+The transform condition is not caution for its own sake. With two queries and `k=5`, `widened:8`
+returns a different top five with **no reranker anywhere** — a chunk lying 20th on both queries
+beats one lying 1st on only one, and a top-5 search never sees either:
+
+```python
+>>> from contextgrid.index.base import Scored
+>>> from contextgrid.retrieve import RetrievalTrace, SimpleRetrieval, WidenedRetrieval
+>>> first = [Scored(f"a{i}", 1.0 - i / 100) for i in range(40)]
+>>> second = [Scored(f"b{i}", 1.0 - i / 100) for i in range(40)]
+>>> first[20], second[22] = Scored("both", 0.80), Scored("both", 0.78)
+>>> searcher = lambda text, wanted: (first if text == "one" else second)[:wanted]
+>>> queries = ["one", "two"]
+>>> plain = SimpleRetrieval().retrieve("q", queries, searcher, 5, RetrievalTrace())
+>>> wide = WidenedRetrieval(factor=8).retrieve("q", queries, searcher, 5, RetrievalTrace())
+>>> [s.chunk_id for s in plain][:3], [s.chunk_id for s in wide][:3]
+(['a0', 'b0', 'a1'], ['both', 'a0', 'b0'])
+```
+
+Collapsing that row would have deleted a result, not a duplicate.
 
 ## See also
 

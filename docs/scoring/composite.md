@@ -119,11 +119,54 @@ views of the *same* thing and average arithmetically with each other before the 
 mean runs across dimensions — one being low is not the same kind of failure as a whole
 dimension being low.
 
-`composite(metrics, k=5, dimensions=None)` looks up each metric by name, trying the bare
+`composite(metrics, k=None, dimensions=None)` looks up each metric by name, trying the bare
 name first and then `f"{name}@{k}"` — so `recall` finds `recall@5` from a normal
 [`evaluate()`](metrics.md#aggregating-over-a-run) run without the caller spelling out the
 cut-off. Pass a custom `dimensions` mapping to score a different set — the same shape as
 `DIMENSION_METRICS` above.
+
+### Which cut-off `k` means
+
+`k` used to default to **5**, which is a guess about a run rather than a fact about it. A
+sweep with `headline: recall@1` emits every metric at `@1` — `recall@1`, `ndcg@1`,
+`char_recall@1` — so the lookup went hunting for `char_recall@5`, found nothing, and printed
+`88/100 over 3 dimension(s): embed, parse, retrieval (not measured: chunk, generation)` for a
+run whose `char_recall@1` was **0.8824**. Rule 2 is about not scoring a dimension that did not
+run. Reporting a dimension that *did* run as unmeasured is the same dishonesty pointing the
+other way, and it is worse, because the score still gets printed beside it.
+
+So `k=None` — the default — reads the cut-off off the metrics themselves: the one most of this
+run's keys carry, which is the headline's, because that is what the runner scores at. A metric
+absent at that cut-off falls back to the nearest cut-off it does have, since a value measured
+at *some* k is a measurement. Nothing here ever falls back to `0.0`.
+
+```python
+>>> blind_run = {"recall@1": 0.8824, "ndcg@1": 0.8824, "char_recall@1": 0.8824}
+>>> composite(blind_run).dimensions
+('chunk', 'retrieval')
+>>> composite(blind_run).sources["chunk"]
+('char_recall@1',)
+```
+
+**Passing `k` explicitly still means exactly that `k`.** A caller asking about the top 5 is
+asking a question, and answering with a number measured over the top 3 would be answering a
+different one.
+
+```python
+>>> composite({"recall@3": 1.0}, k=5).missing["retrieval"]
+'no value for recall or ndcg'
+>>> composite({"recall@3": 1.0}, k=3).parts["retrieval"]
+1.0
+```
+
+`.sources` records the exact key behind every dimension, and `summary()` names them whenever
+the cut-offs disagree — a score that averaged character recall over the top 2 with recall over
+the top 5 is a fair thing to print, but not silently.
+
+```python
+>>> composite({"recall@5": 0.6, "ndcg@5": 0.6, "char_recall@2": 0.9}).summary()
+'72/100 over 2 dimension(s): chunk, retrieval (cut-offs differ: chunk from char_recall@2; retrieval from recall@5, ndcg@5) (not measured: embed, generation, parse)'
+```
 
 ### Values outside 0–1 are ignored, not clamped
 

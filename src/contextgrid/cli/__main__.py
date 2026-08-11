@@ -11,11 +11,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from contextgrid import __version__
 from contextgrid.core.registry import Registry
+
+if TYPE_CHECKING:  # imported for types only, so `contextgrid --version` stays a cheap import
+    from contextgrid.config.schema import ExperimentConfig
+    from contextgrid.report.results import Results
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -135,7 +140,41 @@ def _run_config(args: argparse.Namespace) -> int:
     written = write_report(config, results)
     if written:
         print(f"\nwrote {len(written)} files to {config.report.out}")
+
+    if not results.runs:
+        # A sweep that measured nothing is a failure, not a result. `budget_usd: 0.0`, and a
+        # matrix whose only cell cannot be built, both printed "No configurations were run."
+        # and exited 0 -- a green CI build for an experiment that ran nothing at all.
+        #
+        # Only *nothing* is non-zero. A sweep that ran some of its configurations and was then
+        # stopped by its budget did measure something: the leaderboard it printed is real, and
+        # failing there would make `budget_seconds` unusable in CI, which is where it earns its
+        # keep. The runner already marks that case CAUTION and says the table is partial.
+        print("error: no configurations were run, so nothing was measured", file=sys.stderr)
+        for reason in _why_nothing_ran(config, results):
+            print(f"error: {reason}", file=sys.stderr)
+        return 1
     return 0
+
+
+def _why_nothing_ran(config: ExperimentConfig, results: Results) -> list[str]:
+    """The reasons the sweep is empty, in the words the runner already used for them.
+
+    The reasons are recorded as warnings, and warnings only reach the written report -- so on
+    a console the exit code would have been the only signal, and "why" would have been left to
+    guesswork.
+    """
+    from contextgrid.core.warnings import WarningCode
+
+    reasons = [w.message for w in results.warnings.of_code(WarningCode.IMPOSSIBLE_COMBINATION)]
+
+    # BUDGET_REACHED covers two different things: a sweep stopping, and an advisory that a
+    # model-calling plugin has no ceiling. The advisory is only ever added when no budget was
+    # set at all, so where the config sets one, every BUDGET_REACHED here is the sweep saying
+    # where it stopped.
+    if config.run.budget_seconds is not None or config.run.budget_usd is not None:
+        reasons += [w.message for w in results.warnings.of_code(WarningCode.BUDGET_REACHED)]
+    return reasons
 
 
 def _init(args: argparse.Namespace) -> int:
@@ -166,6 +205,8 @@ def _check(args: argparse.Namespace) -> int:
     problems: list[str] = []
     if not config.corpus.exists():
         problems.append(f"corpus not found: {config.corpus}")
+    else:
+        problems.extend(_corpus_problems(config))
     if config.evalset is None:
         problems.append("no evalset, so there is nothing to score against")
     elif not config.evalset.exists():
@@ -173,6 +214,8 @@ def _check(args: argparse.Namespace) -> int:
 
     for axis, values in config.grid.as_dict().items():
         print(f"  {axis:11} {values}")
+
+    problems.extend(_plugin_problems(config))
 
     if problems:
         print()
@@ -182,6 +225,96 @@ def _check(args: argparse.Namespace) -> int:
 
     print("\nconfig is valid.")
     return 0
+
+
+def _corpus_problems(config: ExperimentConfig) -> list[str]:
+    """Whether the corpus has anything in it that can actually be read.
+
+    `corpus.exists()` was the whole check, so a directory holding nothing -- or holding only
+    files no parser is registered for -- passed `check` and failed in `run`. That is the exact
+    shape of mistake this command exists to catch: an empty `./documents` is what you get from
+    a clone without its data, or a `git clean`, or a path off by one directory.
+
+    `Corpus.from_dir` is what `run` calls and what raises the message, so this reuses it rather
+    than re-implementing the glob. `max_files=1` because the question is "is there anything
+    readable here", and the emptiness check happens before any file is read -- so `check` never
+    pulls a whole corpus into memory to answer it.
+    """
+    from contextgrid.corpus import Corpus
+
+    try:
+        if config.corpus.is_dir():
+            Corpus.from_dir(config.corpus, max_files=1)
+        else:
+            Corpus.from_files([config.corpus])
+    except Exception as error:
+        return [str(error)]
+    return []
+
+
+def _plugin_problems(config: ExperimentConfig) -> list[str]:
+    """Build every plugin the matrix names, and report whatever refuses to be built.
+
+    `check` used to stop at parsing, so it caught a typo'd *key* (`chunkers:`) and missed a
+    typo'd *value* -- `chunker: banana:999` and `chunker: recursive:-5` both reported "config
+    is valid." and then failed in `run`, which is the wrong time and the reason somebody ran
+    `check` in the first place. Spec strings are where typos actually happen.
+
+    Construction is what raises both errors, and construction is cheap: no document is read,
+    nothing is embedded, no index is built and no model is called. So build one of each and
+    report the same message `run` would, just sooner.
+
+    Values are taken from the expanded matrix rather than from `config.grid`, so a value the
+    matrix drops as impossible is not reported as a problem in a sweep that will never run it.
+    """
+    from contextgrid.chunk import get_chunker
+    from contextgrid.config.loader import build_llm
+    from contextgrid.embed import get_embedder
+    from contextgrid.generate import get_generator
+    from contextgrid.index import get_index
+    from contextgrid.ingest import get_ingester
+    from contextgrid.parse import get_parser
+    from contextgrid.rerank import get_reranker
+    from contextgrid.retrieve import get_retriever
+    from contextgrid.transform import get_transform
+
+    # Builds a client, never calls one. The model-backed transforms, strategies and generators
+    # cannot be built without it, and refusing to build them is precisely what tells the user
+    # that `transform: hyde` with no `run.model` is not going to work.
+    llm: Any = build_llm(config)
+
+    builders: dict[str, Callable[[str], object]] = {
+        "ingestion": get_ingester,
+        "parser": get_parser,
+        "chunker": get_chunker,
+        "embedder": get_embedder,
+        "index": get_index,
+        "transform": lambda spec: get_transform(spec, llm),
+        "retrieval": lambda spec: get_retriever(spec, llm),
+        "reranker": get_reranker,
+        "generator": lambda spec: get_generator(spec, llm),
+    }
+
+    problems: list[str] = []
+    built: set[tuple[str, str]] = set()
+
+    for candidate in config.grid.to_matrix(config.run.k).expand(config.run.mode):
+        for axis, build in builders.items():
+            spec = getattr(candidate, axis)
+            # `None` is a real value on most axes -- no reranker, no transform -- and there is
+            # nothing to build for it.
+            if spec is None or (axis, spec) in built:
+                continue
+            built.add((axis, spec))
+            try:
+                build(spec)
+            except Exception as error:
+                # Prefixed with the axis and the spec because the messages are written for the
+                # moment a plugin is built, when there is only one: "chunk size must be
+                # positive, got -5" does not say which of six chunkers in the config said it.
+                problems.append(f"{axis} {spec!r}: {error}")
+
+    return problems
 
 
 def _profile(args: argparse.Namespace) -> int:

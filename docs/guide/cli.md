@@ -46,6 +46,13 @@ contextgrid run config.yaml [--quiet]
 
 Writes whatever `report:` in the config asks for (see [configuration.md](configuration.md#report--what-gets-written)).
 
+Exits 1 if the sweep ran **no** configurations at all — a `budget_usd` or `budget_seconds` too
+small for a single one, or a matrix whose every combination was impossible to build — and says
+which of those it was on stderr. Nothing was measured, so a green build would be a lie.
+
+A sweep that ran *some* of its configurations and was then stopped by its budget still exits 0:
+the leaderboard it printed is real, and it is marked partial in the warnings.
+
 ## `init`
 
 Writes a starter config listing every plugin *this installation* can actually run as a chosen
@@ -93,9 +100,24 @@ contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 = 24 on paper, 5 to run i
 config is valid.
 ```
 
-Exits 1 if the corpus is missing, the eval set is missing, or there is no eval set at all — it
-still prints the matrix shape (the config parsed fine; only the paths are wrong), then lists
-every problem found, one `error: ...` line per problem, on stderr:
+It also builds one of every plugin the matrix names, with the parameters you gave it, and
+reports whatever refuses to be built. Building a plugin reads no documents, embeds nothing,
+indexes nothing and calls no model, so this stays fast and writes nothing.
+
+Exits 1 on any of the following, reporting every one it found rather than stopping at the
+first:
+
+| Problem | Example message |
+|---|---|
+| The corpus path is missing | `corpus not found: /path/to/absent` |
+| The corpus directory holds nothing readable | `no files under /path/to/docs matched ['*.txt', ...]` |
+| The eval set is missing, or there is none | `no evalset, so there is nothing to score against` |
+| An axis names a plugin that does not exist | `chunker 'banana:999': no chunker named 'banana'. Available: ...` |
+| A plugin rejects its parameters | `chunker 'recursive:-5': chunk size must be positive, got -5` |
+
+Each message is the one `run` would have printed; `check` only makes it arrive before the
+expensive part. The matrix shape is still printed first — the config parsed fine, only its
+contents are wrong — and then every problem, one `error: ...` line each, on stderr:
 
 ```
 $ contextgrid check broken.yaml; echo "exit: $?"
@@ -115,8 +137,8 @@ error: no evalset, so there is nothing to score against
 exit: 1
 ```
 
-Worth running before any sweep that might take a while — it catches a missing path or a typo'd
-axis before anything expensive starts.
+Worth running before any sweep that might take a while — it catches a missing path, an empty
+corpus, a typo'd axis or a typo'd spec string before anything expensive starts.
 
 ## `profile`
 

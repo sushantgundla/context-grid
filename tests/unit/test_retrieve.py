@@ -404,10 +404,34 @@ def test_the_registry_documents_every_strategy() -> None:
 
 
 def test_the_axis_multiplies_the_matrix() -> None:
+    """Sweeping the axis produces one configuration per value that can actually differ.
+
+    `widened` needs the reranker here. Without one -- and with no transform, no ingestion and
+    an exact index -- it asks the index for a deeper pool and discards the surplus, so it is
+    plain search under another name and `canonicalise` folds it onto `simple`. That folding is
+    the point: a sweep with `reranker: null` used to spend one row on `widened:2` and another
+    on `widened:8` re-measuring `simple` under different labels.
+    """
     from contextgrid.grid import matrix
 
-    configs = matrix(retrieval=["simple", "widened:4", "decomposed"]).expand("factorial")
+    configs = matrix(retrieval=["simple", "widened:4", "decomposed"], reranker="lexical").expand(
+        "factorial"
+    )
     assert {config.retrieval for config in configs} == {"simple", "widened:4", "decomposed"}
+
+
+def test_widening_with_nothing_to_rerank_folds_onto_plain_search() -> None:
+    """The other half of that rule, stated alone so it cannot regress quietly.
+
+    Swept without `simple` beside it: `simple` is deliberately left unfolded so it stays
+    usable as an explicit baseline, so a sweep naming both would legitimately produce two
+    rows that run the same search. See the comment in `canonicalise`.
+    """
+    from contextgrid.grid import matrix
+
+    configs = matrix(retrieval=["widened:2", "widened:8"]).expand("factorial")
+    assert {config.retrieval for config in configs} == {None}
+    assert len(configs) == 1, "two widened arms with nothing to rerank are one run"
 
 
 def test_the_label_names_the_strategy_unless_it_is_plain() -> None:

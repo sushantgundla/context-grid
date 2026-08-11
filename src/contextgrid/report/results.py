@@ -7,6 +7,7 @@ effect, which shows which decision mattered.
 
 from __future__ import annotations
 
+import re
 import statistics
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
@@ -96,11 +97,16 @@ class RunResult:
         """Whether this run actually computed a metric."""
         return name in self.metrics
 
-    def composite(self, *, k: int = 5) -> CompositeScore:
+    def composite(self, *, k: int | None = None) -> CompositeScore:
         """This run's 0-100 score, over the dimensions it actually measured.
 
         The honest path from a run to a score. Building the input by hand invites reading
         `metric()`'s zero-default as a result, which collapses the harmonic mean to nothing.
+
+        `k` defaults to whatever cut-off this run's metrics carry, not to 5. A run with
+        `headline: recall@1` emits `char_recall@1`, and the old default went looking for
+        `char_recall@5`, found nothing, and printed "not measured: chunk" for a dimension that
+        had scored 0.8824. Pass `k` only to ask about one particular cut-off.
         """
         from contextgrid.report.composite import composite as _composite
 
@@ -180,8 +186,11 @@ class Results:
         ordered = sorted(self.runs, key=lambda r: -r.metric(metric))
         return [run.row(columns) for run in ordered]
 
-    def composite(self, metric: str = "recall@5", *, k: int = 5) -> CompositeScore | None:
-        """The leading configuration's 0-100 score, over what it actually measured."""
+    def composite(self, metric: str = "recall@5", *, k: int | None = None) -> CompositeScore | None:
+        """The leading configuration's 0-100 score, over what it actually measured.
+
+        `k=None` reads the cut-off off the winner's own metrics. See `RunResult.composite`.
+        """
         best = self.best(metric)
         return best.composite(k=k) if best is not None else None
 
@@ -316,10 +325,25 @@ class Results:
             return "No configurations were run."
 
         ranked = sorted(self.runs, key=lambda r: -r.metric(metric))
+        # "across 1 configurations" is the sort of thing that makes a reader wonder what else
+        # was not proofread, and a sweep of one is a normal thing to run.
+        swept = f"{len(self.runs)} configuration" + ("" if len(self.runs) == 1 else "s")
         lines = [
             f"{winner.label} scored best on {metric} at {winner.metric(metric):.3f}, "
-            f"across {len(self.runs)} configurations on {winner.scored_queries} questions."
+            f"across {swept}, scored on {winner.scored_queries} questions."
         ]
+
+        # Two different question counts used to land in one paragraph with nothing saying
+        # which was which: "on 17 questions" from `scored_queries` and "8 of 20 questions
+        # failed" from the failure report, whose total is the whole eval set. Naming the eval
+        # set's size before the failure sentence arrives is what makes the 20 readable.
+        in_evalset = len(winner.failures.diagnoses) if winner.failures is not None else 0
+        if in_evalset > winner.scored_queries:
+            lines.append(
+                f"The eval set holds {in_evalset} questions in all; the other "
+                f"{in_evalset - winner.scored_queries} could not be scored, because no chunk "
+                "in this index held their evidence."
+            )
 
         if len(ranked) > 1:
             try:
@@ -329,7 +353,7 @@ class Results:
                 # that did. Falling back to the bare gap is better than losing the summary.
                 verdict = None
             if verdict is not None:
-                lines.append(verdict.verdict())
+                lines.append(_honest_sample_size(verdict.verdict()))
             else:
                 gap = winner.metric(metric) - ranked[1].metric(metric)
                 lines.append(f"That is {gap:+.3f} against {ranked[1].label}.")
@@ -360,6 +384,47 @@ class Results:
             )
 
         return " ".join(lines)
+
+
+#: The sentence `contextgrid.score.significance._sample_size_note` produces when a gap is real
+#: but the eval set is too small to settle it.
+_SAMPLE_SIZE = re.compile(r"About (\d+) questions would be needed to settle a gap this size\.")
+
+
+def _honest_sample_size(verdict: str) -> str:
+    """Say the sample-size estimate to a precision seventeen questions can support.
+
+    From n=17 this paragraph read "About 4532 questions would be needed to settle a gap this
+    size" -- four significant figures of power calculation from seventeen questions, printed
+    next to a confidence interval whose lower bound was exactly +0.000, with no test, alpha or
+    power stated anywhere on the page. The estimate is a genuinely useful order of magnitude
+    and an indefensible count, so it is printed as the first and the assumptions are named.
+
+    Rewritten here, at the point the paragraph is assembled, rather than at its source in
+    `contextgrid.score.significance`: `Comparison.verdict()` still hands the unrounded figure
+    to every other caller, and fixing it there would fix all of them at once.
+    """
+    match = _SAMPLE_SIZE.search(verdict)
+    if match is None:
+        return verdict
+    needed = _two_significant_figures(int(match.group(1)))
+    return "".join(
+        [
+            verdict[: match.start()],
+            f"Settling a gap this size would take roughly {needed:,} questions -- on a "
+            "two-sided test at alpha 0.05 with 80% power, assuming per-question scores vary "
+            "as much as a 0-1 score possibly can. It is an order of magnitude, not a count.",
+            verdict[match.end() :],
+        ]
+    )
+
+
+def _two_significant_figures(value: int) -> int:
+    """Round a sample-size estimate to two significant figures. Below 100 it already is."""
+    if value < 100:
+        return value
+    scale: int = 10 ** (len(str(value)) - 2)
+    return round(value / scale) * scale
 
 
 def _readable_ms(milliseconds: float) -> str:

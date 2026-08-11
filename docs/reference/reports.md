@@ -149,7 +149,7 @@ evidence, then caveats. "A report that opens with a methodology section does not
 per the module docstring.
 
 ```
-# Retrieval configuration comparison
+# support-tickets — retrieval configuration comparison
 
 ## What to use
 
@@ -178,6 +178,11 @@ p95.
 
 Two runs with the same manifest hash must produce identical numbers.
 ```
+
+The title carries the experiment's name — `name:` in an experiment config, passed as
+`results_to_markdown(..., name=...)` or left on `results.meta["name"]`. Without one it falls
+back to `# Retrieval configuration comparison`, which is fine for a single sweep and useless
+for a directory of them, where every file would otherwise have the same title.
 
 If the top two configurations aren't statistically distinguishable, a callout goes in right
 after "What to use": *"The top two are not statistically distinguishable. Either is a
@@ -224,12 +229,17 @@ a value contains YAML-special characters (note `"structural:800"` gets quoted be
 
 import contextgrid as cg
 
+# parent-document:4 · markdown · recursive:96 · ~relevance-feedback:3 · bm25 · lexical@20
+# Any field not named below is at its default; `winning-config.yaml` spells out all of them.
 config = cg.Config(
-    parser="markdown",
-    chunker="structural:800",
-    embedder="tfidf",
-    index="dense",
-    k=10,
+    ingestion="parent-document:4",
+    chunker="recursive:96",
+    embedder=None,
+    index="bm25",
+    retrieval="relevance-feedback:3",
+    reranker="lexical",
+    k=3,
+    candidates=20,
 )
 
 corpus = cg.Corpus.from_dir("./documents")
@@ -239,8 +249,16 @@ for chunk_id in pipeline.search("your question here"):
     print(chunk_id)
 ```
 
-`reranker=`/`candidates=` lines only appear when the winning config actually used a reranker
-— there's no point exporting `candidates=50` on a config that never reranked anything.
+**A field appears whenever it isn't at its default, and the field list comes from `Config`
+itself** — so a `Config` that grows a new axis exports it without anybody remembering to
+update `config_to_python()`. An earlier version listed six field names by hand, fell behind
+the dataclass, and exported the winner above with no `ingestion=` and no `retrieval=` line:
+the snippet built plain chunking and plain search while `winning-config.yaml` beside it
+described the real pipeline. Two files from one run, two different answers.
+
+Anything left out is at its default, so `cg.Config(...)` puts it back — the snippet
+reconstructs the winner exactly. The label comment on top says which configuration it is,
+matching the leaderboard row in `report.md`.
 
 ## `write_bundle()`: all of it, in one directory
 
@@ -248,7 +266,9 @@ for chunk_id in pipeline.search("your question here"):
 from pathlib import Path
 
 
-def write_bundle(results, directory, *, metric="recall@5", manifest=None) -> list[Path]: ...
+def write_bundle(
+    results, directory, *, metric="recall@5", manifest=None, name=None
+) -> list[Path]: ...
 ```
 
 Writes `report.md`, `results.json`, and — if there's a winner — `winning-config.yaml` and
