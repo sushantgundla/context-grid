@@ -111,11 +111,18 @@ class EvalSetQuality:
             )
 
         if self.reviewed_fraction < 0.2 and self.size:
+            # Says how to clear it, because it was previously unclearable. `reviewed` reads
+            # `item.meta["reviewed"]`, which only the review queue ever wrote -- so a set
+            # somebody had written by hand reported 0% forever and was told off on every run
+            # for work it had already done. The flag was readable from the file all along;
+            # nothing said so.
             log.add(
                 WarningCode.SMALL_EVAL_SET,
-                f"only {self.reviewed_fraction:.0%} of this set has been looked at by a human. "
-                "Auto-generated ground truth is the weakest link in any retrieval comparison, "
-                "and the review queue is the cheapest place to fix it",
+                f"only {self.reviewed_fraction:.0%} of this set is marked as checked by a "
+                "human. Ground truth nobody has read is the weakest link in any retrieval "
+                "comparison. If you wrote these questions yourself, say so with "
+                '`"meta": {"reviewed": true}` on each one; otherwise the review queue is the '
+                "cheapest place to fix it",
                 severity=Severity.CAUTION,
                 stage="evalset",
                 reviewed=self.reviewed,

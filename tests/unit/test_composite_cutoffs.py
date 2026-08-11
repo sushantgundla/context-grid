@@ -183,21 +183,23 @@ def test_the_two_question_counts_say_which_is_which() -> None:
 
 def test_a_sample_size_estimate_is_rounded_and_its_assumptions_stated() -> None:
     """ "About 4532 questions would be needed" from n=17 is four significant figures of
-    precision that seventeen questions cannot support."""
-    from contextgrid.report.results import _honest_sample_size
+    precision that seventeen questions cannot support.
 
-    original = (
-        "a and b are not distinguishable on this eval set (n=17). "
-        "About 4532 questions would be needed to settle a gap this size. Then more."
-    )
-    rewritten = _honest_sample_size(original)
+    Asserted against `_sample_size_note`, which is where the sentence is written. It was
+    briefly fixed downstream instead, by rewriting the finished string with a regular
+    expression -- which worked, and would have silently stopped working the day that sentence
+    was reworded, letting the indefensible number back into the report.
+    """
+    from contextgrid.score.significance import _sample_size_note
 
-    assert "4532" not in rewritten
-    assert "roughly 4,500 questions" in rewritten
-    assert "alpha 0.05" in rewritten
-    assert "80% power" in rewritten
-    assert rewritten.endswith("Then more.")
-    assert rewritten.startswith("a and b are not distinguishable on this eval set (n=17). ")
+    # A gap of 0.029 over 17 questions: the run this was found on.
+    note = _sample_size_note(0.029, 17, 0)
+
+    assert "4532" not in note
+    assert "roughly 4,700 questions" in note
+    assert "alpha 0.05" in note
+    assert "80% power" in note
+    assert "order of magnitude, not a count" in note
 
 
 @pytest.mark.parametrize(
@@ -205,13 +207,15 @@ def test_a_sample_size_estimate_is_rounded_and_its_assumptions_stated() -> None:
     [(4532, 4500), (20890, 21000), (80, 80), (175, 180), (7, 7), (999, 1000)],
 )
 def test_rounding_keeps_two_significant_figures(needed: int, expected: int) -> None:
-    from contextgrid.report.results import _two_significant_figures
+    from contextgrid.score.significance import _rounded
 
-    assert _two_significant_figures(needed) == expected
+    assert _rounded(needed) == expected
 
 
-def test_a_verdict_with_no_sample_size_claim_is_left_alone() -> None:
-    from contextgrid.report.results import _honest_sample_size
+def test_two_configurations_that_never_differ_get_no_sample_size_claim() -> None:
+    """No gap to settle, so quoting a sample size would be answering a question nobody asked."""
+    from contextgrid.score.significance import _sample_size_note
 
-    verdict = "a beats b by 0.200 on recall@1 (95% CI +0.100 to +0.300, p=0.010, n=17)."
-    assert _honest_sample_size(verdict) == verdict
+    note = _sample_size_note(0.0, 17, 17)
+    assert "questions would" not in note
+    assert "behaving the same way" in note

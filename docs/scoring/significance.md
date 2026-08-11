@@ -62,7 +62,7 @@ Both live behind `compare`, below — you'll rarely call either directly.
 >>> config_b = {qid: (1.0 if rng2.random() < 0.68 else 0.0) for qid in qids}
 >>> result = compare(config_a, config_b, left="chunk_512", right="chunk_256", metric="recall@5")
 >>> print(result.verdict())
-chunk_512 and chunk_256 are not distinguishable on this eval set (n=40). The gap of +0.150 on recall@5 sits inside the confidence interval +0.000 to +0.300, so it is consistent with no difference at all. About 175 questions would be needed to settle a gap this size.
+chunk_512 and chunk_256 are not distinguishable on this eval set (n=40). The gap of +0.150 on recall@5 sits inside the confidence interval +0.000 to +0.300, so it is consistent with no difference at all. Settling a gap this size would take roughly 180 questions -- on a two-sided test at alpha 0.05 with 80% power, assuming per-question scores vary as much as a 0-1 score possibly can. It is an order of magnitude, not a count.
 >>> result.distinguishable
 False
 ```
@@ -115,7 +115,7 @@ across all three produced sentences like "About many more than questions would b
 |---|---|
 | Identical score on every question | "they are behaving the same way", not a close call |
 | Same mean, but disagreeing per-question | "no number of questions like these would separate them" |
-| A real gap, just not enough questions yet | "About N questions would be needed to settle a gap this size" |
+| A real gap, just not enough questions yet | "Settling a gap this size would take roughly N questions" — rounded to two significant figures, with the test, alpha and power named. It read "About 4532 questions" from an eval set of seventeen, which is four significant figures of power calculation from n=17. |
 
 ## Defaults
 

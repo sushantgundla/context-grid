@@ -332,11 +332,32 @@ def _sample_size_note(difference: float, n: int, ties: int) -> str:
         )
 
     # The same worst-case power calculation the eval-set quality score uses, so the two
-    # numbers agree with each other.
-    needed = int(((1.96 + 0.84) ** 2 * 2 * 0.25) / (gap**2)) + 1
+    # numbers agree with each other. 1.96 is a two-sided test at alpha 0.05, 0.84 is 80%
+    # power, and 0.25 is the largest variance a 0-1 score can have.
+    needed = _rounded(int(((1.96 + 0.84) ** 2 * 2 * 0.25) / (gap**2)) + 1)
     if needed <= n:
         return (
-            f"A gap this size would usually be detectable with about {needed} questions, so "
+            f"A gap this size would usually be detectable with about {needed:,} questions, so "
             f"the {n} here are being defeated by how much the scores vary between them."
         )
-    return f"About {needed} questions would be needed to settle a gap this size."
+    return (
+        f"Settling a gap this size would take roughly {needed:,} questions -- on a two-sided "
+        "test at alpha 0.05 with 80% power, assuming per-question scores vary as much as a "
+        "0-1 score possibly can. It is an order of magnitude, not a count."
+    )
+
+
+def _rounded(value: int) -> int:
+    """Two significant figures, because that is all this estimate can support.
+
+    It read "About 4532 questions would be needed" from an eval set of seventeen -- four
+    significant figures of power calculation from n=17, printed beside a confidence interval
+    whose lower bound was exactly +0.000. The order of magnitude is genuinely useful; the
+    last two digits were noise wearing the clothes of a measurement.
+    """
+    if value < 100:
+        return value
+    from math import floor, log10
+
+    scale = 10 ** (floor(log10(value)) - 1)
+    return int(round(value / scale) * scale)

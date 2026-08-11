@@ -407,7 +407,33 @@ def test_a_small_set_warns_that_small_differences_are_noise() -> None:
 
 def test_an_unreviewed_set_says_the_review_queue_is_the_cheapest_fix() -> None:
     warnings = assess(evalset(*[item(f"q{i}") for i in range(10)])).warnings()
-    assert any("looked at by a human" in w.message for w in warnings)
+    assert any("marked as checked by a human" in w.message for w in warnings)
+
+
+def test_the_unreviewed_warning_says_how_to_clear_it() -> None:
+    """It used to be unclearable. `reviewed` reads `meta["reviewed"]`, which only the review
+    queue ever wrote -- so an eval set somebody wrote by hand reported 0% forever and was told
+    off on every run for work it had already done, with nothing anywhere naming the flag."""
+    warnings = assess(evalset(*[item(f"q{i}") for i in range(10)])).warnings()
+    message = next(w.message for w in warnings if "marked as checked" in w.message)
+
+    assert '"reviewed": true' in message
+
+
+def test_a_set_that_says_it_was_reviewed_is_not_told_off() -> None:
+    """And the flag has to work, or the advice above is worse than none at all."""
+    reviewed = [
+        EvalItem(
+            id=f"q{index}",
+            question="How long is notice?",
+            anchors=(GoldAnchor(quote="thirty days", source_id="c"),),
+            meta={"reviewed": True},
+        )
+        for index in range(10)
+    ]
+    warnings = assess(evalset(*reviewed)).warnings()
+
+    assert not any("marked as checked by a human" in w.message for w in warnings)
 
 
 def test_a_span_only_set_warns_that_the_parser_axis_is_unavailable() -> None:

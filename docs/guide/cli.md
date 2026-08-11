@@ -14,7 +14,7 @@ positional arguments:
     run                 Run everything a config file describes.
     init                Write a starter config for this installation.
     check               Validate a config and say what it would run.
-    profile             Profile a corpus and say which axes will matter.
+    profile             Measure a corpus and flag settings its shape rules out.
     sweep               Run a matrix and print the leaderboard.
     plugins             List everything registered.
     evalset             Inspect an eval set and what it can support.
@@ -86,7 +86,7 @@ contextgrid check config.yaml
 
 ```
 $ contextgrid check contextgrid.yaml
-contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
+contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
   ingestion   ['plain']
   parser      ['markdown']
   chunker     ['recursive:512', 'sentence:3']
@@ -96,6 +96,7 @@ contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 = 24 on paper, 5 to run i
   retrieval   ['simple']
   reranker    [None, 'lexical']
   candidates  [50]
+  generator   [None]
 
 config is valid.
 ```
@@ -131,6 +132,7 @@ broken: 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 1 on paper, 1 to run in ofat
   retrieval   [None]
   reranker    [None]
   candidates  [50]
+  generator   [None]
 
 error: corpus not found: /path/to/absent
 error: no evalset, so there is nothing to score against
@@ -142,8 +144,14 @@ corpus, a typo'd axis or a typo'd spec string before anything expensive starts.
 
 ## `profile`
 
-Reads a corpus and suggests which axes are worth sweeping, based on the documents themselves —
-no eval set needed.
+Measures a corpus and flags sweep settings its shape rules out, from the documents alone — no
+eval set needed.
+
+It is narrower than it sounds, and the example below is representative rather than truncated:
+today it reports size and encoding, and warns when a chunk size cannot discriminate on
+documents this short. It does not rank the axes for you. Deciding which axis matters is what
+the sweep itself is for — `profile` exists to stop you spending one on a setting the corpus
+already rules out.
 
 ```bash no-run: usage synopsis, not a literal command
 contextgrid profile corpus [--parser NAME]

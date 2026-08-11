@@ -86,7 +86,7 @@ contextgrid check contextgrid.yaml
 ```
 
 ```
-contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
+contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
   ingestion   ['plain']
   parser      ['markdown']
   chunker     ['recursive:512', 'sentence:3']
@@ -96,6 +96,7 @@ contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 = 24 on paper, 5 to run i
   retrieval   ['simple']
   reranker    [None, 'lexical']
   candidates  [50]
+  generator   [None]
 
 config is valid.
 ```
@@ -113,7 +114,7 @@ contextgrid run contextgrid.yaml
 ```
 
 ```
-contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
+contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
   [1/5] markdown · recursive:512 · tfidf · dense
   [2/5] markdown · sentence:3 · tfidf · dense
   [3/5] markdown · recursive:512 · bm25
