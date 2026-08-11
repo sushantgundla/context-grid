@@ -14,6 +14,7 @@ from contextgrid.retrieve.base import (
     RetrievalTrace,
     Searcher,
     fuse,
+    needs_model_error,
 )
 from contextgrid.retrieve.strategies import (
     DecomposedRetrieval,
@@ -51,6 +52,46 @@ RETRIEVERS.register(
 )(RelevanceFeedbackRetrieval)
 
 
+def _split_by_cost() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The registered strategy names, split into the paid ones and the free ones.
+
+    Read off `uses_model` on each registered class rather than a hand-kept list, for two
+    reasons. A hand-kept list goes stale the day a second paid strategy is registered, and
+    it cannot see a strategy that arrived at runtime through `plugins:` -- which is exactly
+    the strategy nobody has costed yet.
+
+    Loading a registration only imports the class; it never builds one. That distinction is
+    the point: a model-backed strategy with no model *refuses to build*, so anything that
+    asks "does this cost money?" by constructing it gets no answer precisely when a sweep is
+    about to spend.
+    """
+    paid: list[str] = []
+    free: list[str] = []
+    for name in RETRIEVERS.names():
+        try:
+            factory = RETRIEVERS.registration(name).load()
+        except Exception:  # pragma: no cover - an uninstallable plugin is neither, usefully
+            continue
+        (paid if getattr(factory, "uses_model", False) else free).append(name)
+    return tuple(paid), tuple(free)
+
+
+def model_backed_retrievers() -> tuple[str, ...]:
+    """The strategies that cost a model call per query.
+
+    A function rather than the module-level `MODEL_BACKED` constant that `transform` and
+    `generate` use, because those two families cannot be registered at all, while these can:
+    a `plugins:` entry adds strategies after this module is imported, and a constant frozen
+    at import time would miss every one of them.
+    """
+    return _split_by_cost()[0]
+
+
+def model_free_retrievers() -> tuple[str, ...]:
+    """The strategies that never call a model, for "use one of these instead"."""
+    return _split_by_cost()[1]
+
+
 def get_retriever(
     spec: str | RetrievalStrategy | None, llm: object | None = None
 ) -> RetrievalStrategy:
@@ -59,11 +100,16 @@ def get_retriever(
     `llm` is the model the configuration chose, and handing it over matters for more than
     tidiness. A model-backed strategy that builds its own client instead:
 
-    * ignores `run.model` entirely -- `AgenticRetrieval` defaults to `openai:gpt-4o-mini`, so a
-      sweep configured for any other model would quietly plan its searches with that one;
+    * ignores `run.model` entirely -- `AgenticRetrieval` used to default to
+      `openai:gpt-4o-mini`, so a sweep configured for any other model would quietly plan its
+      searches with that one;
     * cannot be metered, because its calls never pass anything the runner can see, so the
       configuration is costed at zero and `budget_usd` can never stop it;
     * wants its own credentials, which is a second key for the same sweep.
+
+    So a model-backed strategy with no model **refuses**, exactly as `hyde` and the `llm`
+    generator do. Silently retrieving with a model nobody chose, on money nothing counts, is
+    worse than an error: the numbers still look like a measurement.
 
     Optional rather than required, so `get_retriever("simple")` and every direct call in a test
     keeps working. A strategy with no use for a model ignores it.
@@ -72,11 +118,18 @@ def get_retriever(
         return SimpleRetrieval()
     strategy = RETRIEVERS.create(spec) if isinstance(spec, str) else spec
 
+    if not getattr(strategy, "uses_model", False):
+        return strategy
+
     # Model-backed strategies keep their planner in a private `_llm` slot that `planner()`
-    # fills lazily. Filling it here is what makes the configured model win over the built-in
-    # default, without every strategy having to know that injection is a thing.
-    if llm is not None and getattr(strategy, "uses_model", False):
+    # reads. Filling it here is what makes the configured model win, without every strategy
+    # having to know that injection is a thing.
+    if llm is not None:
         object.__setattr__(strategy, "_llm", llm)
+    elif getattr(strategy, "_llm", None) is None:
+        # Nothing was passed and the strategy is not carrying one already (a factory that
+        # wires in its own planner, which is how the tests run this axis with no key).
+        raise needs_model_error(strategy.name)
     return strategy
 
 
@@ -94,4 +147,6 @@ __all__ = [
     "WidenedRetrieval",
     "fuse",
     "get_retriever",
+    "model_backed_retrievers",
+    "model_free_retrievers",
 ]

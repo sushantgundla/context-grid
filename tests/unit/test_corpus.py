@@ -6,12 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from contextgrid.core.documents import MediaType
+from contextgrid.core.documents import MediaType, SourceFile
+from contextgrid.core.warnings import WarningCode
 from contextgrid.corpus import Corpus, CorpusError, fingerprint, fingerprint_sources
+from contextgrid.corpus.fingerprint import require_parsed_text
 from contextgrid.parse import MarkdownParser
+from contextgrid.pipeline import Config, build
+from tests.pdf_fixtures import prose_pdf
 from tests.support import API_DOCS, CONTRACT
 
 MD = MarkdownParser()
+
+
+def _from_dir_error(path: Path) -> str:
+    with pytest.raises(CorpusError) as error:
+        Corpus.from_dir(path)
+    return str(error.value)
 
 
 @pytest.fixture
@@ -66,8 +76,36 @@ def test_ids_are_relative_so_they_stay_readable(corpus_dir: Path) -> None:
 
 def test_a_directory_with_nothing_matching_says_what_to_do(tmp_path: Path) -> None:
     (tmp_path / "data.parquet").write_bytes(b"x")
-    with pytest.raises(CorpusError, match="Pass `patterns`"):
+    with pytest.raises(CorpusError, match="rename the files"):
         Corpus.from_dir(tmp_path)
+
+
+def test_nothing_matching_names_the_extensions_that_are_actually_there(tmp_path: Path) -> None:
+    (tmp_path / "data.parquet").write_bytes(b"x")
+    (tmp_path / "notes.rst").write_text("x")
+    message = _from_dir_error(tmp_path)
+    assert ".parquet" in message
+    assert ".rst" in message
+
+
+def test_an_empty_directory_says_it_is_empty_rather_than_listing_extensions(
+    tmp_path: Path,
+) -> None:
+    assert "no files at all" in _from_dir_error(tmp_path)
+
+
+def test_nothing_matching_does_not_send_a_config_user_after_a_key_that_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    """`patterns` is a `from_dir` argument, not a config key. The old message hid that.
+
+    A config file is the primary interface, so "Pass `patterns`" left a CLI user with
+    nowhere to go: adding `patterns:` to the file is rejected as an unknown key.
+    """
+    message = _from_dir_error(tmp_path)
+    assert "no `patterns:` config key" in message
+    assert "Corpus.from_dir" in message
+    assert "Python-API only" in message
 
 
 def test_a_missing_directory_is_a_clear_error(tmp_path: Path) -> None:
@@ -254,6 +292,97 @@ def test_fingerprint_without_parses_falls_back_to_bytes_only() -> None:
     assert not fingerprint(corpus).is_parsed
     assert not fingerprint(corpus, {}).is_parsed
     assert not fingerprint(corpus, []).is_parsed
+
+
+# ---------------------------------------------------------------------------
+# a parser that read nothing
+# ---------------------------------------------------------------------------
+
+
+def test_a_parser_that_read_nothing_is_named_instead_of_the_embedder() -> None:
+    """The parser is the fault. `TfidfEmbedder` was only the first thing to trip over it.
+
+    A parser that does not match the file types declines every file, the corpus arrives at
+    the embedder empty, and the user was told to call `prepare()` -- about a step they never
+    took and a component they never chose.
+    """
+    corpus = Corpus.from_texts({"r.md": "Refunds within 30 days."}, media_type=MediaType.MARKDOWN)
+    with pytest.raises(CorpusError) as error:
+        require_parsed_text(corpus, {}, parser="pymupdf")
+
+    message = str(error.value)
+    assert "pymupdf" in message  # the thing that failed
+    assert "r.md" in message  # a file it could not read
+    assert "text/markdown" in message  # why the two do not match
+    assert "prepare()" not in message
+
+
+def test_documents_that_parse_to_nothing_count_as_read_nothing() -> None:
+    """Declining every file and returning blanks for every file are the same failure."""
+    corpus = Corpus.from_texts({"a.md": "text", "b.md": "more"}, media_type=MediaType.MARKDOWN)
+    unreadable = Corpus.from_texts({"a.md": "  ", "b.md": ""})
+    blank = {source.id: MD.parse(source) for source in unreadable}
+    with pytest.raises(CorpusError, match="read no text"):
+        require_parsed_text(corpus, blank, parser="pymupdf")
+
+
+def test_one_readable_document_is_enough_to_carry_on() -> None:
+    """A corpus of scans with one text page is a warning, not a dead end."""
+    corpus = Corpus.from_texts({"a.md": "text", "b.md": "  "}, media_type=MediaType.MARKDOWN)
+    require_parsed_text(corpus, {s.id: MD.parse(s) for s in corpus}, parser="markdown")
+
+
+def test_a_partly_skipped_corpus_is_not_an_error() -> None:
+    """Ten PDFs and one Markdown file read by a PDF parser is a working sweep, not a stop.
+
+    Only the total wipeout is fatal. Erroring on a partial skip would break every corpus
+    that happens to carry a stray file the chosen parser does not handle.
+    """
+    texts = {f"report{i}.pdf": f"Page {i} of the report." for i in range(10)}
+    corpus = Corpus.from_texts({**texts, "notes.md": "# Notes"})
+    parsed = {source.id: MD.parse(source) for source in corpus if source.id.endswith(".pdf")}
+    require_parsed_text(corpus, parsed, parser="pymupdf")
+
+
+def test_an_empty_corpus_is_somebody_elses_error() -> None:
+    require_parsed_text(Corpus(files=()), {}, parser="markdown")
+
+
+def test_the_check_accepts_a_sequence_of_parses_like_fingerprint_does() -> None:
+    corpus = Corpus.from_texts({"a.md": "text"}, media_type=MediaType.MARKDOWN)
+    require_parsed_text(corpus, [MD.parse(s) for s in corpus], parser="markdown")
+
+
+def test_more_than_three_unreadable_files_are_summarised() -> None:
+    corpus = Corpus.from_texts({f"f{i}.md": "text" for i in range(5)})
+    with pytest.raises(CorpusError, match="and 2 more"):
+        require_parsed_text(corpus, {}, parser="pymupdf")
+
+
+def test_building_a_pipeline_on_an_unreadable_corpus_blames_the_parser() -> None:
+    """The repro: `contextgrid profile ./documents --parser pymupdf` on a Markdown corpus.
+
+    It used to reach `TfidfEmbedder`, which had been prepared on nothing and said so. The
+    parse is where it went wrong, and now that is where it stops.
+    """
+    corpus = Corpus.from_texts({"r.md": "Refunds within 30 days."}, media_type=MediaType.MARKDOWN)
+    with pytest.raises(CorpusError, match="'pymupdf' parser read no text"):
+        build(Config(parser="pymupdf"), corpus)
+
+
+def test_building_a_pipeline_on_a_partly_readable_corpus_still_runs_and_still_warns() -> None:
+    """The regression most likely to bite: a stray file the parser skips must not stop a run."""
+    corpus = Corpus(
+        files=(
+            SourceFile(id="report.pdf", media_type=MediaType.PDF, raw=prose_pdf()),
+            SourceFile(id="notes.md", media_type=MediaType.MARKDOWN, raw=b"# Notes\n\nSome text."),
+        )
+    )
+    built = build(Config(parser="pymupdf"), corpus)
+
+    assert built.chunks
+    skipped = [w for w in built.warnings if w.code is WarningCode.PARSER_FALLBACK]
+    assert [w.subject for w in skipped] == ["notes.md"]
 
 
 def test_an_unparsed_fingerprint_gives_no_content_hints() -> None:

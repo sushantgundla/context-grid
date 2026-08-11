@@ -11,7 +11,8 @@ pip install context-grid
 ```
 
 The core installs with just a few pure-Python dependencies — no CUDA, no downloads. Real
-embedding models, PDF parsers, and some chunkers live behind extras:
+embedding models, PDF parsers, and some chunkers live behind extras. These are the ones you
+reach for first — the full set is in [reference/install.md](../reference/install.md):
 
 ```bash
 pip install "context-grid[parse]"    # pymupdf, pdfplumber, pymupdf4llm
@@ -22,6 +23,11 @@ pip install "context-grid[index]"    # faiss, usearch
 
 pip install "context-grid[parse,chunk,index]"   # a useful working set
 ```
+
+The rest, for when you need them: `parse-ml` (docling) and `parse-marker` (marker-pdf) for
+layout-model parsing, `pgvector` (psycopg) for Postgres, `agent` (agno) for agentic retrieval,
+`judge` (deepeval) for the generation metrics, and `dev` for the test suite. There is no
+`[all]`.
 
 You don't need any extra to follow this page — everything below runs on the bare install.
 
@@ -126,8 +132,8 @@ configuration                                         recall@5   p95 ms     $/1k
 markdown · recursive:512 · tfidf · dense                 1.000      0.4   0.0000
 markdown · sentence:3 · tfidf · dense                    1.000      0.0   0.0000
 markdown · recursive:512 · bm25                          1.000      0.0   0.0000
-markdown · recursive:512 · tfidf · hybrid                1.000      0.0   0.0000
-markdown · recursive:512 · tfidf · dense · lexical@50    1.000      0.0   0.0000
+markdown · recursive:512 · tfidf · hybrid                 1.000      0.0   0.0000
+markdown · recursive:512 · tfidf · dense · lexical@50     1.000      0.0   0.0000
 
 markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 5 configurations on 3 questions. [...]
 

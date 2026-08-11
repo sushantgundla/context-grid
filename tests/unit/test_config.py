@@ -14,6 +14,7 @@ import pytest
 
 from contextgrid.config import ConfigError, ExperimentConfig, load, loads, render
 from contextgrid.config.loader import build_cache, build_evalset, run, write_report
+from contextgrid.core.errors import MissingExtraError
 from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor
 
 MINIMAL = "corpus: ./docs\n"
@@ -107,20 +108,142 @@ def test_a_misspelled_report_format_lists_the_real_ones() -> None:
 
 
 # ---------------------------------------------------------------------------
+# typo'd plugin names
+#
+# A typo'd *key* was caught and a typo'd *value* was not, so `chunker: recursiv:128` parsed,
+# passed `check`, and stopped the sweep partway through -- after the configurations before it
+# had been measured and with nothing written out. Every name-taking axis had the hole.
+# ---------------------------------------------------------------------------
+
+
+def test_a_typod_chunker_is_rejected_with_the_message_run_would_have_given() -> None:
+    with pytest.raises(ConfigError, match=r"grid\.chunker: no chunker named 'recursiv'"):
+        loads("corpus: ./docs\ngrid:\n  chunker: [recursive:512, recursiv:128]\n")
+
+
+def test_a_typod_name_lists_the_names_that_do_exist() -> None:
+    with pytest.raises(ConfigError, match=r"Available:.*recursive"):
+        loads("corpus: ./docs\ngrid:\n  chunker: recursiv\n")
+
+
+@pytest.mark.parametrize(
+    ("axis", "value"),
+    [
+        ("ingestion", "contextul"),
+        ("parser", "markdow"),
+        ("chunker", "recursiv"),
+        ("embedder", "tfid"),
+        ("index", "dens"),
+        ("transform", "hyd"),
+        ("retrieval", "agentc"),
+        ("reranker", "lexicl"),
+        ("generator", "lm"),
+    ],
+)
+def test_every_name_taking_axis_is_checked(axis: str, value: str) -> None:
+    """One axis at a time, because the hole was per-axis: `run.headline` and `run.metrics` were
+    checked against their registry and the nine axes below were not."""
+    with pytest.raises(ConfigError, match=rf"grid\.{axis}: no \w+ named {value!r}"):
+        loads(f"corpus: ./docs\ngrid:\n  {axis}: {value}\n")
+
+
+def test_every_bad_name_is_reported_not_just_the_first() -> None:
+    """Fix a typo, re-run, be told about the next typo, is the same wait paid three times."""
+    with pytest.raises(ConfigError) as caught:
+        loads("corpus: ./docs\ngrid:\n  chunker: recursiv\n  index: dens\n  reranker: lexicl\n")
+
+    message = str(caught.value)
+    assert "3 unknown plugin name(s)" in message
+    for name in ("'recursiv'", "'dens'", "'lexicl'"):
+        assert name in message
+
+
+def test_only_the_name_is_checked_not_what_comes_after_the_colon() -> None:
+    """Parameters belong to the plugin, and reading them means loading it. `recursive:-5` is a
+    real chunker with a bad size, which `check` reports when it builds one."""
+    assert loads("corpus: ./docs\ngrid:\n  chunker: recursive:-5\n").grid.chunker == (
+        "recursive:-5",
+    )
+
+
+def test_a_name_that_needs_an_uninstalled_extra_is_still_a_valid_config() -> None:
+    """`check` has to work on a machine that cannot run the sweep -- writing a config on a
+    laptop for a GPU box is the normal case. So the name is checked and nothing is built; the
+    missing package is reported at run time, by the error that says what to install."""
+    from contextgrid.chunk import CHUNKERS
+
+    CHUNKERS.register_lazy(
+        "test-absent-extra",
+        module="contextgrid_a_package_that_is_not_installed",
+        attr="Chunker",
+        extra="chunk-ml",
+    )
+    try:
+        config = loads("corpus: ./docs\ngrid:\n  chunker: test-absent-extra\n")
+        assert config.grid.chunker == ("test-absent-extra",)
+        with pytest.raises(MissingExtraError):
+            CHUNKERS.create("test-absent-extra")
+    finally:
+        CHUNKERS.unregister("test-absent-extra")
+
+
+def test_the_arms_that_need_a_model_are_real_names() -> None:
+    """`hyde` and `llm` cannot be registered -- built without a model they would silently be
+    the identity -- but they are the arms the docs recommend, so a config naming one is right."""
+    config = loads("corpus: ./docs\ngrid:\n  transform: [null, hyde]\n  generator: llm\n")
+    assert config.grid.transform == (None, "hyde")
+    assert config.grid.generator == ("llm",)
+
+
+def test_a_chunker_from_a_plugin_file_is_a_known_name(tmp_path: Path) -> None:
+    """`plugins:` exists so a config can name your own code. It is loaded before the grid is
+    parsed, so the name it registers has to survive the check that rejects typos."""
+    from contextgrid.chunk import CHUNKERS
+
+    (tmp_path / "my_chunkers.py").write_text(
+        "from contextgrid.chunk import CHUNKERS, RecursiveChunker\n"
+        'if "plug_chunker" not in CHUNKERS:\n'
+        '    CHUNKERS.register("plug_chunker", shorthand="size")(RecursiveChunker)\n',
+        encoding="utf-8",
+    )
+    try:
+        config = loads(
+            "corpus: ./docs\nplugins:\n  - ./my_chunkers.py\ngrid:\n  chunker: plug_chunker:256\n",
+            base=tmp_path,
+        )
+        assert config.grid.chunker == ("plug_chunker:256",)
+    finally:
+        CHUNKERS.unregister("plug_chunker")
+
+
+# ---------------------------------------------------------------------------
 # one value or many
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("axis", ["parser", "chunker", "embedder", "index"])
+#: Two real registered names per axis. These two tests are about the *shape* of a value -- one
+#: or many -- but the values still have to be names something is registered under, because that
+#: is checked while the config is parsed.
+REAL_NAMES = {
+    "parser": ("markdown", "text"),
+    "chunker": ("recursive", "sentence"),
+    "embedder": ("tfidf", "hash"),
+    "index": ("dense", "bm25"),
+}
+
+
+@pytest.mark.parametrize("axis", list(REAL_NAMES))
 def test_every_axis_takes_a_bare_value(axis: str) -> None:
-    config = loads(f"corpus: ./docs\ngrid:\n  {axis}: one\n")
-    assert getattr(config.grid, axis) == ("one",)
+    first = REAL_NAMES[axis][0]
+    config = loads(f"corpus: ./docs\ngrid:\n  {axis}: {first}\n")
+    assert getattr(config.grid, axis) == (first,)
 
 
-@pytest.mark.parametrize("axis", ["parser", "chunker", "embedder", "index"])
+@pytest.mark.parametrize("axis", list(REAL_NAMES))
 def test_every_axis_takes_a_list(axis: str) -> None:
-    config = loads(f"corpus: ./docs\ngrid:\n  {axis}: [one, two]\n")
-    assert getattr(config.grid, axis) == ("one", "two")
+    first, second = REAL_NAMES[axis]
+    config = loads(f"corpus: ./docs\ngrid:\n  {axis}: [{first}, {second}]\n")
+    assert getattr(config.grid, axis) == (first, second)
 
 
 def test_null_is_a_real_arm_on_the_axes_that_allow_it() -> None:
@@ -284,7 +407,7 @@ def test_describe_reports_the_matrix_and_what_will_actually_run() -> None:
     config = loads(
         "corpus: ./docs\n"
         "grid:\n"
-        "  chunker: [a, b, c]\n"
+        "  chunker: [recursive, sentence, fixed]\n"
         "  index: [dense, bm25]\n"
         "run:\n"
         "  mode: factorial\n"
@@ -316,7 +439,7 @@ def test_a_config_survives_a_round_trip_through_its_own_dict() -> None:
         "name: round-trip\n"
         "corpus: /docs\n"
         "grid:\n"
-        "  chunker: [a, b]\n"
+        "  chunker: [recursive, sentence]\n"
         "  reranker: [null, lexical]\n"
         "run:\n"
         "  k: 4\n"
@@ -625,7 +748,8 @@ def test_check_prints_every_axis_so_the_matrix_is_visible(
 
     path = workspace / "experiment.yaml"
     path.write_text(
-        "corpus: ./docs\nevalset: ./questions.jsonl\ngrid:\n  chunker: [a, b]\n", encoding="utf-8"
+        "corpus: ./docs\nevalset: ./questions.jsonl\ngrid:\n  chunker: [recursive, sentence]\n",
+        encoding="utf-8",
     )
     main(["check", str(path)])
 

@@ -122,7 +122,7 @@ contents are wrong — and then every problem, one `error: ...` line each, on st
 
 ```
 $ contextgrid check broken.yaml; echo "exit: $?"
-broken: 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 1 on paper, 1 to run in ofat mode, scored on recall@5
+broken: 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 1 on paper, 1 to run in ofat mode, scored on recall@5
   ingestion   [None]
   parser      ['markdown']
   chunker     ['recursive:512']
@@ -186,7 +186,7 @@ contextgrid sweep corpus evalset [options]
 $ contextgrid sweep ./documents ./questions.jsonl --chunker recursive:128 --chunker recursive:256 --index bm25 --embedder null --metric recall@3 --k 3 --bundle ./sweep-results
   [1/2] markdown · recursive:128 · bm25
   [2/2] markdown · recursive:256 · bm25
-1 × 1 × 2 × 1 × 1 × 1 × 1 × 1 × 1 = 2 on paper, 2 to run (ofat)
+1 × 1 × 2 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 2 on paper, 2 to run (ofat)
 
 configuration                   recall@3   p95 ms     $/1k
 -----------------------------------------------------------

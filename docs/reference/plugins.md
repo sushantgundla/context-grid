@@ -37,6 +37,7 @@ from contextgrid.index import INDEXES
 from contextgrid.transform import TRANSFORMS
 from contextgrid.retrieve import RETRIEVERS
 from contextgrid.rerank import RERANKERS
+from contextgrid.generate import GENERATORS
 from contextgrid.evalset import LLMS
 from contextgrid.tokens import TOKENIZERS
 from contextgrid.score import METRICS
@@ -44,7 +45,7 @@ from contextgrid.score import METRICS
 for family, reg in {
     'parse': PARSERS, 'ingest': INGESTERS, 'chunk': CHUNKERS, 'embed': EMBEDDERS,
     'index': INDEXES, 'transform': TRANSFORMS, 'retrieve': RETRIEVERS,
-    'rerank': RERANKERS, 'evalset (llm)': LLMS, 'tokenizer': TOKENIZERS,
+    'rerank': RERANKERS, 'generator': GENERATORS, 'evalset (llm)': LLMS, 'tokenizer': TOKENIZERS,
     'metric': METRICS,
 }.items():
     print(f'=== {family} ===')
@@ -220,6 +221,23 @@ Reorders what came back — see [rerankers](../dimensions/rerankers.md).
 | `mmr` | `mmr:<diversity>` | Maximal marginal relevance. Fixes a top-5 of near-copies. | — |
 | `tei-rerank` | `tei-rerank:<model>` | A cross-encoder on a local TEI server. No key, no network, no extra dependency. | — |
 | `litellm-rerank` | `litellm-rerank:<model>` | A hosted reranker through litellm: Cohere, Jina, Voyage, AWS. | `llm` (`litellm`) |
+
+## `generator`
+
+Turning the retrieved, reranked passages into an answer — see
+[generation](../dimensions/generation.md). `null` (the config default) means no generation at
+all, which is not the same as the `null` on any other axis: there is no do-nothing generator
+to build, so the stage is simply switched off and costs nothing.
+
+| Name | Spec string | Description | Extra |
+|---|---|---|---|
+| `extractive` | `extractive:<sentences>` | Return the top passage verbatim. The ceiling retrieval alone can reach. | — |
+| `llm` | `llm` | Write an answer from the retrieved passages. Costs a model call per question. | needs a model — see [`run.model`](../guide/configuration.md#run--how-the-sweep-executes), package via `llm` |
+
+`llm` is the one name here that is not in the `GENERATORS` registry, for the same reason the
+model-backed transforms aren't: building it needs an `LLM` that a spec string alone can't
+supply. It's kept in `contextgrid.generate.MODEL_BACKED` so the config template and this page
+can still say it exists — `available_generators()` returns both names.
 
 ## Model (LLM), for `run.model` and the generation judge
 

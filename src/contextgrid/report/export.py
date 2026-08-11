@@ -14,13 +14,17 @@ from __future__ import annotations
 import json
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from contextgrid.core.warnings import Severity
+from contextgrid.grid.matrix import AXIS_ORDER
 from contextgrid.pipeline import Config
 from contextgrid.report.manifest import Manifest
 from contextgrid.report.results import Results, RunResult
 from contextgrid.score.significance import SignificanceError
+
+if TYPE_CHECKING:  # pragma: no cover - import only for the annotation
+    from contextgrid.config.schema import ExperimentConfig
 
 
 def config_to_yaml(config: Config, *, manifest: Manifest | None = None) -> str:
@@ -29,18 +33,75 @@ def config_to_yaml(config: Config, *, manifest: Manifest | None = None) -> str:
     The core installs with numpy and nothing else, and pulling in a YAML library to emit
     twelve flat keys would be a poor trade.
     """
-    lines = ["# context-grid configuration", "#"]
-    if manifest is not None:
-        lines += [
-            f"# manifest: {manifest.short_hash}",
-            f"# corpus:   {manifest.corpus_hash[:12]} ({manifest.corpus_files} files)",
-            f"# evalset:  {manifest.evalset_id} v{manifest.evalset_version}",
-            "#",
-        ]
+    lines = _header(manifest)
     lines.append("")
 
     for key, value in config.as_dict().items():
         lines.append(f"{key}: {_yaml_value(value)}")
+    return "\n".join(lines) + "\n"
+
+
+def winning_config_to_yaml(
+    config: Config,
+    experiment: ExperimentConfig,
+    *,
+    manifest: Manifest | None = None,
+) -> str:
+    """The winning configuration as an experiment file you can hand straight back to the tool.
+
+    Three places in the documentation call `winning-config.yaml` "re-runnable". It was not. It
+    was `config_to_yaml`'s output -- a flat block of pipeline fields with no `corpus:` and no
+    `grid:` wrapper -- so feeding it to `contextgrid run` failed on the first key it read:
+    `unknown key 'ingestion' in the 'config' section`. A file whose whole promise is that you
+    can re-run it, that cannot be re-run, is worse than no file: somebody commits it as the
+    record of a decision and finds out months later.
+
+    So this writes the real thing. `corpus:` and `evalset:` are absolute, because the file
+    lands in `report.out/`, which is normally *below* the directory the original config lived
+    in, and paths resolve against the config file's own directory -- a copied relative path
+    would silently point somewhere else. The axes go in `grid:`, one value each rather than a
+    list, since this file names exactly one configuration. Everything else goes in `run:`,
+    which is where the schema puts it -- note that `k` lives there while `candidates` is an
+    axis, so the two do not travel together.
+
+    Budgets are deliberately left out. `budget_seconds` and `budget_usd` exist to stop a sweep
+    that is taking too long or costing too much; carrying them onto a single configuration
+    could only ever cut short the one run this file is for.
+    """
+    lines = _header(manifest)
+    lines += [
+        "# Re-run this file directly:  contextgrid run winning-config.yaml",
+        "#",
+        "",
+        f"name: {_yaml_value(experiment.name)}",
+        "",
+        # Absolute on purpose -- see the docstring. This file does not sit where the original
+        # config sat, so a relative path copied from it would resolve against the wrong root.
+        f"corpus: {_yaml_value(str(experiment.corpus))}",
+    ]
+    if experiment.evalset is not None:
+        lines.append(f"evalset: {_yaml_value(str(experiment.evalset))}")
+    if experiment.plugins:
+        # Without these, a winner naming a plugin-provided chunker or metric is rejected as a
+        # typo by the validation that runs before any plugin would otherwise be loaded.
+        lines += ["", "plugins:", *(f"  - {_yaml_value(name)}" for name in experiment.plugins)]
+
+    values = config.as_dict()
+    lines += [
+        "",
+        "# One value per axis: this file names a single configuration, not a sweep.",
+        "grid:",
+    ]
+    lines += [f"  {axis}: {_yaml_value(values[axis])}" for axis in AXIS_ORDER if axis in values]
+
+    lines += ["", "run:"]
+    lines += [f"  {key}: {_yaml_value(value)}" for key, value in _run_settings(config, experiment)]
+    if experiment.run.metrics:
+        lines += ["  metrics:", *(f"    - {_yaml_value(name)}" for name in experiment.run.metrics)]
+
+    # No `report:` section on purpose. This file usually sits *inside* the previous run's
+    # report directory, so inheriting `report.out` would have a re-run overwrite the report,
+    # the results and this very file while it was being read.
     return "\n".join(lines) + "\n"
 
 
@@ -277,11 +338,18 @@ def write_bundle(
     metric: str = "recall@5",
     manifest: Manifest | None = None,
     name: str | None = None,
+    corpus: str | Path | None = None,
+    evalset: str | Path | None = None,
 ) -> list[Path]:
     """Write everything: the report, the raw results, the winning config and the manifest.
 
     A sceptic should be able to re-derive every number in the report from the bundle without
     asking for anything else.
+
+    Give it `corpus` -- the documents the sweep ran over -- and `winning-config.yaml` is a file
+    you can hand back to `contextgrid run`. Without it there is no corpus path to write, so the
+    file falls back to the flat listing of pipeline fields, which is a record and not a config.
+    Pass `evalset` too and the re-run can be scored as well as executed.
     """
     root = Path(directory).expanduser()
     root.mkdir(parents=True, exist_ok=True)
@@ -299,8 +367,18 @@ def write_bundle(
 
     winner = results.best(metric)
     if winner is not None:
+        experiment = (
+            None
+            if corpus is None
+            else _experiment_from_paths(corpus, evalset, headline=metric, k=winner.config.k)
+        )
         config_yaml = root / "winning-config.yaml"
-        config_yaml.write_text(config_to_yaml(winner.config, manifest=manifest), "utf-8")
+        config_yaml.write_text(
+            config_to_yaml(winner.config, manifest=manifest)
+            if experiment is None
+            else winning_config_to_yaml(winner.config, experiment, manifest=manifest),
+            "utf-8",
+        )
         written.append(config_yaml)
 
         snippet = root / "use_winning_config.py"
@@ -345,6 +423,64 @@ def _run_payload(run: RunResult) -> dict[str, Any]:
         "retrieval": run.retrieval,
         "warnings": run.warnings.to_list(),
     }
+
+
+def _header(manifest: Manifest | None) -> list[str]:
+    """The provenance block a config export opens with.
+
+    Which run produced this file is the first thing anybody asks of a config found in a
+    repository, and the hashes are the only answer that cannot be misremembered.
+    """
+    lines = ["# context-grid configuration", "#"]
+    if manifest is not None:
+        lines += [
+            f"# manifest: {manifest.short_hash}",
+            f"# corpus:   {manifest.corpus_hash[:12]} ({manifest.corpus_files} files)",
+            f"# evalset:  {manifest.evalset_id} v{manifest.evalset_version}",
+            "#",
+        ]
+    return lines
+
+
+def _experiment_from_paths(
+    corpus: str | Path, evalset: str | Path | None, *, headline: str, k: int
+) -> ExperimentConfig:
+    """The least an experiment can be: where the documents are, and what won.
+
+    `write_bundle` is reached from the ad-hoc side of the tool -- `contextgrid sweep`, and the
+    `Lab` API -- where there is no config file and so no `ExperimentConfig` to pass on. The
+    paths are the only part that cannot be reconstructed; everything else is a default or is
+    read off the winner, so this fills them in and hands the same writer the same shape.
+    """
+    from contextgrid.config.schema import ExperimentConfig, RunConfig
+
+    return ExperimentConfig(
+        corpus=Path(corpus).expanduser().resolve(),
+        evalset=None if evalset is None else Path(evalset).expanduser().resolve(),
+        run=RunConfig(headline=headline, k=k),
+        name="winning-config",
+    )
+
+
+def _run_settings(config: Config, experiment: ExperimentConfig) -> list[tuple[str, Any]]:
+    """The `run:` section, in the order somebody reads it.
+
+    `k` comes off the winning `Config` rather than off `experiment.run`. They agree today --
+    the matrix is built with `run.k` -- but the one that describes the pipeline that actually
+    won is the one on the pipeline.
+    """
+    run = experiment.run
+    return [
+        ("mode", run.mode),
+        ("k", config.k),
+        ("headline", run.headline),
+        ("seed", run.seed),
+        ("resolution_policy", run.resolution_policy),
+        ("resolution_threshold", run.resolution_threshold),
+        ("machine_usd_per_hour", run.machine_usd_per_hour),
+        ("cache", run.cache),
+        ("model", run.model),
+    ]
 
 
 def _config_field_names() -> list[str]:

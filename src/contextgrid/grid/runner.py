@@ -501,13 +501,28 @@ class Runner:
         for index, config in enumerate(configs, start=1):
             spent = budget.exceeded()
             if spent is not None:
+                # Two different outcomes, and they need different words. "The leaderboard
+                # below is partial" is simply false when the count is zero: there is no
+                # leaderboard, nothing was compared, and the budget is the whole story.
+                # `budget_usd: 0.0` -- documented as "already spent" -- lands there every
+                # time, and so does any ceiling too small for a single configuration.
+                completed = index - 1
+                if completed:
+                    detail = (
+                        f"stopped after {completed} of {len(configs)} configurations: "
+                        f"{spent}. The leaderboard below is partial"
+                    )
+                else:
+                    detail = (
+                        f"none of the {len(configs)} configurations ran: {spent}. Nothing was "
+                        "measured, so there is no leaderboard rather than an empty one"
+                    )
                 results.warnings.add(
                     WarningCode.BUDGET_REACHED,
-                    f"stopped after {index - 1} of {len(configs)} configurations: {spent}. "
-                    "The leaderboard below is partial",
+                    detail,
                     severity=Severity.CAUTION,
                     stage="run",
-                    completed=index - 1,
+                    completed=completed,
                     planned=len(configs),
                 )
                 break
@@ -649,23 +664,35 @@ def _warn_if_unbounded(matrix: Matrix, budget: Budget) -> None:
 
     from contextgrid.generate import MODEL_BACKED as GENERATOR_MODEL_BACKED
     from contextgrid.ingest import get_ingester
-    from contextgrid.retrieve import get_retriever
+    from contextgrid.retrieve import RETRIEVERS, model_backed_retrievers
 
-    for axis, resolve in (("retrieval", get_retriever), ("ingestion", get_ingester)):
-        for value in getattr(matrix, axis):
-            if value is None:
-                continue
-            try:
-                strategy = resolve(value)
-            except Exception:  # pragma: no cover - a bad spec fails later, more helpfully
-                continue
-            if getattr(strategy, "uses_model", False):
-                matrix.meta["unbounded_model_calls"] = strategy.name
-                return
+    # Checked by name rather than by building one. A model-backed strategy with no `run.model`
+    # now refuses to build, and this ran with no model to give it -- so resolving an instance
+    # here raised, the `except` below swallowed it, and the warning went quiet for the one
+    # axis it exists for, on exactly the sweeps that were about to spend money.
+    paid = model_backed_retrievers()
+    for value in matrix.retrieval:
+        if value is not None and RETRIEVERS.name_in(value) in paid:
+            matrix.meta["unbounded_model_calls"] = RETRIEVERS.name_in(value)
+            return
 
-    # Checked by name rather than by building one: the `llm` generator cannot be constructed
-    # without a real `LLM` (unlike the strategies above, whose defaults build without one), so
-    # a try/except around `get_generator` would just skip it, every time, silently.
+    # Ingestion strategies all build without a model, so an instance is still the honest
+    # answer here: `uses_model` is read off the thing itself rather than a list to keep up to
+    # date. The catch stays broad because a bad spec fails later, more helpfully than here.
+    for value in matrix.ingestion:
+        if value is None:
+            continue
+        try:
+            strategy = get_ingester(value)
+        except Exception:  # pragma: no cover - a bad spec fails later, more helpfully
+            continue
+        if getattr(strategy, "uses_model", False):
+            matrix.meta["unbounded_model_calls"] = strategy.name
+            return
+
+    # Checked by name rather than by building one, for the same reason as `retrieval` above:
+    # the `llm` generator cannot be constructed without a real `LLM`, so a try/except around
+    # `get_generator` would just skip it, every time, silently.
     for value in matrix.generator:
         if value is None:
             continue

@@ -379,6 +379,110 @@ def test_a_bundle_contains_everything_needed_to_re_derive_it(
     }
 
 
+# -- winning-config.yaml is a config, not a listing ------------------------
+
+
+#: A sweep with two arms, so the file under test has a real winner to name rather than the
+#: only configuration there was.
+RERUNNABLE = """\
+name: rerun-me
+corpus: ./docs
+evalset: ./evalset.jsonl
+grid:
+  chunker:
+    - sentence:2
+    - sentence:1
+  index: bm25
+run:
+  mode: factorial
+  headline: recall@3
+  k: 3
+report:
+  out: ./out
+  formats: [yaml]
+"""
+
+
+def _sweep_and_export(workspace: Path) -> tuple[Path, Config]:
+    """Run a real sweep through the config path and return the file it wrote, and the winner."""
+    from contextgrid.config.loader import load, run, write_report
+
+    (workspace / "experiment.yaml").write_text(RERUNNABLE)
+    config = load(workspace / "experiment.yaml")
+    results = run(config)
+    write_report(config, results)
+
+    winner = results.best("recall@3")
+    assert winner is not None
+    return workspace / "out" / "winning-config.yaml", winner.config
+
+
+def test_the_winning_config_can_be_run_again(workspace: Path) -> None:
+    """The whole promise of the file, as an assertion.
+
+    Three places in the documentation call `winning-config.yaml` re-runnable. It was a flat
+    block of pipeline fields with no `corpus:` and no `grid:` wrapper, so handing it back to
+    `contextgrid run` failed on the first key it read.
+    """
+    from contextgrid.config.loader import load
+
+    written, winner = _sweep_and_export(workspace)
+
+    again = load(written)
+    again.validate_paths()
+
+    rebuilt = again.grid.to_matrix(again.run.k).expand(again.run.mode)
+    assert [config.label for config in rebuilt] == [winner.label]
+    assert rebuilt[0] == winner
+
+
+def test_the_winning_config_points_at_the_corpus_with_an_absolute_path(workspace: Path) -> None:
+    """It lands in `report.out/`, a directory below the one the original config lived in, and
+    paths resolve against the config file's own directory -- so a copied relative path would
+    quietly resolve somewhere else."""
+    from contextgrid.config.loader import load
+
+    written, _ = _sweep_and_export(workspace)
+
+    text = written.read_text()
+    assert "/docs" in text  # not "./docs", which would resolve against out/
+    again = load(written)
+    assert again.corpus == (workspace / "docs").resolve()
+    assert again.evalset == (workspace / "evalset.jsonl").resolve()
+
+
+def test_the_winning_config_keeps_the_provenance_header(workspace: Path) -> None:
+    """Which run produced this is the first thing anybody asks of a config in a repository."""
+    written, _ = _sweep_and_export(workspace)
+    text = written.read_text()
+    assert "# manifest: " in text
+    assert "# corpus:   " in text
+
+
+def test_the_winning_config_does_not_ask_for_a_report(workspace: Path) -> None:
+    """It sits inside the previous run's report directory. Inheriting `report.out` would have
+    a re-run overwrite the report, the results and this very file."""
+    written, _ = _sweep_and_export(workspace)
+    from contextgrid.config.loader import load
+
+    assert load(written).report.out is None
+
+
+def test_every_pipeline_field_has_a_home_in_the_written_config() -> None:
+    """Fails the day a field is added to `Config` that the export would silently drop.
+
+    `k` is the one field that is not an axis -- it lives in `run:` -- and `candidates`, which
+    reads like its twin, is an axis. Getting that split wrong writes a file that either loses a
+    setting or is rejected as a typo.
+    """
+    from dataclasses import fields
+
+    from contextgrid.grid.matrix import AXIS_ORDER
+
+    homeless = [f.name for f in fields(Config) if f.name not in AXIS_ORDER and f.name != "k"]
+    assert homeless == []
+
+
 def test_the_terminal_leaderboard_lines_up(results) -> None:  # type: ignore[no-untyped-def]
     text = format_leaderboard(results, "recall@3")
     lines = text.splitlines()
@@ -424,10 +528,38 @@ def test_plugins_lists_a_family(capsys: pytest.CaptureFixture[str]) -> None:
     assert "parsers:" not in output
 
 
+def test_an_unknown_plugin_family_is_an_error_that_names_the_real_ones(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """It printed nothing and exited 0, which reads as an installation with no such plugins.
+    The headings are plural and the flag is singular, so `--family chunkers` -- the word
+    printed one line above -- was the easiest way to hit it."""
+    assert main(["plugins", "--family", "chunkers"]) == 1
+    error = capsys.readouterr().err
+    assert "unknown plugin family 'chunkers'" in error
+    assert "chunker" in error
+    assert "tokenizer" in error
+
+
 def test_evalset_reports_what_the_set_can_support(
     workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["evalset", str(workspace / "evalset.jsonl")]) == 0
+    assert "detects differences of" in capsys.readouterr().out
+
+
+def test_evalset_reads_the_csv_a_domain_expert_hands_you(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A config's `evalset:` has always taken either format. This command took only JSONL and
+    failed a CSV with a JSON parse error about line 1, which says nothing about formats."""
+    questions = tmp_path / "questions.csv"
+    questions.write_text(
+        "question,document,evidence\nHow much notice is needed?,contract.md,thirty days\n",
+        encoding="utf-8",
+    )
+
+    assert main(["evalset", str(questions)]) == 0
     assert "detects differences of" in capsys.readouterr().out
 
 
@@ -456,6 +588,31 @@ def test_sweep_runs_and_writes_a_bundle(
     assert code == 0
     assert "scored best" in capsys.readouterr().out
     assert (workspace / "bundle" / "report.md").exists()
+
+
+def test_run_says_the_budget_stopped_it_rather_than_printing_an_empty_table(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`budget_usd: 0.0` is documented as "already spent -- nothing runs, and the report says
+    why rather than showing an empty leaderboard as if the matrix had been covered". It said
+    why on stderr only, so stdout -- the report most people read, and the one that gets piped
+    to a file -- carried "no results" and nothing else."""
+    config = workspace / "budget.yaml"
+    config.write_text(
+        "corpus: ./docs\n"
+        "evalset: ./evalset.jsonl\n"
+        "grid:\n"
+        "  chunker: [sentence:1, 'fixed:20,overlap=0']\n"
+        "run:\n"
+        "  budget_usd: 0.0\n",
+        encoding="utf-8",
+    )
+
+    assert main(["run", str(config), "--quiet"]) == 1
+    captured = capsys.readouterr()
+    assert "none of the 2 configurations ran" in captured.out
+    assert "$0.00 budget ran out" in captured.out
+    assert "no configurations were run" in captured.err
 
 
 def test_diff_compares_two_manifests(

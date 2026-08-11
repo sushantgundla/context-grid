@@ -14,6 +14,7 @@ from contextgrid.report.export import (
     format_leaderboard,
     results_to_json,
     results_to_markdown,
+    winning_config_to_yaml,
     write_bundle,
 )
 from contextgrid.report.manifest import (
@@ -42,5 +43,6 @@ __all__ = [
     "harmonic_mean",
     "results_to_json",
     "results_to_markdown",
+    "winning_config_to_yaml",
     "write_bundle",
 ]

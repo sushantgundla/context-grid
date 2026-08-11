@@ -169,9 +169,9 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
 
     from contextgrid.report.export import (
         config_to_python,
-        config_to_yaml,
         results_to_json,
         results_to_markdown,
+        winning_config_to_yaml,
     )
     from contextgrid.report.manifest import build_manifest
 
@@ -203,7 +203,11 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
         "json": ("results.json", lambda: results_to_json(results, manifest=manifest)),
         "yaml": (
             "winning-config.yaml",
-            lambda: config_to_yaml(winner.config, manifest=manifest) if winner else "",
+            # `config` -- the experiment this sweep came from -- is what makes the written file
+            # runnable rather than a listing: it is the only thing here that knows the corpus.
+            lambda: (
+                winning_config_to_yaml(winner.config, config, manifest=manifest) if winner else ""
+            ),
         ),
         "python": (
             "use_winning_config.py",

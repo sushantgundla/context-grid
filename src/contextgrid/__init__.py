@@ -119,6 +119,7 @@ from contextgrid.report import (
     format_leaderboard,
     results_to_json,
     results_to_markdown,
+    winning_config_to_yaml,
     write_bundle,
 )
 from contextgrid.rerank import RERANKERS, Reranker, get_reranker
@@ -332,6 +333,7 @@ __all__ = [
     "tokens_sent",
     "total_length",
     "validate",
+    "winning_config_to_yaml",
     "write_bundle",
     "write_csv",
     "write_jsonl",

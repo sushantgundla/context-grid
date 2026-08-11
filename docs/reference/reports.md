@@ -139,7 +139,7 @@ Set via `report.formats` in the config (`ReportConfig.VALID_FORMATS` in
 |---|---|---|
 | `markdown` | `results_to_markdown()` | A one-page report to paste into a team decision doc. |
 | `json` | `results_to_json()` | Every configuration, every metric, every per-question score — for a sceptic to re-run the statistics themselves. |
-| `yaml` | `config_to_yaml()` | The winning config, hand-written YAML (the core has no YAML-writing dependency, on purpose — see the core's dependency-free design in [install.md](install.md)). |
+| `yaml` | `winning_config_to_yaml()` | The winning config as a complete experiment file you can hand straight back to `contextgrid run`. Hand-written YAML (the core has no YAML-writing dependency, on purpose — see the core's dependency-free design in [install.md](install.md)). |
 | `python` | `config_to_python()` | The winning config as runnable Python — not a template, it actually executes. |
 
 ### `markdown` — `results_to_markdown()`
@@ -195,7 +195,10 @@ Same data, structured for re-analysis rather than reading — includes `per_quer
 question's score, for re-running the statistics), `by_type`, `failures`, and the full
 manifest if one is passed. `_run_payload()` in `export.py` is the per-run shape.
 
-### `yaml` — `config_to_yaml()`
+### `yaml` — `winning_config_to_yaml()`
+
+`winning-config.yaml` is a complete, runnable experiment file, not a listing of fields.
+`contextgrid run out/winning-config.yaml` re-runs the winner on its own.
 
 ```yaml
 # context-grid configuration
@@ -204,23 +207,60 @@ manifest if one is passed. `_run_payload()` in `export.py` is the per-run shape.
 # corpus:   deadbeefdead (12 files)
 # evalset:  support-tickets v3
 #
+# Re-run this file directly:  contextgrid run winning-config.yaml
+#
 
-ingestion: null
-parser: markdown
-chunker: "structural:800"
-embedder: tfidf
-index: dense
-transform: null
-retrieval: null
-reranker: null
-k: 10
-candidates: 50
+name: support-tickets
+
+corpus: /home/you/support/documents
+evalset: /home/you/support/questions.jsonl
+
+# One value per axis: this file names a single configuration, not a sweep.
+grid:
+  ingestion: null
+  parser: markdown
+  chunker: "structural:800"
+  embedder: tfidf
+  index: dense
+  transform: null
+  retrieval: null
+  reranker: null
+  candidates: 50
+  generator: null
+
+run:
+  mode: ofat
+  k: 10
+  headline: "recall@5"
+  seed: 0
+  resolution_policy: coverage
+  resolution_threshold: 0.5
+  machine_usd_per_hour: 0.0
+  cache: memory
+  model: null
 ```
+
+Four things about that shape are deliberate:
+
+- **`corpus:` and `evalset:` are absolute.** The file is written into `report.out/`, normally a
+  subdirectory of wherever the original config lived, and paths resolve against the config
+  file's own directory. A relative path copied across would quietly point somewhere else.
+- **Every axis takes a single value, not a list.** This file names one configuration.
+- **`k` is in `run:` while `candidates` is an axis in `grid:`.** They read like a pair and the
+  schema does not treat them as one.
+- **There is no `report:` section.** The file usually sits inside the previous run's report
+  directory; inheriting `report.out` would have a re-run overwrite the report, the results and
+  this very file. Budgets are left out for the same kind of reason — `budget_seconds` and
+  `budget_usd` exist to cut a sweep short, and there is only one configuration here.
 
 Hand-written (`_yaml_value()`), not via a YAML library — the core installs with only `numpy`
 and `pyyaml` (and `pyyaml` is for *reading* configs, not for this). Quoting kicks in whenever
 a value contains YAML-special characters (note `"structural:800"` gets quoted because of the
 `:`, while plain `markdown` doesn't).
+
+`config_to_yaml()` still exists beside it and writes the flat block of pipeline fields on its
+own — a record of what a `Config` held, with no corpus and nothing to run. It is what
+`write_bundle()` falls back to when nobody tells it where the documents are.
 
 ### `python` — `config_to_python()`
 
@@ -267,7 +307,8 @@ from pathlib import Path
 
 
 def write_bundle(
-    results, directory, *, metric="recall@5", manifest=None, name=None
+    results, directory, *, metric="recall@5", manifest=None, name=None,
+    corpus=None, evalset=None,
 ) -> list[Path]: ...
 ```
 
@@ -275,6 +316,12 @@ Writes `report.md`, `results.json`, and — if there's a winner — `winning-con
 `use_winning_config.py`, plus `manifest.json` if a manifest was passed. This is what
 `contextgrid sweep --bundle ./out` calls after a real sweep (`_sweep()` in
 `src/contextgrid/cli/__main__.py`), printing `wrote N files to ./out` when it's done.
+
+Pass `corpus` — the documents the sweep ran over — and `winning-config.yaml` comes out as the
+runnable config described above; pass `evalset` too and the re-run can be scored as well as
+executed. Without `corpus` there is no path to write, so the file falls back to
+`config_to_yaml()`'s flat listing. `contextgrid run` never hits that fallback: it goes through
+`write_report()` in `src/contextgrid/config/loader.py`, which always has the experiment.
 
 **A sceptic should be able to re-derive every number in the report from the bundle without
 asking for anything else** — that's the design constraint behind writing all of these

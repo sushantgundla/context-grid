@@ -15,6 +15,7 @@ from collections.abc import Sequence
 
 import pytest
 
+from contextgrid.evalset.llm import LLMError
 from contextgrid.index.base import Scored
 from contextgrid.retrieve import RETRIEVERS, AgenticRetrieval, RetrievalTrace, get_retriever
 from contextgrid.retrieve.agentic import _parse_queries
@@ -284,7 +285,84 @@ def test_a_sweep_with_no_limit_says_the_bill_is_unknowable() -> None:
     ],
 )
 def test_it_is_reachable_from_one_config_line(spec: str) -> None:
-    assert get_retriever(spec).name == "agentic"
+    assert get_retriever(spec, ScriptedPlanner()).name == "agentic"
+
+
+# ---------------------------------------------------------------------------
+# no model, no run
+# ---------------------------------------------------------------------------
+
+
+def test_no_model_is_refused_rather_than_paid_for() -> None:
+    """The bug this test exists for: with no `run.model`, `AgenticRetrieval` built its own
+    `openai:gpt-4o-mini` client against whatever key was in the environment. Those calls never
+    reached the runner, so the configuration was costed at 0.0 and `budget_usd` could not stop
+    it -- a sweep that finished, reported a cost of zero, and read as a measurement.
+
+    Refusing matches `hyde` and the `llm` generator, which have never been buildable without
+    one."""
+    with pytest.raises(LLMError) as raised:
+        get_retriever("agentic")
+
+    message = str(raised.value)
+    assert "run.model" in message  # the config key, not an internal function name
+    # And the way out, so the error can be acted on without reading the source.
+    assert "simple" in message
+    assert "decomposed" in message
+
+
+def test_the_refusal_never_names_an_internal_function() -> None:
+    """`get_retriever` is not something a config-file user can call, so naming it in the error
+    tells them nothing they can act on."""
+    with pytest.raises(LLMError) as raised:
+        get_retriever("agentic")
+    assert "get_retriever" not in str(raised.value)
+
+
+def test_a_model_free_strategy_still_needs_no_model() -> None:
+    """Only the model-backed strategies refuse. `get_retriever(spec)` with no model is how
+    most of the test suite builds this axis."""
+    for spec in ("simple", "widened", "decomposed", "relevance-feedback"):
+        assert get_retriever(spec).name == spec
+
+
+def test_a_model_makes_it_work_again() -> None:
+    """The other half of the refusal: given a model, the strategy runs and uses *that* model,
+    with no real API call anywhere."""
+    planner = ScriptedPlanner('["refund window"]')
+    index = FakeIndex()
+    strategy = get_retriever("agentic", planner)
+
+    trace = RetrievalTrace()
+    found = strategy.retrieve("can I get money back?", [], index, 5, trace)
+
+    assert found
+    assert index.queries == ["refund window"]
+    assert planner.prompts  # the injected model was the one asked, not a built-in default
+    assert trace.model_calls == 1  # and it was counted, so `budget_usd` can see it
+
+
+def test_the_configured_model_beats_anything_in_the_spec() -> None:
+    """`run.model` is the one model a sweep is costed against, so it has to be the one used."""
+    planner = ScriptedPlanner('["planned"]')
+    index = FakeIndex()
+
+    get_retriever("agentic:some-other-model", planner).retrieve(
+        "q", [], index, 5, RetrievalTrace()
+    )
+
+    assert index.queries == ["planned"]
+
+
+def test_a_strategy_built_by_hand_refuses_too() -> None:
+    """The backstop. `get_retriever` catches the config path, but nothing stopped a strategy
+    constructed directly from reaching for a default model of its own."""
+    with pytest.raises(LLMError, match=r"run\.model"):
+        AgenticRetrieval().planner()
+
+
+def test_there_is_no_default_model_to_fall_back_to() -> None:
+    assert AgenticRetrieval().model is None
 
 
 def test_it_is_registered_and_documented() -> None:

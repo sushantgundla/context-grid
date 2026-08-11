@@ -577,3 +577,26 @@ def test_spending_is_charged_per_configuration() -> None:
 
     assert budget.spent_usd == pytest.approx(200.30)
     assert budget.exceeded() is not None
+
+
+@pytest.mark.parametrize(
+    ("limit", "named"),
+    [({"budget_usd": 0.0}, "$0.00"), ({"budget_seconds": 0.0}, "0s")],
+)
+def test_a_budget_too_small_for_one_configuration_says_so(
+    corpus: Corpus, evalset: EvalSet, limit: dict[str, float], named: str
+) -> None:
+    """A ceiling nothing fits under said "the leaderboard below is partial" -- of a leaderboard
+    that does not exist. `budget_usd: 0.0` is documented as "already spent", so it is the
+    normal way to reach this, and the warning has to name the limit rather than imply a table
+    was printed."""
+    results = Runner(corpus=corpus).run(
+        matrix(chunker=["sentence:1", "fixed:20,overlap=0"]), evalset, mode="factorial", **limit
+    )
+
+    assert results.runs == []
+    stopped = [w.message for w in results.warnings.of_code(WarningCode.BUDGET_REACHED)]
+    assert len(stopped) == 1
+    assert "none of the 2 configurations ran" in stopped[0]
+    assert named in stopped[0]
+    assert "partial" not in stopped[0]

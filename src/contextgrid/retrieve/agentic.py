@@ -30,7 +30,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from contextgrid.index.base import Scored
-from contextgrid.retrieve.base import Lookup, RetrievalTrace, Searcher, _no_lookup, fuse
+from contextgrid.retrieve.base import (
+    Lookup,
+    RetrievalTrace,
+    Searcher,
+    _no_lookup,
+    fuse,
+    needs_model_error,
+)
 from contextgrid.retrieve.strategies import RetrievalError
 
 if TYPE_CHECKING:
@@ -67,9 +74,15 @@ class AgenticRetrieval:
     `max_queries` caps how many searches one round may produce, because a model asked for
     "the queries" will happily write nine, and nine searches per question across a sweep is
     how an afternoon becomes a week.
+
+    `model` has **no default**, on purpose. It used to be `openai:gpt-4o-mini`, so a strategy
+    that was handed no model quietly built its own client and planned every search with a model
+    nobody had chosen -- against whatever key happened to be in the environment, on calls the
+    runner never saw. The configuration was therefore costed at zero and `budget_usd` could
+    never stop it. Normal use gets its model from `run.model`, injected by `get_retriever`.
     """
 
-    model: str = "openai:gpt-4o-mini"
+    model: str | None = None
     rounds: int = 1
     max_queries: int = 4
     backend: str = "auto"
@@ -96,9 +109,17 @@ class AgenticRetrieval:
     # -- the model -----------------------------------------------------------
 
     def planner(self) -> Any:
-        """The thing that turns a prompt into text. Built once, reused for every query."""
+        """The thing that turns a prompt into text. Built once, reused for every query.
+
+        Refuses rather than falling back to a model of its own choosing -- see `model` above.
+        `get_retriever` raises the same message earlier, before a sweep starts; this is the
+        backstop for a strategy built by hand in Python.
+        """
         if self._llm is not None:
             return self._llm
+
+        if self.model is None:
+            raise needs_model_error(self.name)
 
         built = self._build_agno() if self.backend in {"auto", "agno"} else None
         if built is None:
@@ -121,6 +142,8 @@ class AgenticRetrieval:
         `litellm:text-embedding-3-small` on the embedder axis mean the same provider story --
         one key, one place it comes from.
         """
+        if self.model is None:  # pragma: no cover - `planner` refuses before reaching here
+            return None
         try:
             from agno.agent import Agent
             from agno.models.litellm import LiteLLM

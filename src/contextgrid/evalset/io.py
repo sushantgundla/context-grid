@@ -188,6 +188,30 @@ def write_csv(evalset: EvalSet, path: str | Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# picking between the two hand-written formats
+# ---------------------------------------------------------------------------
+
+
+def read_evalset(path: str | Path) -> EvalSet:
+    """Read a hand-written eval set, whichever of the two formats it is in.
+
+    JSONL and CSV are both documented as "an eval set you can point at", so every entry point
+    that takes one from a person should accept both. The choice was made inline in the config
+    loader and nowhere else, so `evalset: ./questions.csv` in a config worked while
+    `contextgrid evalset questions.csv` failed with a JSON parse error -- the same file, the
+    same package, two answers. This is the one decision, for everything that needs it.
+
+    By extension, not by sniffing the contents: the extension is what the person writing the
+    file chose to call it, and a CSV whose first line happens to parse as JSON is not worth
+    the ambiguity.
+    """
+    source_path = Path(path).expanduser()
+    if source_path.suffix.lower() == ".csv":
+        return read_csv(source_path)
+    return read_jsonl(source_path)
+
+
+# ---------------------------------------------------------------------------
 # BEIR -- the standard IR layout
 # ---------------------------------------------------------------------------
 

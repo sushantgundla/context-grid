@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from contextgrid.core.documents import BlockKind, ParsedDocument
-from contextgrid.corpus.loader import Corpus
+from contextgrid.corpus.loader import Corpus, CorpusError
 
 #: Above this share of characters sitting in tables, table handling dominates everything.
 TABLE_HEAVY = 0.15
@@ -166,6 +166,50 @@ class CorpusFingerprint:
             if self.table_ratio:
                 parts.append(f"{self.table_ratio:.0%} tables")
         return ", ".join(parts)
+
+
+def require_parsed_text(
+    corpus: Corpus,
+    parses: Mapping[str, ParsedDocument] | Sequence[ParsedDocument],
+    *,
+    parser: str,
+) -> None:
+    """Fail here, and say so, when a parser reads no text at all out of a whole corpus.
+
+    A parser pointed at file types it does not handle never announces itself. It declines
+    every file, or accepts them and returns nothing, and an empty corpus travels quietly down
+    the pipeline until something else fails on its own internal invariant. The first thing to
+    notice used to be `TfidfEmbedder`, reporting that it had never been fitted -- true, and
+    completely silent about the parser the user actually chose.
+
+    **Only a total wipeout is an error.** A corpus of ten PDFs and one Markdown file read by
+    a PDF parser should index the ten and warn about the one; erroring there would break
+    sweeps that work. So a single readable document is enough to carry on, and the per-file
+    `PARSER_FALLBACK` warning stays the right report for a partial skip. This is the summary
+    of that warning when it fired on everything, and deliberately borrows its wording.
+
+    Not a check for any particular parser either: it is the empty result that is wrong,
+    whatever produced it. A corpus with no files in it is somebody else's error and passes
+    through untouched.
+    """
+    if not len(corpus):
+        return
+
+    documents = list(parses.values()) if isinstance(parses, Mapping) else list(parses)
+    if any(parsed.text.strip() for parsed in documents):
+        return
+
+    listed = ", ".join(corpus.ids[:3])
+    more = "" if len(corpus) <= 3 else f" and {len(corpus) - 3} more"
+    kinds = ", ".join(sorted({source.media_type.value for source in corpus}))
+    counted = "1 file" if len(corpus) == 1 else f"all {len(corpus)} files"
+    raise CorpusError(
+        f"the {parser!r} parser read no text from {counted} in corpus "
+        f"{corpus.name!r} ({listed}{more}), so none of them are in this index at all and "
+        f"nothing can be retrieved. These files are {kinds}. Usually the parser does not "
+        f"read the file types in this corpus -- check {parser!r} against them -- or the "
+        "files have no text layer and need OCR first."
+    )
 
 
 def fingerprint_sources(corpus: Corpus) -> CorpusFingerprint:

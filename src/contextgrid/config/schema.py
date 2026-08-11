@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from contextgrid.core.errors import ContextGridError
+from contextgrid.core.registry import Registry, UnknownPluginError
 from contextgrid.grid.matrix import AXIS_ORDER, Matrix
 from contextgrid.score.metrics import DEFAULT_KS, available_metrics
 
@@ -53,6 +54,43 @@ def _unknown_key(section: str, key: str, known: Sequence[str]) -> ConfigError:
         f"unknown key {key!r} in the {section!r} section.{hint} "
         f"Known keys: {', '.join(sorted(known))}"
     )
+
+
+def _plugin_axes() -> dict[str, tuple[Registry[Any], tuple[str, ...]]]:
+    """Every axis whose values are plugin names, and where those names come from.
+
+    Imported here rather than at module scope so that reading a config does not import nine
+    subpackages before it has decided the file is even a mapping. Called after `plugins:` has
+    been loaded, so a chunker somebody registered from their own module is a known name like
+    any other.
+
+    The second element is the names that are real but not in the registry. `hyde` and `llm`
+    cannot be registered because they need a model, and a config naming one is correct -- so
+    validating against the registry alone would reject the very arms the docs recommend.
+    """
+    from contextgrid.chunk import CHUNKERS
+    from contextgrid.embed import EMBEDDERS
+    from contextgrid.generate import GENERATORS
+    from contextgrid.generate import MODEL_BACKED as GENERATOR_MODEL_BACKED
+    from contextgrid.index import INDEXES
+    from contextgrid.ingest import INGESTERS
+    from contextgrid.parse import PARSERS
+    from contextgrid.rerank import RERANKERS
+    from contextgrid.retrieve import RETRIEVERS
+    from contextgrid.transform import MODEL_BACKED as TRANSFORM_MODEL_BACKED
+    from contextgrid.transform import TRANSFORMS
+
+    return {
+        "ingestion": (INGESTERS, ()),
+        "parser": (PARSERS, ()),
+        "chunker": (CHUNKERS, ()),
+        "embedder": (EMBEDDERS, ()),
+        "index": (INDEXES, ()),
+        "transform": (TRANSFORMS, TRANSFORM_MODEL_BACKED),
+        "retrieval": (RETRIEVERS, ()),
+        "reranker": (RERANKERS, ()),
+        "generator": (GENERATORS, GENERATOR_MODEL_BACKED),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +118,7 @@ class GridConfig:
             if key not in AXIS_ORDER:
                 raise _unknown_key("grid", key, AXIS_ORDER)
 
-        return cls(
+        grid = cls(
             ingestion=_as_optional_strings(data.get("ingestion", (None,)), "grid.ingestion"),
             parser=_as_strings(data.get("parser", ("markdown",)), "grid.parser"),
             chunker=_as_strings(data.get("chunker", ("recursive:512",)), "grid.chunker"),
@@ -92,6 +130,44 @@ class GridConfig:
             candidates=_as_ints(data.get("candidates", (50,)), "grid.candidates"),
             generator=_as_optional_strings(data.get("generator", (None,)), "grid.generator"),
         )
+        grid.validate_names()
+        return grid
+
+    def validate_names(self) -> None:
+        """Reject a name nothing is registered under, on every axis at once.
+
+        A typo'd axis value used to survive parsing, survive `check`, and surface partway
+        through the sweep -- `chunker: [recursive:512, recursive:256, recursiv:128]` measured
+        two configurations over several minutes and then died on the third, having written
+        nothing. The name is knowable before any of that happens, so it is checked here.
+
+        The *name* only. Not the parameters after the colon, and nothing is built: a name whose
+        extra is not installed is a legitimate config on a laptop that is checking a file it
+        will run somewhere else, and it still fails at run time with its own MissingExtraError
+        saying what to install. Checking a config must not require being able to run it.
+        """
+        problems: list[str] = []
+        for axis, (registry, extra) in _plugin_axes().items():
+            known = {*registry.names(), *extra}
+            for spec in getattr(self, axis):
+                if spec is None:
+                    continue
+                name = registry.name_in(spec)
+                if name not in known:
+                    # The run-time error, verbatim, with the axis in front of it -- one config
+                    # can name eight plugins, and "no chunker named ..." is only obvious about
+                    # which line to look at while `chunker` is the only axis you touched.
+                    problem = UnknownPluginError(registry.family, name, sorted(known))
+                    problems.append(f"grid.{axis}: {problem}")
+
+        if len(problems) == 1:
+            raise ConfigError(problems[0])
+        if problems:
+            # Every one of them, because fixing a typo, re-running, and being told about the
+            # next typo is the same wait repeated -- and `check` already reports its path
+            # problems all at once.
+            joined = "\n".join(f"  {problem}" for problem in problems)
+            raise ConfigError(f"{len(problems)} unknown plugin name(s) in the grid:\n{joined}")
 
     def to_matrix(self, k: int) -> Matrix:
         return Matrix(

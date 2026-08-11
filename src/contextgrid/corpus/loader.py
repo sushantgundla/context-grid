@@ -83,8 +83,11 @@ class Corpus:
         ordered = sorted(set(found))
         if not ordered:
             raise CorpusError(
-                f"no files under {root} matched {list(patterns)}. "
-                "Pass `patterns` if the corpus uses other extensions."
+                f"no files under {root} matched {list(patterns)}."
+                f"{_extensions_present(root, recursive=recursive)} "
+                "Point the corpus at a directory holding files with those extensions, or "
+                "rename the files to one of them. (Widening the list is Python-API only: "
+                "`Corpus.from_dir(path, patterns=[...])`. There is no `patterns:` config key.)"
             )
         if max_files is not None:
             ordered = ordered[:max_files]
@@ -180,6 +183,21 @@ class Corpus:
 
     def __len__(self) -> int:
         return len(self.files)
+
+
+def _extensions_present(root: Path, *, recursive: bool) -> str:
+    """Name the extensions that *are* there, so the mismatch is obvious rather than guessed.
+
+    Error path only, so the extra walk costs nothing anybody waits for. An empty directory
+    and a directory full of `.parquet` are different mistakes and deserve different reading.
+    """
+    glob = "**/*" if recursive else "*"
+    suffixes = sorted({p.suffix for p in root.glob(glob) if p.suffix and _is_candidate(p)})
+    if not suffixes:
+        return " The directory holds no files at all."
+    listed = ", ".join(suffixes[:5])
+    more = "" if len(suffixes) <= 5 else f" and {len(suffixes) - 5} more"
+    return f" It holds {listed}{more}."
 
 
 def _is_candidate(path: Path) -> bool:

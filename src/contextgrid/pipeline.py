@@ -30,6 +30,7 @@ from contextgrid.core.evalset import EvalSet, Qrels
 from contextgrid.core.protocols import Chunker, Parser
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
 from contextgrid.corpus import Corpus
+from contextgrid.corpus.fingerprint import require_parsed_text
 from contextgrid.embed import Embedder, get_embedder
 from contextgrid.evalset.llm import LLM
 from contextgrid.generate import Answer, Generator, get_generator
@@ -372,6 +373,7 @@ def build(
     chunker = get_chunker(config.chunker)
 
     parses = _parse_all(parser, list(corpus), cache, stats, timings, warnings)
+    require_parsed_text(corpus, parses, parser=parser.name)
     chunks = _chunk_all(chunker, parses, cache, stats, timings)
 
     # Ingestion decides what is indexed and what a hit on it returns. For plain chunking the
@@ -421,9 +423,11 @@ def build(
         # raised "needs a model" from a place the user had no way to influence. They were
         # unreachable from the config file, which is the primary interface.
         transform=get_transform(config.transform, llm),
-        # The model goes with it. Without this the agentic strategy built its own client
-        # from its own default, so it ignored `run.model`, spent money nothing could meter,
-        # and made `budget_usd` unenforceable for the one axis that most needs a ceiling.
+        # The model goes with it, and a model-backed strategy with nothing to hand over now
+        # refuses here rather than starting. Without that the agentic strategy built its own
+        # client from its own default, so it ignored `run.model`, spent money nothing could
+        # meter, and made `budget_usd` unenforceable for the one axis that most needs a
+        # ceiling -- the run finished, reported a cost of zero, and looked like a measurement.
         retrieval=get_retriever(config.retrieval, llm),
         # Same story as `transform`: the `llm` generator cannot be built without a model, and
         # `config.generator` is the only way to reach it from a config file.

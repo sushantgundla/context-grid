@@ -1,10 +1,10 @@
 # context-grid
 
 A lab for grounding pipelines. Write one YAML file, sweep **ingestion × parser × chunker ×
-embedder × index × transform × retrieval × reranker × candidates** on your own documents, and
-get back ranked, reproducible results scored on quality, latency and cost.
+embedder × index × transform × retrieval × reranker × candidates × generator** on your own
+documents, and get back ranked, reproducible results scored on quality, latency and cost.
 
-> **Status: v0.9.0, alpha.** All nine axes are shipped and real — see
+> **Status: v0.9.0, alpha.** All ten axes are shipped and real — see
 > [what the numbers actually say](#what-the-numbers-actually-say) below. RAPTOR and GraphRAG
 > are deliberately not built yet (see [docs/roadmap.md](docs/roadmap.md)). Not yet on PyPI —
 > install from source, below.
@@ -44,13 +44,13 @@ contextgrid run contextgrid.yaml
 ```
 
 ```
-contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
+contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
 
 configuration                                         recall@5   p95 ms     $/1k
 ---------------------------------------------------------------------------------
 markdown · recursive:512 · tfidf · dense                 1.000      0.4   0.0000
-markdown · sentence:3 · tfidf · dense                     1.000      0.0   0.0000
-markdown · recursive:512 · bm25                           1.000      0.0   0.0000
+markdown · sentence:3 · tfidf · dense                    1.000      0.0   0.0000
+markdown · recursive:512 · bm25                          1.000      0.0   0.0000
 markdown · recursive:512 · tfidf · hybrid                 1.000      0.0   0.0000
 markdown · recursive:512 · tfidf · dense · lexical@50     1.000      0.0   0.0000
 
@@ -121,7 +121,7 @@ are fake. Point `api_base` at a real server and nothing else changes.) More in
 [docs/dimensions/embedders.md](docs/dimensions/embedders.md) and
 [docs/recipes/local-only.md](docs/recipes/local-only.md).
 
-## The nine axes
+## The ten axes
 
 Every axis takes one value or a list — a list sweeps it, a single value holds it still —
 and a combination that can't run (a dense index with no embedder, say) is counted as
@@ -138,9 +138,14 @@ impossible and skipped rather than attempted.
 | Retrieval | `retrieval` | How the index is used — one search, split, widened, or agentic | [dimensions/retrieval.md](docs/dimensions/retrieval.md) |
 | Reranker | `reranker` | Reordering what came back | [dimensions/rerankers.md](docs/dimensions/rerankers.md) |
 | Candidates | `candidates` | How deep the reranker looks before cutting to `k` — most of a reranker's effect lives here, not in which one you pick | [dimensions/rerankers.md](docs/dimensions/rerankers.md) |
+| Generator | `generator` | Turning the retrieved passages into an answer, or `null` for no generation at all | [dimensions/generation.md](docs/dimensions/generation.md) |
 
-Generation — scoring whether a retrieval gain actually reached the answer — sits downstream of
-the grid rather than on it; see [dimensions/generation.md](docs/dimensions/generation.md).
+Generation is an axis like the rest — `contextgrid init` writes it into `grid:` and
+`contextgrid check` counts it in the product — but it is switched off by default. `null` stops
+the sweep at retrieval, at no extra cost; `extractive` returns the top passage verbatim, and
+`llm` costs a model call per question. Retrieval stays the default view because generation
+noise swamps retrieval signal; see
+[dimensions/generation.md](docs/dimensions/generation.md).
 
 ## The idea that makes it work
 
@@ -182,7 +187,7 @@ stays available for when punishing chunk bloat is the point.
 
 ## What the numbers actually say
 
-Real findings from building the nine axes out, recorded in full in
+Real findings from building the ten axes out, recorded in full in
 [docs/adoption-backlog.md](docs/adoption-backlog.md):
 
 - **`parent-document` scored 0.863 against plain chunking's 0.616** on the demo corpus at
@@ -208,6 +213,7 @@ Real findings from building the nine axes out, recorded in full in
 pip install "context-grid[parse]"      # pymupdf, pdfplumber, pymupdf4llm
 pip install "context-grid[parse-ml]"   # docling, marker — layout models, heavy
 pip install "context-grid[chunk]"      # chonkie, langchain-text-splitters
+pip install "context-grid[embed]"      # tiktoken — exact token counts, for chunking and pricing
 pip install "context-grid[llm]"        # litellm — hosted embedders, rerankers, transforms, judge
 pip install "context-grid[index]"      # faiss-cpu, usearch
 pip install "context-grid[pgvector]"   # psycopg — needs a running Postgres
@@ -215,11 +221,12 @@ pip install "context-grid[agent]"      # agno — the agno parser and agentic re
 pip install "context-grid[judge]"      # deepeval — faithfulness, relevancy, the generation metrics
 ```
 
-There is no `[embed]` and no `[all]` extra, despite what the axis name and old habit might
-suggest — the `litellm` embedder is under `[llm]`, and `tei`/`tei-rerank` need no extra at all
-(they talk plain HTTP to a server you run separately). A missing extra raises an error naming
-the exact install command, never a bare `ImportError`. Full matrix, sizes, and what each one
-unlocks: [docs/reference/install.md](docs/reference/install.md).
+`[embed]` is not what its name suggests: it installs `tiktoken` for exact token counting, not
+an embedding model. The `litellm` embedder is under `[llm]`, and `tei`/`tei-rerank` need no
+extra at all (they talk plain HTTP to a server you run separately). There is no `[all]`. A
+missing extra raises an error naming the exact install command, never a bare `ImportError`.
+Full matrix, sizes, and what each one unlocks:
+[docs/reference/install.md](docs/reference/install.md).
 
 ## Checking it rather than trusting it
 
@@ -250,7 +257,7 @@ docker compose run --rm contextgrid sweep /data/documents /data/evalset.jsonl --
 
 - [docs/guide/](docs/guide/) — install, your first sweep, the full config reference, every CLI
   command, and how to write an eval set
-- [docs/dimensions/](docs/dimensions/) — the nine axes, what each arm actually does, and how to
+- [docs/dimensions/](docs/dimensions/) — the ten axes, what each arm actually does, and how to
   write a spec string
 - [docs/scoring/](docs/scoring/) — spans and anchors, metrics, the significance tests, the
   0–100 composite, failure diagnosis

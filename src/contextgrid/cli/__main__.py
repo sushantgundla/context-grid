@@ -130,10 +130,20 @@ def _run_config(args: argparse.Namespace) -> int:
 
     results = run(config, on_progress=progress)
 
+    # Worked out before anything is printed, so the reasons can appear next to the empty
+    # leaderboard they explain rather than only in the error stream. `budget_usd: 0.0` is
+    # documented as "already spent -- nothing runs, and the report says why rather than
+    # showing an empty leaderboard as if the matrix had been covered", and stdout is the
+    # report most people read. It printed "no results" and "No configurations were run."
+    # with the reason on stderr, so a redirect, a pipe or a scrollback lost it.
+    reasons = _why_nothing_ran(config, results) if not results.runs else []
+
     print()
     print(format_leaderboard(results, config.run.headline, config.report.leaderboard_limit))
     print()
     print(results.summary(config.run.headline))
+    for reason in reasons:
+        print(f"  {reason}")
     print()
     print(f"cache: {results.cache_summary}")
 
@@ -151,7 +161,7 @@ def _run_config(args: argparse.Namespace) -> int:
         # failing there would make `budget_seconds` unusable in CI, which is where it earns its
         # keep. The runner already marks that case CAUTION and says the table is partial.
         print("error: no configurations were run, so nothing was measured", file=sys.stderr)
-        for reason in _why_nothing_ran(config, results):
+        for reason in reasons:
             print(f"error: {reason}", file=sys.stderr)
         return 1
     return 0
@@ -370,7 +380,18 @@ def _sweep(args: argparse.Namespace) -> int:
         manifest = (
             build_manifest(winner.config, lab.corpus, evalset) if winner is not None else None
         )
-        written = write_bundle(results, args.bundle, metric=args.metric, manifest=manifest)
+        # The corpus and eval set the sweep actually ran over, so `winning-config.yaml` in the
+        # bundle is a config you can hand straight back to `contextgrid run`. Without them
+        # `write_bundle` falls back to a flat listing of pipeline fields -- a record of what ran,
+        # not something that can re-run it, which is the whole point of writing a bundle.
+        written = write_bundle(
+            results,
+            args.bundle,
+            metric=args.metric,
+            manifest=manifest,
+            corpus=args.corpus,
+            evalset=args.evalset,
+        )
         print(f"\nwrote {len(written)} files to {args.bundle}")
 
     return 0
@@ -398,6 +419,19 @@ def _plugins(args: argparse.Namespace) -> int:
         "tokenizer": TOKENIZERS,
     }
 
+    # A family nobody registered printed nothing and exited 0, which reads as "this
+    # installation has no such plugins" rather than "you typed a name this flag does not
+    # know". The headings are plural and the flag is singular, so `--family chunkers` -- the
+    # word printed one line above -- was the easiest possible way to hit it.
+    #
+    # Checked here rather than with argparse `choices=`, because filling those in means
+    # importing all six registries to parse *any* command line, and `contextgrid --version`
+    # is deliberately a cheap import.
+    if args.family is not None and args.family not in families:
+        raise ValueError(
+            f"unknown plugin family {args.family!r}. Valid families: {', '.join(families)}"
+        )
+
     for name, registry in families.items():
         if args.family and args.family != name:
             continue
@@ -412,9 +446,14 @@ def _plugins(args: argparse.Namespace) -> int:
 
 
 def _evalset(args: argparse.Namespace) -> int:
-    from contextgrid.evalset import assess, read_jsonl, type_distribution
+    from contextgrid.evalset import assess, type_distribution
+    from contextgrid.evalset.io import read_evalset
 
-    evalset = read_jsonl(args.path)
+    # `read_evalset`, not `read_jsonl`: a config's `evalset:` has always accepted either
+    # format, and CSV is the one a subject-matter expert actually hands you -- so the command
+    # for looking at a set they just handed you was the only place that refused it, with a
+    # JSON parse error about line 1 rather than anything about formats.
+    evalset = read_evalset(args.path)
     quality = assess(evalset)
 
     print(f"{evalset.id} v{evalset.version} ({evalset.source})")

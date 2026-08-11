@@ -231,6 +231,16 @@ class Registry(Generic[T]):
         name, _, tail = candidate.partition(":")
         return name.strip(), tail
 
+    def name_in(self, spec: str) -> str:
+        """The plugin name a spec string asks for, without checking anything is registered.
+
+        For validating a name on its own -- which is what a config file can be checked for on a
+        machine that cannot run the sweep. `create` and `parse_spec` both go further than that:
+        they read the parameters too, and a parameter is only meaningful to the plugin that
+        takes it, which may need an extra that is not installed.
+        """
+        return self._split_name(spec)[0]
+
     def names(self) -> list[str]:
         return sorted(self._entries)
 

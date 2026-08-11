@@ -323,7 +323,7 @@ def get_transform(spec: str | QueryTransform | None, llm: LLM | None = None) -> 
 
     if llm is None:
         raise LLMError(
-            f"the {name!r} transform needs a model. Pass one to `get_transform`, or use "
+            f"the {name!r} transform needs a model. Set `run.model` in your config, or use "
             f"one of the model-free transforms: {', '.join(TRANSFORMS.names())}"
         )
 

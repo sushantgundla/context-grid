@@ -70,8 +70,8 @@ def get_generator(spec: str | Generator | None, llm: LLM | None = None) -> Gener
 
     if llm is None:
         raise LLMError(
-            f"the {name!r} generator needs a model. Pass one to `get_generator`, or use one "
-            f"of the model-free generators: {', '.join(GENERATORS.names())}"
+            f"the {name!r} generator needs a model. Set `run.model` in your config, or use "
+            f"one of the model-free generators: {', '.join(GENERATORS.names())}"
         )
 
     builders: dict[str, Callable[[], Generator]] = {"llm": lambda: LLMGenerator(llm=llm)}

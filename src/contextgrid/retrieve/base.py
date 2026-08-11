@@ -35,7 +35,26 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from contextgrid.core.documents import Chunk
+from contextgrid.evalset.llm import LLMError
 from contextgrid.index.base import Scored
+
+
+def needs_model_error(name: str) -> LLMError:
+    """The one message a model-backed strategy raises when it was handed no model.
+
+    Built in one place so `get_retriever` and the strategy itself cannot drift apart, and so
+    the list of alternatives is read off the registry rather than typed out twice.
+
+    It names `run.model` rather than `get_retriever`, because a config file is how almost
+    everybody reaches this axis and an error naming a Python function they never call is an
+    error they cannot act on.
+    """
+    from contextgrid.retrieve import model_free_retrievers
+
+    return LLMError(
+        f"the {name!r} retrieval strategy needs a model. Set `run.model` in your config, or "
+        f"use one of the model-free strategies: {', '.join(model_free_retrievers())}"
+    )
 
 #: Runs one search. Given the query text and how many results to return, hands back a ranked
 #: list. The strategy neither knows nor cares whether that was BM25, HNSW or Postgres.
@@ -117,8 +136,9 @@ class RetrievalStrategy(Protocol):
         stops it.
 
         Also read by `get_retriever`, which hands such a strategy the configured model rather
-        than letting it build its own. A strategy that builds its own ignores `run.model` and
-        spends money nothing can meter.
+        than letting it build its own, and **refuses outright** when there is no model to hand
+        over. A strategy that builds its own ignores `run.model` and spends money nothing can
+        meter, so the configuration is costed at zero and `budget_usd` cannot stop it.
         """
         ...
 

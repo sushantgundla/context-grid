@@ -108,9 +108,17 @@ config possible: naming one axis sweeps it and holds everything else still.
 | `retrieval` | string or list | `null` | yes | How the index is used, as opposed to what it is. `null`/`simple` is one search; others widen the net, split the question, or go agentic. |
 | `reranker` | string or list | `null` | yes | Reordering what came back. `null` means no reranking. |
 | `candidates` | int or list | `50` | no | How deep the reranker gets to look before cutting to `k`. Most of a reranker's effect lives here, not in which reranker you pick. |
+| `generator` | string or list | `null` | yes | Turning the retrieved passages into an answer. `null` — the default — means no generation at all: the sweep stops at retrieval, at no extra cost. `extractive` returns the top passage verbatim; `llm` writes an answer and needs `run.model`, at a model call per question. See [generation.md](../dimensions/generation.md). |
 
-`contextgrid plugins` lists every value actually installed for each axis; `contextgrid init`
-writes a config listing only those.
+`null` on this axis is unlike `null` on the others: `transform: null` and `reranker: null`
+still build a do-nothing plugin, whereas `generator: null` switches the stage off entirely —
+there is nothing for generation to be the identity of.
+
+`contextgrid plugins` lists what's installed for six of the plugin families — parsers,
+chunkers, embedders, indexes, rerankers and tokenizers. It does not cover `ingestion`,
+`transform`, `retrieval` or `generator`; for every axis, including those four, see the
+[plugin catalogue](../reference/plugins.md). `contextgrid init` writes a config listing only
+the values this installation can actually run, on every axis.
 
 **A combination that can't run is skipped, not attempted.** `index: dense` swept against
 `embedder: null` (dense search needs vectors) is counted as an "impossible combination" in
