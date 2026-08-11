@@ -288,18 +288,32 @@ indexing the document itself: worse at matching, still findable. Spec: `summary`
 
 Measured on this package's demo corpus at 96-token chunks:
 
-| ingestion | recall |
+| ingestion | recall@5 |
 |---|---|
-| `parent-document` | **0.863** |
-| `sentence-window` | 0.825 |
-| `plain` | 0.616 |
-| `hierarchical` | 0.575 |
+| `parent-document:4` | **0.884** |
+| `sentence-window:2` | 0.863 |
+| `plain` | 0.658 |
+| `hierarchical:4` | 0.603 |
 
-`parent-document` beats `plain` by **+0.247** for zero model calls — the clearest result on this
-axis, and the reason it is worth reaching for before any paid strategy. `hierarchical` lands
-*below* plain, which looks like a defect and isn't one: merging spends some of its result slots
-on wider passages instead of more distinct hits, a real property of the strategy rather than a
-bug in it. (See the presentation/scored split above for the bug that *was* real, and the recall
+Reproduce them with `examples/lab_demo.py`'s `markdown_corpus()` and `build_evalset()` at
+`chunker: recursive:96`, `embedder: tfidf`, `index: dense` — the numbers above are that run.
+An earlier version of this table quoted `sentence-window` at 0.825 from a build where its
+overlapping windows were in the scored set, which inflated the denominator; the arm now scores
+against the same units as everything else and `char_recall@5` agrees with `recall@5` on every
+row, which is the check that the two are measuring the same retrieval.
+
+`parent-document` beats `plain` by **+0.226** for zero model calls — the clearest result on this
+axis, and the reason it is worth reaching for before any paid strategy. `sentence-window` lands
+within noise of it. `hierarchical` lands *below* plain, which looks like a defect and isn't one:
+merging spends some of its result slots on wider passages instead of more distinct hits, a real
+property of the strategy rather than a bug in it.
+
+The same property shows up as a much larger penalty at tight cut-offs. Any strategy that hands
+back a passage covering several units expands into several scored ids, and a cut-off counts
+ids — so `recall@1` on `sentence-window` asks whether the single first *unit* was gold, when
+what the user received was a whole window. Compare these strategies at the `k` you actually
+intend to serve, and read `char_recall` beside `recall`: when they agree, the two are measuring
+the same retrieval. (See the presentation/scored split above for the bug that *was* real, and the recall
 numbers it was hiding before it was fixed.)
 
 ## Not built

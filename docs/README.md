@@ -61,7 +61,7 @@ like `recursive:512` is written and parsed, and the three ways to walk the resul
 
 | Page | Axis |
 |---|---|
-| [dimensions/README.md](dimensions/README.md) | The axis model itself: all nine axes, spec strings, sweep modes, redundant-combination dropping. |
+| [dimensions/README.md](dimensions/README.md) | The axis model itself: all ten axes, spec strings, sweep modes, redundant-combination dropping. |
 | [dimensions/ingestion.md](dimensions/ingestion.md) | What gets indexed vs. what a hit on it returns — parent-document, hierarchical, contextual, and friends. |
 | [dimensions/parsers.md](dimensions/parsers.md) | How raw bytes become text and structure. |
 | [dimensions/chunkers.md](dimensions/chunkers.md) | How that text is cut into retrievable units. |

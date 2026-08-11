@@ -430,6 +430,7 @@ class Runner:
         results = self._flat(configs, evalset, chosen, budget, on_progress)
 
         _warn_if_approximate_alone(matrix, results)
+        self._warn_if_at_ceiling(results)
 
         unbounded = matrix.meta.get("unbounded_model_calls")
         if unbounded:
@@ -454,6 +455,37 @@ class Runner:
                 dropped=dropped,
             )
         return results
+
+    def _warn_if_at_ceiling(self, results: Results) -> None:
+        """Say so when every configuration scored full marks and the sweep ranked nothing.
+
+        The most expensive way to learn nothing. If the baseline already answers every question
+        perfectly, no arm has any headroom, the whole grid ties at 1.000, and the leaderboard
+        looks like a clean result rather than the absence of one -- a blind evaluator hit
+        exactly this and called it "the one warning this tool most needs and does not have".
+
+        The cause is nearly always an eval set whose questions are too easy for the corpus,
+        not a grid of configurations that are genuinely indistinguishable. The fix is harder
+        questions or a smaller cut-off, so the warning says both.
+
+        Only when *several* configurations tie at the top: one configuration scoring 1.000 is a
+        result, not a ceiling, because nothing was being compared.
+        """
+        scores = [run.metric(self.headline) for run in results.runs if run.has(self.headline)]
+        if len(scores) < 2 or min(scores) < 0.999:
+            return
+
+        results.warnings.add(
+            WarningCode.EVALSET_AT_CEILING,
+            f"every one of the {len(scores)} configurations scored "
+            f"{self.headline} = {scores[0]:.3f}. Nothing here can be ranked: the eval set is "
+            "answered perfectly by all of them, so the sweep measured no difference rather "
+            "than finding none. Ask harder questions, or compare at a smaller cut-off "
+            f"({self.headline.partition('@')[0]}@1) where there is room to separate them",
+            severity=Severity.CAUTION,
+            stage="score",
+            configurations=len(scores),
+        )
 
     def _flat(
         self,

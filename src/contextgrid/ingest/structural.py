@@ -140,7 +140,27 @@ class SentenceWindowIngestion:
                 # prompted it: 4.03 relevant units per question against 1.86.
                 retrievable.append(chunk)
                 parent_of[chunk.id] = window.id
-                covers[window.id] = [chunk.id]
+                # Every chunk the window covers, not just the one it is centred on -- the same
+                # rule `hierarchical` follows for a parent and its children. A window is
+                # returned in full, so it has genuinely found everything inside it.
+                #
+                # Crediting the centre alone was the first attempt at this fix and it was
+                # worse than the bug: a window pulled in because its centre matched often
+                # holds the gold in a *neighbour*, so the returned text answered the question
+                # and scoring called it a miss. On the demo corpus that put `sentence-window`
+                # at 0.301 against plain chunking's 0.658 -- a strategy that returns strictly
+                # more text cannot retrieve strictly less, and a number saying it does is
+                # measuring the scoring rule rather than the strategy.
+                # Centre first, then the neighbours it dragged in. Order matters because a
+                # returned window expands into several scored units, and a cut-off counts
+                # units: `recall@1` looks at the first one. The centre is the chunk that
+                # actually matched -- it is the reason this window ranked at all -- so putting
+                # a neighbour ahead of it scores the arm on a passage it retrieved by
+                # accident. In document order the centre sits second or third, and
+                # `sentence-window` fell to 0.029 at `recall@1` against plain chunking's
+                # 0.765 while returning strictly more text.
+                neighbours = [n.id for n in group[low:high] if n.id != chunk.id]
+                covers[window.id] = [chunk.id, *neighbours]
                 presented[window.id] = window
 
         return Ingested(

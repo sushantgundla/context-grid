@@ -86,6 +86,7 @@ Every code below comes from [`spans-and-anchors.md`](spans-and-anchors.md) or
 | `ANCHOR_AMBIGUOUS` | `AnchorResolver` | `CAUTION` | The quote appears more than once; `occurrence` was left at its default of `0`. |
 | `NO_PARSE_FOR_SOURCE` | `AnchorResolver.resolve_item` | `CAUTION` | An anchor's `source_id` has no matching parse, so its evidence can't be located. |
 | `SMALL_EVAL_SET` | eval-set generation and quality checks | varies | The eval set (or a slice of it, e.g. one question type) is too small for its numbers to be trustworthy. |
+| `EVALSET_AT_CEILING` | scoring, after a sweep | caution | Every configuration scored full marks on the headline metric, so the sweep ranked nothing. Usually means the questions are too easy for the corpus rather than that the configurations are equivalent — ask harder questions, or compare at a smaller cut-off where there is room to separate them. Only raised when two or more configurations tie at the top: one configuration at 1.000 is a result, not a ceiling. |
 | `METRIC_FAILED` | `evaluate()` (`score/metrics.py`) | `CAUTION` | A metric raised while scoring this run -- built-in or a registered custom one -- and was left out of `RunResult.metrics` entirely rather than scored as `0.0`. Check `RunResult.has(name)` before reading a metric that could be missing. See [metrics.md](metrics.md#metrics-are-a-plugin-family). |
 
 ### Codes from the rest of the pipeline

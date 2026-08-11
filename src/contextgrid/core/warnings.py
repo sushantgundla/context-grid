@@ -56,6 +56,10 @@ class WarningCode(str, Enum):
     APPROXIMATE_RESOLUTION = "approximate_resolution"
     SMALL_EVAL_SET = "small_eval_set"
     METRIC_FAILED = "metric_failed"
+    #: Every configuration scored the same, at the top of the scale. The sweep ran, cost money
+    #: and ranked nothing -- and a leaderboard of identical perfect scores looks like a result
+    #: rather than the absence of one.
+    EVALSET_AT_CEILING = "evalset_at_ceiling"
 
     # -- anchoring ground truth to a parse -----------------------------------
     ANCHOR_NOT_FOUND = "anchor_not_found"

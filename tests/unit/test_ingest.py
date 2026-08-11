@@ -549,12 +549,25 @@ def test_overlapping_windows_do_not_inflate_the_denominator() -> None:
     assert len(ingested.retrievable) == len(chunks)
     assert {chunk.id for chunk in ingested.retrievable} == {chunk.id for chunk in chunks}
 
-    # Every window is a presentation passage that counts as exactly the one chunk it centres
-    # on, so returning more context never changes what retrieval is credited with finding.
+    # Every window is a presentation passage covering the chunks inside it, centre first.
+    #
+    # Centre first is not cosmetic: a returned window expands into several scored units and a
+    # cut-off counts units, so `recall@1` looks at the first one. The centre is the chunk that
+    # matched and the reason the window ranked at all. In document order it sits second or
+    # third, and `sentence-window` fell to 0.029 at `recall@1` against plain chunking's 0.765
+    # while returning strictly more text.
+    #
+    # Crediting the centre *alone* was the first attempt and was worse than the original bug:
+    # a window pulled in by its centre often holds the gold in a neighbour, so the returned
+    # text answered the question and scoring called it a miss -- 0.301 against plain's 0.658
+    # on the demo corpus.
     for chunk in chunks:
         window_id = ingested.resolve(chunk.id)
         assert window_id in ingested.presented_chunks
-        assert ingested.scored_ids(window_id) == [chunk.id]
+        scored = ingested.scored_ids(window_id)
+        assert scored[0] == chunk.id, "the chunk that matched must be credited first"
+        assert set(scored) <= {c.id for c in chunks}
+        assert len(scored) == len(set(scored))
 
 
 def test_a_window_still_returns_more_text_than_the_chunk_it_scores() -> None:
