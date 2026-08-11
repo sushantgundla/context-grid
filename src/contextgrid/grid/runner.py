@@ -286,6 +286,10 @@ class Runner:
             run=run,
             per_query=scores,
             answers=answers,
+            retrieval={
+                "searches": pipeline.trace.searches,
+                "model_calls": pipeline.trace.model_calls,
+            },
             by_type=by_type,
             failures=failures,
             seed=self.seed,

@@ -110,9 +110,15 @@ class RetrievalStrategy(Protocol):
     def uses_model(self) -> bool:
         """True when this strategy calls a language model per query.
 
-        Read by the runner, which refuses to start a sweep containing one of these without a
-        spending limit -- a strategy that decides its own number of calls has no upper bound
-        anybody can eyeball.
+        Read by the runner, which warns before starting a sweep containing one of these with
+        no spending limit -- a strategy that decides its own number of calls has no upper bound
+        anybody can eyeball in advance. A warning rather than a refusal, because it is the
+        user's money and they may well mean it; `budget_usd` is the ceiling that actually
+        stops it.
+
+        Also read by `get_retriever`, which hands such a strategy the configured model rather
+        than letting it build its own. A strategy that builds its own ignores `run.model` and
+        spends money nothing can meter.
         """
         ...
 

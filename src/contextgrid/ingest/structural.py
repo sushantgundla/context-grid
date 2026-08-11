@@ -116,6 +116,8 @@ class SentenceWindowIngestion:
         indexed: list[Chunk] = []
         retrievable: list[Chunk] = []
         parent_of: dict[str, str] = {}
+        covers: dict[str, list[str]] = {}
+        presented: dict[str, Chunk] = {}
 
         for group in by_document.values():
             for position, chunk in enumerate(group):
@@ -124,10 +126,30 @@ class SentenceWindowIngestion:
                 window = _merge(group[low:high], suffix=f"window{self.window}")
 
                 indexed.append(chunk)
-                retrievable.append(window)
+                # The chunk is the scored unit, not the window. Windows overlap by design --
+                # that is the entire idea -- and a scored set of overlapping units makes one
+                # piece of gold evidence resolve to every window that contains it. At
+                # `window=2` a quote landed in about four of them, so this arm had four things
+                # to find where plain chunking had one, and was marked down for returning the
+                # answer once: per-question recall of 1/3, 1/4, 2/5 on evidence it had
+                # returned in full, while `char_recall` sat at 1.000 and disagreed with the
+                # headline all the way down the table.
+                #
+                # This is the bug `presentation` exists for. The fix reached `hierarchical`
+                # and never reached here, where overlap made it worse than the case that
+                # prompted it: 4.03 relevant units per question against 1.86.
+                retrievable.append(chunk)
                 parent_of[chunk.id] = window.id
+                covers[window.id] = [chunk.id]
+                presented[window.id] = window
 
-        return Ingested(indexed=indexed, retrievable=retrievable, parent_of=parent_of)
+        return Ingested(
+            indexed=indexed,
+            retrievable=retrievable,
+            parent_of=parent_of,
+            presentation=covers,
+            presented_chunks=presented,
+        )
 
 
 @dataclass(frozen=True, slots=True)

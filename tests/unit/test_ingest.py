@@ -89,13 +89,21 @@ FREE_IDS = [strategy.name for strategy in FREE]
 @pytest.mark.parametrize("strategy", FREE, ids=FREE_IDS)
 def test_every_indexed_unit_resolves_to_something_retrievable(strategy: object) -> None:
     """A hit that resolves to nothing is a hit that vanishes, and a strategy that loses results
-    looks exactly like a retriever that could not find them."""
+    looks exactly like a retriever that could not find them.
+
+    "Something that exists" means `retrievable` *or* `presented_chunks`. A strategy is allowed
+    to hand back a wider passage than the unit it is scored on -- that is what the presentation
+    split is for -- and `sentence-window` does precisely that: it scores the centre chunk and
+    returns the window around it. Insisting the resolved id be in `retrievable` would force
+    those overlapping windows back into the scored set, which is the denominator inflation the
+    split exists to prevent.
+    """
     chunks = chunks_of()
     ingested = strategy.ingest(chunks, context())  # type: ignore[attr-defined]
 
-    retrievable = {chunk.id for chunk in ingested.retrievable}
+    reachable = {chunk.id for chunk in ingested.retrievable} | set(ingested.presented_chunks)
     for indexed in ingested.indexed:
-        assert ingested.resolve(indexed.id) in retrievable
+        assert ingested.resolve(indexed.id) in reachable
 
 
 @pytest.mark.parametrize("strategy", FREE, ids=FREE_IDS)
@@ -207,7 +215,9 @@ def test_the_window_is_centred_on_the_match() -> None:
 
     middle = chunks[2]
     window_id = ingested.resolve(middle.id)
-    window = next(c for c in ingested.retrievable if c.id == window_id)
+    # The window is a presentation passage, not a scored unit -- overlapping windows in
+    # the scored set inflate the denominator, which is the bug this split prevents.
+    window = ingested.presented_chunks[window_id]
 
     assert window.span.start == chunks[1].span.start
     assert window.span.end == chunks[3].span.end
@@ -218,7 +228,9 @@ def test_the_first_chunk_gets_a_truncated_window() -> None:
     chunks = chunks_of()
     ingested = SentenceWindowIngestion(window=2).ingest(chunks, context())
     window_id = ingested.resolve(chunks[0].id)
-    window = next(c for c in ingested.retrievable if c.id == window_id)
+    # The window is a presentation passage, not a scored unit -- overlapping windows in
+    # the scored set inflate the denominator, which is the bug this split prevents.
+    window = ingested.presented_chunks[window_id]
     assert window.span.start == chunks[0].span.start
 
 
@@ -515,3 +527,42 @@ def test_several_vectors_for_one_chunk_do_not_fill_the_results_with_it() -> None
     )
     returned = results.runs[0]
     assert returned.metric("recall@3") > 0
+
+
+def test_overlapping_windows_do_not_inflate_the_denominator() -> None:
+    """The bug this split exists for, and the one place it had not reached.
+
+    `sentence-window` put its windows in `retrievable`. Windows overlap by design, so a single
+    piece of gold evidence resolved to every window containing it -- about four of them at
+    `window=2`. The arm then had four things to find where plain chunking had one, and was
+    marked down for returning the answer once: measured per-question recall of 1/3, 1/4 and
+    2/5 on evidence it had returned in full, while `char_recall` stayed at 1.000 and disagreed
+    with the headline the whole way down the table.
+
+    Worse than the `hierarchical` case that prompted the presentation split in the first
+    place: 4.03 relevant units per question against 1.86.
+    """
+    chunks = chunks_of()
+    ingested = SentenceWindowIngestion(window=2).ingest(chunks, context())
+
+    # One scored unit per chunk. Not one per window.
+    assert len(ingested.retrievable) == len(chunks)
+    assert {chunk.id for chunk in ingested.retrievable} == {chunk.id for chunk in chunks}
+
+    # Every window is a presentation passage that counts as exactly the one chunk it centres
+    # on, so returning more context never changes what retrieval is credited with finding.
+    for chunk in chunks:
+        window_id = ingested.resolve(chunk.id)
+        assert window_id in ingested.presented_chunks
+        assert ingested.scored_ids(window_id) == [chunk.id]
+
+
+def test_a_window_still_returns_more_text_than_the_chunk_it_scores() -> None:
+    """The scoring fix must not quietly turn the strategy into plain chunking -- the whole
+    point is that a generator sees the neighbours."""
+    chunks = chunks_of()
+    ingested = SentenceWindowIngestion(window=1).ingest(chunks, context())
+
+    window = ingested.presented_chunks[ingested.resolve(chunks[2].id)]
+    assert window.span.start < chunks[2].span.start
+    assert window.span.end > chunks[2].span.end

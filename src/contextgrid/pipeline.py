@@ -88,7 +88,12 @@ class Config:
         """A short identifier that reads well in a leaderboard row."""
         parts = []
         if self.ingestion and self.ingestion != "direct":
-            parts.append(f"{self.ingestion}>")
+            # No trailing `>`. It was meant as an arrow -- indexed *feeds* returned -- but the
+            # parts are joined with ` · `, so it rendered as `sentence-window:2> · markdown`
+            # and read as a typo in every console table, report and results file. The other
+            # decorated axes prefix their marker (`~agentic`, `->llm`); a dangling suffix
+            # before a separator has nothing to point at.
+            parts.append(self.ingestion)
         parts += [self.parser, self.chunker]
         if self.embedder:
             parts.append(self.embedder)
@@ -416,7 +421,10 @@ def build(
         # raised "needs a model" from a place the user had no way to influence. They were
         # unreachable from the config file, which is the primary interface.
         transform=get_transform(config.transform, llm),
-        retrieval=get_retriever(config.retrieval),
+        # The model goes with it. Without this the agentic strategy built its own client
+        # from its own default, so it ignored `run.model`, spent money nothing could meter,
+        # and made `budget_usd` unenforceable for the one axis that most needs a ceiling.
+        retrieval=get_retriever(config.retrieval, llm),
         # Same story as `transform`: the `llm` generator cannot be built without a model, and
         # `config.generator` is the only way to reach it from a config file.
         generator=get_generator(config.generator, llm),

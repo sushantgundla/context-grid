@@ -64,9 +64,14 @@ class RetrievalTrace:
 
 Every strategy that costs a model call reports it via `trace.record_model_call()`. Two
 strategies with the same recall and a different `model_calls` count are a decision, not a tie —
-and the runner refuses to start a sweep containing a strategy where `uses_model` is `True`
-without a spending limit, because a strategy that decides its own number of calls has no upper
-bound anybody can eyeball in advance.
+and the runner warns before starting a sweep containing a strategy where `uses_model` is
+`True` with no spending limit, because a strategy that decides its own number of calls has no
+upper bound anybody can eyeball in advance.
+
+A warning, not a refusal — it is your money and you may well mean it. If you want a ceiling
+that actually stops the sweep, set `run.budget_usd`; the strategy's model calls are metered
+and counted against it, and `model_calls` per configuration is in `results.json` so you can
+check the bill against something.
 
 Concretely, on the question *"what is the refund window and are digital goods refundable?"*,
 `k=5`:

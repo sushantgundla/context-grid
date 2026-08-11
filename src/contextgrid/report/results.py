@@ -41,6 +41,13 @@ class RunResult:
     unresolved_gold: int = 0
     run: dict[str, list[str]] = field(default_factory=dict)
     per_query: dict[str, float] = field(default_factory=dict)
+    #: How many searches and model calls the retrieval strategy made, across every question.
+    #:
+    #: Two strategies with the same recall and different `model_calls` are a decision, not a
+    #: tie -- which is the entire argument for having a retrieval axis. The number was counted
+    #: from the start and reached no output file, so the one figure that would let somebody
+    #: check a cost claim themselves was the one they could not see.
+    retrieval: dict[str, int] = field(default_factory=dict)
     #: What the generator actually said, per question, with the chunks it was given and the
     #: judge's per-question scores. Empty for a run with no generator.
     #:

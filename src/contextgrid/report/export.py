@@ -313,6 +313,9 @@ def _run_payload(run: RunResult) -> dict[str, Any]:
         # And what the model actually said, so a generation score can be checked rather than
         # believed. Absent entirely for a run with no generator.
         "answers": run.answers,
+        # Searches and model calls the strategy made, so a cost figure can be checked
+        # against something rather than taken on trust.
+        "retrieval": run.retrieval,
         "warnings": run.warnings.to_list(),
     }
 

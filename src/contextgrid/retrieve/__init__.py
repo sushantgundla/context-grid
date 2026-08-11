@@ -51,11 +51,33 @@ RETRIEVERS.register(
 )(RelevanceFeedbackRetrieval)
 
 
-def get_retriever(spec: str | RetrievalStrategy | None) -> RetrievalStrategy:
-    """Resolve a strategy from a spec, or pass one through. `None` means plain search."""
+def get_retriever(
+    spec: str | RetrievalStrategy | None, llm: object | None = None
+) -> RetrievalStrategy:
+    """Resolve a strategy from a spec, or pass one through. `None` means plain search.
+
+    `llm` is the model the configuration chose, and handing it over matters for more than
+    tidiness. A model-backed strategy that builds its own client instead:
+
+    * ignores `run.model` entirely -- `AgenticRetrieval` defaults to `openai:gpt-4o-mini`, so a
+      sweep configured for any other model would quietly plan its searches with that one;
+    * cannot be metered, because its calls never pass anything the runner can see, so the
+      configuration is costed at zero and `budget_usd` can never stop it;
+    * wants its own credentials, which is a second key for the same sweep.
+
+    Optional rather than required, so `get_retriever("simple")` and every direct call in a test
+    keeps working. A strategy with no use for a model ignores it.
+    """
     if spec is None:
         return SimpleRetrieval()
-    return RETRIEVERS.create(spec) if isinstance(spec, str) else spec
+    strategy = RETRIEVERS.create(spec) if isinstance(spec, str) else spec
+
+    # Model-backed strategies keep their planner in a private `_llm` slot that `planner()`
+    # fills lazily. Filling it here is what makes the configured model win over the built-in
+    # default, without every strategy having to know that injection is a thing.
+    if llm is not None and getattr(strategy, "uses_model", False):
+        object.__setattr__(strategy, "_llm", llm)
+    return strategy
 
 
 __all__ = [
