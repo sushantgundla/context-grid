@@ -221,7 +221,10 @@ class Runner:
         warnings.extend(span_log)
         warnings.extend(generation_log)
 
-        unresolved = sum(1 for item in resolved if item.anchors and not item.is_answerable)
+        # `is_resolved`, not `is_answerable`: "answerable" now means the item carries evidence
+        # in either form, so an anchor that this parse lost is still answerable and this count
+        # would be zero on every run. What is wanted is spans -- evidence located *here*.
+        unresolved = sum(1 for item in resolved if item.anchors and not item.is_resolved)
 
         # The parse dimension's score: of the evidence somebody quoted, how much could this
         # parser actually find in its own output? A parser that drops a table, mangles a
@@ -531,11 +534,14 @@ class Runner:
                 on_progress(index, len(configs), config)
             result = self.run_one(config, evalset)
             results.runs.append(result)
-            results.warnings.extend(result.warnings)
+            # `extend_unique`, not `extend`: half of what a run logs is a fact about the eval
+            # set rather than about the configuration, and every configuration rediscovers it.
+            # The run's own log still holds its full copy -- only the report's is collapsed.
+            results.warnings.extend_unique(result.warnings)
             budget.charge(result, len(evalset.items))
 
         results.cache_summary = self.stats.summary()
-        results.warnings.extend(self.cost_model.warnings)
+        results.warnings.extend_unique(self.cost_model.warnings)
         return results
 
     def _staged(
@@ -592,7 +598,7 @@ class Runner:
                 result = self.run_one(config, evalset)
                 seen[config] = result
                 results.runs.append(result)
-                results.warnings.extend(result.warnings)
+                results.warnings.extend_unique(result.warnings)
                 budget.charge(result, len(evalset.items))
             return None
 
@@ -669,7 +675,7 @@ class Runner:
             )
 
         results.cache_summary = self.stats.summary()
-        results.warnings.extend(self.cost_model.warnings)
+        results.warnings.extend_unique(self.cost_model.warnings)
         results.meta["final"] = current.as_dict()
         return results
 
@@ -817,7 +823,10 @@ def _character_metrics(
     recalls: list[float] = []
 
     for item in evalset:
-        if not item.is_answerable:
+        # Character metrics are measured against gold *spans*. An item whose anchor this parse
+        # never found has none, so it has nothing to measure -- and scoring it as zero would
+        # charge the retriever for a parse failure that `evidence_resolvable` already reports.
+        if not item.is_resolved:
             continue
         retrieved = [chunks[cid] for cid in list(run.get(item.id, ()))[:k] if cid in chunks]
         precisions.append(character_precision(item, retrieved))

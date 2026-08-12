@@ -155,17 +155,39 @@ class SpanResolver:
         """
         log = WarningLog()
 
-        if not item.is_answerable:
-            # Deliberately unanswerable questions have no judgements to make. They are still
-            # useful -- they test whether a system declines to answer -- but they cannot
-            # contribute to ranking metrics, and ranx would treat an empty qrel as a bug.
-            log.add(
-                WarningCode.GOLD_SPAN_UNREACHABLE,
-                f"item {item.id!r} has no gold spans and is excluded from ranking metrics",
-                severity=Severity.INFO,
-                stage="resolve",
-                subject=item.id,
-            )
+        # Two different things arrive here with no gold spans, and they are not the same
+        # problem. A question with no gold *and* no anchors carries no ground truth at all --
+        # either it is deliberately unanswerable, which is a useful thing to test, or the eval
+        # set is unfinished. A question with anchors and no gold had evidence written for it
+        # and *this parse* lost it, which is a fact about the parser.
+        #
+        # One guard used to cover both, because `is_answerable` once meant `bool(gold)`. It
+        # now means "carries evidence in either form", so the parser-lost case fell straight
+        # through into an empty loop and reported nothing at all.
+        if not item.is_resolved:
+            if item.anchors:
+                log.add(
+                    WarningCode.GOLD_SPAN_UNREACHABLE,
+                    (
+                        f"item {item.id!r} quotes its evidence but none of it was located in "
+                        f"this parse, so it is excluded from ranking metrics. That is a "
+                        f"measurement of the parser, not of the retriever"
+                    ),
+                    severity=Severity.CAUTION,
+                    stage="resolve",
+                    subject=item.id,
+                )
+            else:
+                # No judgements to make. Still useful -- an unanswerable question tests
+                # whether a system declines to answer -- but it cannot contribute to ranking
+                # metrics, and ranx would treat an empty qrel as a bug.
+                log.add(
+                    WarningCode.GOLD_SPAN_UNREACHABLE,
+                    f"item {item.id!r} has no gold spans and is excluded from ranking metrics",
+                    severity=Severity.INFO,
+                    stage="resolve",
+                    subject=item.id,
+                )
             return Resolution(item_id=item.id, warnings=log)
 
         chunk_spans = spans_of(chunks)

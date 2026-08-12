@@ -190,7 +190,12 @@ def score_answer(
     score = AnswerScore(
         item_id=item.id,
         abstained=answer.is_abstention,
-        should_have_abstained=not item.is_answerable or not context.chunks,
+        # `is_resolved`, not `is_answerable`: abstention is about what this parse could
+        # actually find. An item whose anchor exists but which this parser lost has no
+        # evidence to answer from, so declining is the right behaviour and must score as
+        # such. `is_answerable` is true for that item -- it carries an anchor -- and would
+        # mark the abstention wrong.
+        should_have_abstained=not item.is_resolved or not context.chunks,
     )
 
     answer_words = _words(answer.text)
