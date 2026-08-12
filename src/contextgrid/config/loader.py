@@ -29,10 +29,37 @@ def load(path: str | Path) -> ExperimentConfig:
     is still valid JSON, and refusing it on the strength of its name would be pedantic.
     """
     source = Path(path).expanduser()
+
+    # Checked before reading, because reading is what produced the one message in this CLI
+    # that was not written for a person: `contextgrid check ./documents` -- pointing the
+    # command at a corpus instead of at a config, which is an easy thing to do when every
+    # other subcommand takes a corpus -- printed `error: [Errno 21] Is a directory:
+    # 'documents'`. That is the operating system's sentence, not ours, and it does not say
+    # what was wanted instead.
+    if source.is_dir():
+        raise ConfigError(
+            f"{source} is a directory, and a config file was expected. Name the YAML or JSON "
+            f"file itself -- try {source / 'contextgrid.yaml'} -- or write a starter one with "
+            f"`contextgrid init`."
+        )
     if not source.exists():
         raise ConfigError(f"no config file at {source}")
 
-    text = source.read_text(encoding="utf-8")
+    try:
+        text = source.read_text(encoding="utf-8")
+    except PermissionError:
+        raise ConfigError(f"no permission to read the config at {source}") from None
+    except UnicodeDecodeError:
+        raise ConfigError(
+            f"{source} is not text, so it is not a config file. A config is YAML or JSON."
+        ) from None
+    except OSError as error:
+        # Anything else the filesystem refuses: a dangling symlink that `exists()` and
+        # `is_dir()` both said no to, a device node, a file on a mount that went away.
+        raise ConfigError(
+            f"could not read the config at {source}: {error.strerror or error}"
+        ) from None
+
     data = _parse(text, source)
     return ExperimentConfig.from_mapping(data, base=source.parent, source=source)
 

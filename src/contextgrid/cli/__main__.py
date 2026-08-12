@@ -20,6 +20,7 @@ from contextgrid.core.registry import Registry
 
 if TYPE_CHECKING:  # imported for types only, so `contextgrid --version` stays a cheap import
     from contextgrid.config.schema import ExperimentConfig
+    from contextgrid.corpus import Corpus
     from contextgrid.report.manifest import Manifest
     from contextgrid.report.results import Results
 
@@ -72,7 +73,9 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("check", help="Validate a config and say what it would run.")
     inspect.add_argument("config", type=Path)
 
-    profile = sub.add_parser("profile", help="Profile a corpus and say which axes will matter.")
+    profile = sub.add_parser(
+        "profile", help="Measure a corpus and flag settings its shape rules out."
+    )
     profile.add_argument("corpus", type=Path)
     profile.add_argument("--parser", default="markdown")
 
@@ -320,48 +323,70 @@ def _plugin_problems(config: ExperimentConfig) -> list[str]:
     nothing is embedded, no index is built and no model is called. So build one of each and
     report the same message `run` would, just sooner.
 
+    Building is necessary but not sufficient. A plugin whose optional package is missing
+    usually fails to build -- importing its module is what fails -- but not when the module is
+    in this tree and defers the third-party import to the method that needs it. `marker` is
+    that case: `check` built it, said "config is valid.", and `run` then died on the first PDF
+    with `The marker parser requires the 'parse-marker' extra`. So each spec is asked first
+    whether its extra is installed, by `missing_extra`, which reads the same registration field
+    `contextgrid init` reads when it decides what to write into a starter config.
+
     Values are taken from the expanded matrix rather than from `config.grid`, so a value the
     matrix drops as impossible is not reported as a problem in a sweep that will never run it.
     """
-    from contextgrid.chunk import get_chunker
+    from contextgrid.chunk import CHUNKERS, get_chunker
     from contextgrid.config.loader import build_llm
-    from contextgrid.embed import get_embedder
-    from contextgrid.generate import get_generator
-    from contextgrid.index import get_index
-    from contextgrid.ingest import get_ingester
-    from contextgrid.parse import get_parser
-    from contextgrid.rerank import get_reranker
-    from contextgrid.retrieve import get_retriever
-    from contextgrid.transform import get_transform
+    from contextgrid.config.plugins import missing_extra
+    from contextgrid.embed import EMBEDDERS, get_embedder
+    from contextgrid.generate import GENERATORS, get_generator
+    from contextgrid.index import INDEXES, get_index
+    from contextgrid.ingest import INGESTERS, get_ingester
+    from contextgrid.parse import PARSERS, get_parser
+    from contextgrid.rerank import RERANKERS, get_reranker
+    from contextgrid.retrieve import RETRIEVERS, get_retriever
+    from contextgrid.transform import TRANSFORMS, get_transform
 
     # Builds a client, never calls one. The model-backed transforms, strategies and generators
     # cannot be built without it, and refusing to build them is precisely what tells the user
     # that `transform: hyde` with no `run.model` is not going to work.
     llm: Any = build_llm(config)
 
-    builders: dict[str, Callable[[str], object]] = {
-        "ingestion": get_ingester,
-        "parser": get_parser,
-        "chunker": get_chunker,
-        "embedder": get_embedder,
-        "index": get_index,
-        "transform": lambda spec: get_transform(spec, llm),
-        "retrieval": lambda spec: get_retriever(spec, llm),
-        "reranker": get_reranker,
-        "generator": lambda spec: get_generator(spec, llm),
+    # Every axis `check` reports on, each with the registry that knows what its names need
+    # installed. All nine, deliberately: `marker` is the only plugin in this tree that hides a
+    # missing package from construction today, but "only parsers are checked" would be a rule
+    # nobody could infer, and the next lazily-imported plugin would walk straight through it.
+    builders: dict[str, tuple[Registry[Any], Callable[[str], object]]] = {
+        "ingestion": (INGESTERS, get_ingester),
+        "parser": (PARSERS, get_parser),
+        "chunker": (CHUNKERS, get_chunker),
+        "embedder": (EMBEDDERS, get_embedder),
+        "index": (INDEXES, get_index),
+        "transform": (TRANSFORMS, lambda spec: get_transform(spec, llm)),
+        "retrieval": (RETRIEVERS, lambda spec: get_retriever(spec, llm)),
+        "reranker": (RERANKERS, get_reranker),
+        "generator": (GENERATORS, lambda spec: get_generator(spec, llm)),
     }
 
     problems: list[str] = []
     built: set[tuple[str, str]] = set()
 
     for candidate in config.grid.to_matrix(config.run.k).expand(config.run.mode):
-        for axis, build in builders.items():
+        for axis, (registry, build) in builders.items():
             spec = getattr(candidate, axis)
             # `None` is a real value on most axes -- no reranker, no transform -- and there is
             # nothing to build for it.
             if spec is None or (axis, spec) in built:
                 continue
             built.add((axis, spec))
+
+            absent = missing_extra(registry, spec)
+            if absent is not None:
+                # Unprefixed, unlike the errors below: this message already names the plugin
+                # and its axis ("The marker parser"), and it is quoted verbatim from what `run`
+                # prints, so a user who has seen one recognises the other.
+                problems.append(str(absent))
+                continue
+
             try:
                 build(spec)
             except Exception as error:
@@ -374,14 +399,38 @@ def _plugin_problems(config: ExperimentConfig) -> list[str]:
 
 
 def _profile(args: argparse.Namespace) -> int:
+    """Measure a corpus. `corpus` means here what it means everywhere else in this tool.
+
+    `configuration.md` defines a corpus as "a directory of documents, or a single file", and
+    `check` and `run` both honour that -- a config whose `corpus:` names one Markdown file
+    validates and sweeps. `profile` was handed the path straight to `Lab`, which loads a
+    directory, so the one command whose entire job is looking at a corpus was the one that
+    refused half of them: `error: documents/billing.md is not a directory`.
+    """
     from contextgrid.lab import Lab
 
-    lab = Lab(args.corpus)
+    lab = Lab(_corpus_at(args.corpus))
     fingerprint = lab.fingerprint(parser=args.parser)
     print(fingerprint.summary())
     for hint in fingerprint.hints():
         print(f"  - {hint}")
     return 0
+
+
+def _corpus_at(path: Path) -> Corpus:
+    """Load a corpus from a path that may be a directory or a single file.
+
+    The same two-way split `contextgrid.config.loader.build_corpus` makes for a config's
+    `corpus:` field, kept in the CLI layer and expressed with the public constructors, so the
+    commands taking a corpus as an argument and the configs naming one mean the same thing.
+    """
+    from contextgrid.corpus import Corpus
+
+    if path.is_dir():
+        return Corpus.from_dir(path)
+    if not path.exists():
+        raise ValueError(f"no corpus at {path}")
+    return Corpus.from_files([path])
 
 
 def _sweep(args: argparse.Namespace) -> int:

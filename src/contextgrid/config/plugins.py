@@ -36,8 +36,11 @@ import re
 import sys
 import zlib
 from pathlib import Path
+from typing import Any
 
 from contextgrid.config.schema import ConfigError
+from contextgrid.core.errors import MissingExtraError
+from contextgrid.core.registry import Registration, Registry, UnknownPluginError
 
 
 def load_plugins(specs: tuple[str, ...], *, base: Path) -> tuple[str, ...]:
@@ -137,3 +140,97 @@ def _load_file(spec: str, *, base: Path) -> str:
             f"plugins: {path} raised {type(error).__name__} while being imported: {error}"
         ) from error
     return str(path)
+
+
+# ---------------------------------------------------------------------------
+# whether a named plugin can actually run here
+# ---------------------------------------------------------------------------
+
+
+def missing_extra(registry: Registry[Any], spec: str) -> MissingExtraError | None:
+    """The error a spec would eventually raise for want of an optional package, or None.
+
+    Building a plugin is supposed to be what proves it can run, and for most of them it is:
+    `Registration.load()` imports the plugin's module, and if that module imports a package
+    that is not installed it raises `MissingExtraError` naming the extra. `contextgrid check`
+    builds one of everything precisely so that happens early.
+
+    It does not always happen. A plugin whose module is *in this tree* imports fine no matter
+    what is installed, because the third-party import sits inside the method that needs it --
+    `MarkerParser` lives in `contextgrid.parse.layout` and does `import marker` in `parse()`,
+    which is deliberate (importing Surya to build a parser object would make `contextgrid
+    plugins` cost seconds). The consequence was that `check` built `marker` happily and said
+    "config is valid.", and the sweep it green-lit died on the first document. `check` exists
+    to catch exactly that, so construction cannot be the only evidence.
+
+    So ask the registration instead of the plugin. It already records `extra` and `package` --
+    that is where `Registration.load` gets the text of its own error, and it is the same thing
+    `contextgrid init` consults to decide which plugins to write into a starter config. One
+    fact, read the same way in all three places, rather than a second opinion that can drift
+    from the first.
+
+    Returns the error rather than raising it, because the caller checking a whole matrix wants
+    to collect every problem and print them together, not stop at the first.
+    """
+    try:
+        registration = registry.registration(registry.name_in(spec))
+    except UnknownPluginError:
+        # Not a plugin at all. `create` says so, and says it better -- it lists the names that
+        # do exist. Reporting "unknown" twice, in two wordings, helps nobody.
+        return None
+    return extra_missing_for(registration)
+
+
+def extra_missing_for(registration: Registration) -> MissingExtraError | None:
+    """The same question, for a registration already in hand."""
+    if registration.extra is None or registration.package is None:
+        # Nothing optional to be missing, or nothing recorded to look for. `tei` needs a server
+        # rather than a package, and no amount of `pip install` settles whether one is running.
+        return None
+    if _dependency_present(registration.package):
+        return None
+    return MissingExtraError(
+        # `The marker parser`, matching word for word what `MarkerParser.parse` raises when the
+        # sweep reaches a document -- so `check` and `run` report one failure, not two that
+        # have to be recognised as the same thing.
+        f"The {registration.name} {registration.family}",
+        registration.extra,
+        package=registration.package,
+    )
+
+
+def _dependency_present(package: str) -> bool:
+    """Is this third-party package installed? Asked without importing it.
+
+    Two questions, either of which is a yes, because neither alone is reliable and a false
+    "missing" is much worse than a false "present": it would refuse to run a sweep that works.
+
+    **Is a distribution of that name installed?** This is the name in `pip install`, and it is
+    what the registration records. It has to be asked first because a distribution's name is
+    frequently not its module's: `marker-pdf` imports as `marker`, `faiss-cpu` as `faiss`.
+
+    **Failing that, is a module of that name importable?** For a package installed without
+    metadata a distribution lookup finds nothing -- a source checkout on `PYTHONPATH`, or a
+    vendored copy. `find_spec` locates the module without executing it, so this stays cheap
+    and reads no documents, opens no sockets and downloads no model.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        distribution(package)
+        return True
+    except PackageNotFoundError:
+        pass
+    except Exception:
+        # A broken or half-written .dist-info should not be able to make `check` crash.
+        pass
+    return _importable(package.split(".")[0].replace("-", "_"))
+
+
+def _importable(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        # `find_spec` imports parent packages, and raises ValueError for a module whose parent
+        # is present but broken. Either way it is not usable here.
+        return False
