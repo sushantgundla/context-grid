@@ -204,6 +204,11 @@ def results_to_markdown(
 
     `name` is the experiment's name -- `name:` in an experiment config. Falls back to
     `results.meta["name"]` so a runner can carry it without every call site passing it.
+
+    A caller that has no name of its own should pass nothing rather than invent one. The bare
+    word `"experiment"` is treated as no name at all, because that is what `ExperimentConfig`
+    fills in when a config was never read from a file, and `# experiment -- retrieval
+    configuration comparison` says less than the plain fallback does.
     """
     # A fixed title meant a directory of experiments was a directory of files all called
     # "Retrieval configuration comparison", with nothing above the fold to say which sweep
@@ -211,7 +216,7 @@ def results_to_markdown(
     titled = name if name is not None else results.meta.get("name")
     heading = (
         f"{titled} — retrieval configuration comparison"
-        if titled
+        if _is_a_real_name(titled)
         else "Retrieval configuration comparison"
     )
     lines = [f"# {heading}", ""]
@@ -428,6 +433,22 @@ def write_bundle(
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+#: What `ExperimentConfig.name` holds when the config was built in memory rather than read from
+#: a file. It names nothing, so a title built from it is worse than no title at all.
+_UNNAMED = "experiment"
+
+
+def _is_a_real_name(name: Any) -> bool:
+    """Whether this name tells one sweep apart from another.
+
+    A filename stem -- what a config loaded from `northwind.yaml` defaults to -- counts. It is
+    the user's own word for the sweep, and it is already what the console banner,
+    `experiment.yaml` and `winning-config.yaml` print. A report that disagreed with those three
+    would be worse than a short title.
+    """
+    return isinstance(name, str) and name.strip() not in ("", _UNNAMED)
 
 
 def _run_payload(run: RunResult) -> dict[str, Any]:
