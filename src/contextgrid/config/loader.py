@@ -29,10 +29,37 @@ def load(path: str | Path) -> ExperimentConfig:
     is still valid JSON, and refusing it on the strength of its name would be pedantic.
     """
     source = Path(path).expanduser()
+
+    # Checked before reading, because reading is what produced the one message in this CLI
+    # that was not written for a person: `contextgrid check ./documents` -- pointing the
+    # command at a corpus instead of at a config, which is an easy thing to do when every
+    # other subcommand takes a corpus -- printed `error: [Errno 21] Is a directory:
+    # 'documents'`. That is the operating system's sentence, not ours, and it does not say
+    # what was wanted instead.
+    if source.is_dir():
+        raise ConfigError(
+            f"{source} is a directory, and a config file was expected. Name the YAML or JSON "
+            f"file itself -- try {source / 'contextgrid.yaml'} -- or write a starter one with "
+            f"`contextgrid init`."
+        )
     if not source.exists():
         raise ConfigError(f"no config file at {source}")
 
-    text = source.read_text(encoding="utf-8")
+    try:
+        text = source.read_text(encoding="utf-8")
+    except PermissionError:
+        raise ConfigError(f"no permission to read the config at {source}") from None
+    except UnicodeDecodeError:
+        raise ConfigError(
+            f"{source} is not text, so it is not a config file. A config is YAML or JSON."
+        ) from None
+    except OSError as error:
+        # Anything else the filesystem refuses: a dangling symlink that `exists()` and
+        # `is_dir()` both said no to, a device node, a file on a mount that went away.
+        raise ConfigError(
+            f"could not read the config at {source}: {error.strerror or error}"
+        ) from None
+
     data = _parse(text, source)
     return ExperimentConfig.from_mapping(data, base=source.parent, source=source)
 
@@ -193,11 +220,20 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
     writers: dict[str, tuple[str, Callable[[], str]]] = {
         "markdown": (
             "report.md",
+            # The experiment's name, so the one file a human opens first is titled after the
+            # sweep. It already reaches the console banner, `experiment.yaml` and
+            # `winning-config.yaml`; `report.md` was the only place in the bundle that fell
+            # back to a generic heading for a config that had said what it was called.
+            #
+            # Passed unconditionally. Whether a name is a real name or the sentinel default
+            # is `results_to_markdown`'s decision, and making it here as well would give two
+            # places that have to agree about what "unnamed" means.
             lambda: results_to_markdown(
                 results,
                 metric=config.run.headline,
                 manifest=manifest,
                 limit=config.report.leaderboard_limit,
+                name=config.name,
             ),
         ),
         "json": ("results.json", lambda: results_to_json(results, manifest=manifest)),
@@ -211,7 +247,10 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
         ),
         "python": (
             "use_winning_config.py",
-            lambda: config_to_python(winner.config) if winner else "",
+            # The corpus, for the same reason the yaml above needs it: without it the snippet
+            # falls back to a placeholder `./documents` and the two files in this directory
+            # disagree about which documents were measured.
+            lambda: config_to_python(winner.config, corpus=config.corpus) if winner else "",
         ),
     }
 

@@ -41,7 +41,11 @@ reproducible, and a number that changes under you between runs is worse than one
 months stale and labelled as such.
 
 **`PRICES` wins where it has an opinion. `litellm.model_cost` answers everything else.** That
-table covers close to 3,000 models (2,987 in this checkout — `len(litellm.model_cost)`).
+table covers roughly three thousand models. No exact count is quoted here on purpose: it comes
+from whichever `litellm` version you happen to have installed and moves with every upgrade, so
+a number written into this page is stale the moment someone runs `pip install -U`. Run
+[the command at the bottom of this page](#regenerating-the-numbers-on-this-page) for the count
+in *your* environment.
 `CostModel.pricing_for()` checks `PRICES` first, falls back to `litellm.model_cost`, and only
 warns "no published price" if neither has an entry:
 
@@ -145,15 +149,17 @@ hosted = cm.estimate(embedder='litellm:text-embedding-3-small', index_tokens=1_0
 print('hosted (openai small), 5s:', hosted)
 print('total at 1000 queries:', hosted.total_at(1000))
 "
-local (tei), 120s at $0.10/hr: CostBreakdown(index_usd=0.0033333333333333335,
-  query_usd_per_1k=0.0, index_tokens=1000000, query_tokens_per_query=20,
-  compute_seconds=120, metered=False)
+local (tei), 120s at $0.10/hr: CostBreakdown(index_usd=0.0033333333333333335, query_usd_per_1k=0.0, index_tokens=1000000, query_tokens_per_query=20, compute_seconds=120, metered=False, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
 total at 1000 queries: 0.0033333333333333335
-hosted (openai small), 5s: CostBreakdown(index_usd=0.020138888888888888,
-  query_usd_per_1k=0.0004, index_tokens=1000000, query_tokens_per_query=20,
-  compute_seconds=5, metered=True)
+hosted (openai small), 5s: CostBreakdown(index_usd=0.02013888888888889, query_usd_per_1k=0.0004, index_tokens=1000000, query_tokens_per_query=20, compute_seconds=5, metered=True, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
 total at 1000 queries: 0.02053888888888889
 ```
+
+The last four fields are zero here because this is a retrieval-only estimate.
+`generation_usd_per_1k` and `generation_tokens` fill in when a `generator` is on the grid;
+`evaluation_usd` and `judge_tokens` when the DeepEval-backed generation metrics run. They are
+kept separate from `query_usd_per_1k` so that "what retrieval costs" and "what answering costs"
+never get added together by accident.
 
 `machine_usd_per_hour` defaults to `0.0` — leave it there and a local model reports as free,
 which is true per token and false in every other sense. The module docstring's rule of thumb:

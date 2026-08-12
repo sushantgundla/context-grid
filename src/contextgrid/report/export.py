@@ -105,11 +105,25 @@ def winning_config_to_yaml(
     return "\n".join(lines) + "\n"
 
 
-def config_to_python(config: Config) -> str:
+def config_to_python(config: Config, *, corpus: str | Path | None = None) -> str:
     """Runnable Python that rebuilds this configuration.
 
     Not a template with holes in it -- this actually runs, which is the difference between an
-    export somebody uses and one they read once and retype.
+    export somebody uses and one they read once and retype. Two things stopped it running.
+
+    It called `cg.build`, which the package did not export: `build` lives in
+    `contextgrid.pipeline`, so the last line of every exported snippet raised `AttributeError`
+    on a name that was not there. The fix went the other way round -- `contextgrid/__init__.py`
+    now exports `build` -- because `cg.build(config, corpus)` is what three pages of
+    documentation show, and code that does not match its documentation is the bug either way.
+    Writing `cg.pipeline.build` instead would have leaned on a submodule attribute that exists
+    only as a leftover from an internal import, which is not a name to hand to a reader.
+
+    And it read the documents from a hardcoded `./documents`. A sweep over `./mydocs` shipped a
+    script pointing at a directory that did not exist, sitting beside a `winning-config.yaml`
+    that named the real corpus by absolute path -- one run, two files, two different answers
+    about what had been measured. Give it `corpus` and the two agree; without it the snippet
+    says in a comment that the path is a placeholder rather than pretending to know.
 
     The field list is read off `Config` rather than written out here. The version that spelled
     out six field names by hand fell behind the dataclass and exported a winner of
@@ -128,15 +142,28 @@ def config_to_python(config: Config) -> str:
     ]
     arguments = "\n" + "\n".join(settings) + "\n" if settings else ""
 
+    if corpus is None:
+        documents = "./documents"
+        # It has to read as a placeholder. A path that looks real is the one somebody runs,
+        # and then spends an afternoon on the empty result it gives back.
+        note = "# Placeholder: this export was not told where the documents are.\n"
+    else:
+        # Absolute, and the same path `winning-config.yaml` writes -- see that docstring. The
+        # snippet does not sit where the original config sat either.
+        documents = str(Path(corpus).expanduser().resolve())
+        note = ""
+
+    # The old wording here promised `winning-config.yaml` next door. With `report: formats:
+    # [python]` that file is never written, so the promise pointed at nothing.
     return f'''"""The winning configuration, as context-grid found it."""
 
 import contextgrid as cg
 
 # {config.label}
-# Any field not named below is at its default; `winning-config.yaml` spells out all of them.
+# Any field not named below is at its default; `cg.Config()` puts it back.
 config = cg.Config({arguments})
 
-corpus = cg.Corpus.from_dir("./documents")
+{note}corpus = cg.Corpus.from_dir({documents!r})
 pipeline = cg.build(config, corpus)
 
 for chunk_id in pipeline.search("your question here"):
@@ -177,6 +204,11 @@ def results_to_markdown(
 
     `name` is the experiment's name -- `name:` in an experiment config. Falls back to
     `results.meta["name"]` so a runner can carry it without every call site passing it.
+
+    A caller that has no name of its own should pass nothing rather than invent one. The bare
+    word `"experiment"` is treated as no name at all, because that is what `ExperimentConfig`
+    fills in when a config was never read from a file, and `# experiment -- retrieval
+    configuration comparison` says less than the plain fallback does.
     """
     # A fixed title meant a directory of experiments was a directory of files all called
     # "Retrieval configuration comparison", with nothing above the fold to say which sweep
@@ -184,7 +216,7 @@ def results_to_markdown(
     titled = name if name is not None else results.meta.get("name")
     heading = (
         f"{titled} — retrieval configuration comparison"
-        if titled
+        if _is_a_real_name(titled)
         else "Retrieval configuration comparison"
     )
     lines = [f"# {heading}", ""]
@@ -382,7 +414,14 @@ def write_bundle(
         written.append(config_yaml)
 
         snippet = root / "use_winning_config.py"
-        snippet.write_text(config_to_python(winner.config), "utf-8")
+        # The corpus off the same `experiment` the yaml was written from, so the two files in
+        # this directory cannot name different documents.
+        snippet.write_text(
+            config_to_python(
+                winner.config, corpus=None if experiment is None else experiment.corpus
+            ),
+            "utf-8",
+        )
         written.append(snippet)
 
     if manifest is not None:
@@ -394,6 +433,22 @@ def write_bundle(
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+#: What `ExperimentConfig.name` holds when the config was built in memory rather than read from
+#: a file. It names nothing, so a title built from it is worse than no title at all.
+_UNNAMED = "experiment"
+
+
+def _is_a_real_name(name: Any) -> bool:
+    """Whether this name tells one sweep apart from another.
+
+    A filename stem -- what a config loaded from `northwind.yaml` defaults to -- counts. It is
+    the user's own word for the sweep, and it is already what the console banner,
+    `experiment.yaml` and `winning-config.yaml` print. A report that disagreed with those three
+    would be worse than a short title.
+    """
+    return isinstance(name, str) and name.strip() not in ("", _UNNAMED)
 
 
 def _run_payload(run: RunResult) -> dict[str, Any]:
@@ -412,7 +467,11 @@ def _run_payload(run: RunResult) -> dict[str, Any]:
             None if interval is None else {"low": interval.low, "high": interval.high}
         ),
         "by_type": run.by_type,
+        # The histogram covers the questions that were actually diagnosed, so it sums to the
+        # number scored rather than to the size of the eval set. Questions with no ground
+        # truth are listed beside it instead of being counted as retrieval misses.
         "failures": (None if run.failures is None else run.failures.counts()),
+        "no_ground_truth": (None if run.failures is None else list(run.failures.no_ground_truth)),
         # The per-question scores, so somebody can re-run the statistics themselves.
         "per_query": run.per_query,
         # And what the model actually said, so a generation score can be checked rather than
@@ -509,17 +568,34 @@ def _yaml_value(value: Any) -> str:
 
 
 def format_leaderboard(results: Results, metric: str = "recall@5", limit: int = 20) -> str:
-    """A fixed-width leaderboard for a terminal."""
+    """A fixed-width leaderboard for a terminal.
+
+    Every column is as wide as its own heading. The version that assumed eight characters would
+    hold any metric name misaligned on `hit_rate@10` -- a built-in, not something exotic -- and
+    on any custom name past that: the heading overflowed its column, the numbers stayed put
+    underneath, and the rule under both was a third column's width short of either.
+    """
     rows = results.leaderboard(metric)[:limit]
     if not rows:
         return "no results"
 
-    width = max(len(str(row["config"])) for row in rows)
-    lines = [f"{'configuration':{width}} {metric:>8} {'p95 ms':>8} {'$/1k':>8}"]
-    lines.append("-" * (width + 28))
+    # Widths come off the rendered text, headings included. A heading is as much a cell as a
+    # value is, and it is the one that varies.
+    width = max([len("configuration"), *(len(str(row["config"])) for row in rows)])
+    metric_width = max(len(metric), 8)
+    p95_width = max(len("p95 ms"), 8)
+    cost_width = max(len("$/1k"), 8)
+
+    header = (
+        f"{'configuration':{width}} {metric:>{metric_width}} "
+        f"{'p95 ms':>{p95_width}} {'$/1k':>{cost_width}}"
+    )
+    # The rule is measured off the header rather than recomputed from the parts, so it cannot
+    # drift away from it the way a hand-added `+ 28` did.
+    lines = [header, "-" * len(header)]
     for row in rows:
         lines.append(
-            f"{row['config']:{width}} {row.get(metric, 0):8.3f} "
-            f"{row.get('p95_ms', 0):8.1f} {row.get('cost_per_1k', 0):8.4f}"
+            f"{row['config']:{width}} {row.get(metric, 0):{metric_width}.3f} "
+            f"{row.get('p95_ms', 0):{p95_width}.1f} {row.get('cost_per_1k', 0):{cost_width}.4f}"
         )
     return "\n".join(lines)

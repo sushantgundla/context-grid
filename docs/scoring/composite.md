@@ -82,7 +82,7 @@ were — so a 73 over three dimensions is never mistaken for a 73 over six.
 `CompositeScore.summary()` is the right thing to print or log — never the bare number.
 `.dimensions` (`tuple(sorted(self.parts))`) and `.missing` travel with `.score` for
 exactly this reason: a 73 over `retrieval, generation` is a different claim from a 73 over
-all four dimensions, and printing them identically invites the comparison that's wrong.
+all five dimensions, and printing them identically invites the comparison that's wrong.
 
 ## Rule 3: comparable only within a run
 

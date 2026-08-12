@@ -64,9 +64,9 @@ spreadsheet as CSV — see [evalsets.md](evalsets.md).
 
 ## Write a config
 
-`contextgrid init` writes a starter config listing every plugin your installation can actually
-run — nothing you'd need an extra for shows up as a runnable choice, only as a comment telling
-you how to unlock it.
+`contextgrid init` writes a starter config you can run as it stands, and next to every axis it
+lists what else you could put there — what your install can already run, and what a `pip
+install` would add.
 
 ```bash no-run: narrative walkthrough -- ./documents and ./questions.jsonl aren't reconstructed in this snippet
 contextgrid init contextgrid.yaml --corpus ./documents --evalset ./questions.jsonl
@@ -81,6 +81,32 @@ Open the file. Every key under `grid:` is an axis of the pipeline — `parser`, 
 `embedder`, `index`, `reranker`, and so on. A key with a list sweeps that axis; a key with one
 value holds it still. The full key reference, with every default, is in
 [configuration.md](configuration.md).
+
+Each axis comes with its options written underneath it:
+
+```yaml
+  parser: [markdown]
+  # also available: agno, docling, pdfplumber, pymupdf, pymupdf4llm, text
+  # needs `pip install "context-grid[parse-marker]"`: marker
+```
+
+The first line is what this config sweeps. `# also available:` is everything your install can
+run today — move a name up onto that line and it just works. The `# needs pip install` line is
+what you don't have yet, grouped so one command covers everything on it. **The starting sweep
+is deliberately small.** Putting all seven installed parsers on that line would download two
+models before you had read the file; widening an axis later is a one-line edit.
+
+Some names need configuration rather than a package, and the file says so on a third comment
+line:
+
+```yaml
+  generator: [null]
+  # also available: extractive, llm
+  # of those, llm needs `run.model` set.
+```
+
+The same line appears under `transform:` for `hyde` and its friends. Nothing is hidden: if you
+can't run something yet, it's listed along with the reason.
 
 ## Check it before running it
 
@@ -135,7 +161,7 @@ markdown · recursive:512 · bm25                          1.000      0.0   0.00
 markdown · recursive:512 · tfidf · hybrid                 1.000      0.0   0.0000
 markdown · recursive:512 · tfidf · dense · lexical@50     1.000      0.0   0.0000
 
-markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 5 configurations on 3 questions. [...]
+markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 5 configurations, scored on 3 questions. [...]
 
 cache: 17 of 24 lookups reused (71%), chunk 6/10, embed 3/4, parse 8/10
 
@@ -143,8 +169,9 @@ wrote 6 files to /you/are/here/results
 ```
 
 (Paths in `report.out` always resolve to absolute — that's the last line's path, not literally
-`./results`. The progress lines go to stderr; pass `--quiet` to a `run` you're scripting to
-suppress them.)
+`./results`. The progress lines go to stderr, everything else to stdout; that is why they sit
+between the shape and the leaderboard at a terminal, and why they will not once you redirect
+one of the two streams. Pass `--quiet` to a `run` you're scripting to suppress them.)
 
 ## Reading the leaderboard
 
@@ -178,6 +205,10 @@ written) gets:
 | `winning-config.yaml` | The winning configuration alone, as a runnable config |
 | `use_winning_config.py` | The winning configuration as a Python snippet |
 | `experiment.yaml` | A copy of the config that produced this — a results folder that can't be re-run is a screenshot |
+
+Five of those six describe a winner. If a sweep runs nothing at all — a budget too small for a
+single configuration — there is no winner to describe, so you get three files instead:
+`experiment.yaml`, `report.md` and `results.json`, and the report says why nothing ran.
 
 The full key-by-key reference for `grid:`, `run:` and `report:` is in
 [configuration.md](configuration.md). Every `contextgrid` subcommand, with its flags, is in

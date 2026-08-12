@@ -137,7 +137,7 @@ rest.
 
 | Failure point | Meaning | Retrieval-observable? |
 |---|---|---|
-| FP1 Missing content | The answer isn't in the corpus at all — not a retrieval failure. | Yes |
+| FP1 Missing content | Evidence was written down for this question, and it isn't in the index — not a retrieval failure. A question with no evidence written down at all is *not* FP1; see below. | Yes |
 | FP2 Missed top-ranked | Evidence was retrieved, just not ranked high enough. Rerank. | Yes |
 | FP3 Not in context | Evidence was found but fell outside `k`. Widen `k`, or consolidate. | Yes |
 | FP4 Not extracted | Present in context; the generator missed it. Not a retrieval fix. | No |
@@ -147,6 +147,9 @@ rest.
 
 ### `diagnose()`
 
+Five questions, covering a success, all three retrieval-observable failures, and the one
+case that is **not** a failure of the pipeline at all:
+
 ```python
 >>> from contextgrid.core.evalset import EvalItem, EvalSet, GoldSpan
 >>> from contextgrid.core.span import Span
@@ -155,15 +158,17 @@ rest.
 ...     EvalItem(id="q1", question="q1", gold=(GoldSpan(span=Span("d", 0, 10)),)),  # rank 1
 ...     EvalItem(id="q2", question="q2", gold=(GoldSpan(span=Span("d", 0, 10)),)),  # rank 8
 ...     EvalItem(id="q3", question="q3", gold=(GoldSpan(span=Span("d", 0, 10)),)),  # rank 150
-...     EvalItem(id="q4", question="q4", gold=()),                                    # no gold
+...     EvalItem(id="q4", question="q4", gold=()),                        # no evidence at all
+...     EvalItem(id="q5", question="q5", gold=(GoldSpan(span=Span("d", 0, 10)),)),  # never found
 ... ]
 >>> evalset = EvalSet(id="e", items=tuple(items))
->>> qrels = {"q1": {"cA": 2}, "q2": {"cH": 2}, "q3": {"cZ": 2}}
+>>> qrels = {"q1": {"cA": 2}, "q2": {"cH": 2}, "q3": {"cZ": 2}}   # nothing matched q5's gold
 >>> run = {
 ...     "q1": ["cA", "c2", "c3"],
 ...     "q2": [f"c{i}" for i in range(7)] + ["cH"],        # rank 8
 ...     "q3": [f"c{i}" for i in range(149)] + ["cZ"],       # rank 150
 ...     "q4": ["c1", "c2"],
+...     "q5": ["c1", "c2"],
 ... }
 >>> report = diagnose(evalset, qrels, run, k=5, deep_k=100)
 >>> for d in report.diagnoses:
@@ -171,13 +176,63 @@ rest.
 q1: none -- evidence at rank 1
 q2: fp2_missed_top_ranked -- the evidence was retrieved at rank 8, just outside the top 5
 q3: fp3_not_in_context -- the evidence ranked 150, far below the top 5
-q4: fp1_missing_content -- no chunk in this index holds the evidence for this question
+q5: fp1_missing_content -- no chunk in this index holds the evidence for this question
+```
+
+**`q4` is not in that list, and that is the point.** It carries no gold spans and no
+anchors — nobody ever wrote down what the right answer was — so there is nothing to be
+right or wrong about and it is never diagnosed. It goes to `report.no_ground_truth`
+instead, and `total_items` is the only place the two are added back together:
+
+```python
+>>> report.no_ground_truth
+['q4']
+>>> len(report.diagnoses), report.total_items
+(4, 5)
+```
+
+`summary()` counts the failures against the four questions it actually scored, then says
+separately what happened to the fifth:
+
+```python
 >>> print(report.summary())
-3 of 4 questions failed. 33% of those are fp2_missed_top_ranked: the evidence was retrieved but ranked too low to be used. This is what a reranker is for, and it is the cheapest failure on this list to fix. This was a retrieval-only run, so failure points four to seven -- the ones about what the generator did with the context -- cannot be seen from here.
+3 of 4 questions failed. 33% of those are fp2_missed_top_ranked: the evidence was retrieved but ranked too low to be used. This is what a reranker is for, and it is the cheapest failure on this list to fix. This was a retrieval-only run, so failure points four to seven -- the ones about what the generator did with the context -- cannot be seen from here. A further 1 question (q4) has no ground truth -- no gold spans and no anchors -- so it was not scored at all. That is a gap in the eval set, not a fault in this pipeline.
 >>> from contextgrid.diagnose.taxonomy import cluster
 >>> cluster(report)
-{'fp1_missing_content': ['q4'], 'fp2_missed_top_ranked': ['q2'], 'fp3_not_in_context': ['q3']}
+{'fp1_missing_content': ['q5'], 'fp2_missed_top_ranked': ['q2'], 'fp3_not_in_context': ['q3']}
 ```
+
+Pass `summary(include_unscored=False)` to drop that last sentence, for a caller that has
+already said it in its own words — `Results.summary` does exactly that, so the paragraph
+under a leaderboard does not say it twice.
+
+#### FP1 is about evidence that exists, not evidence nobody wrote
+
+This distinction cost real debugging time before it was made, so it is worth stating
+directly. Both cases end with a question that scored nothing. They have opposite fixes:
+
+| | `q4` — eval-set gap | `q5` — FP1 missing content |
+|---|---|---|
+| What the item holds | No gold spans **and** no anchors | Gold or an anchor, written down properly |
+| What went wrong | Nobody finished writing the question | The evidence is genuinely not in this index |
+| Where it lands | `report.no_ground_truth` | `report.diagnoses`, as `fp1_missing_content` |
+| In the histogram? | No — `counts()` and `cluster()` never see it | Yes |
+| The fix | Write the evidence, or delete the question | Check the parser, the chunker, or the corpus |
+
+Diagnosing `q4` as FP1 — which is what used to happen — told the reader their parser,
+chunker or corpus had lost the evidence for a question that never had any. It also pushed
+the failure histogram past the number of questions actually scored, which is how the bug
+was eventually noticed.
+
+FP1 itself still splits two ways, and the message says which:
+
+- **`no chunk in this index holds the evidence for this question`** — the gold resolved,
+  and no chunk matched it. A chunking or corpus problem.
+- **`the quoted evidence for this question could not be found in this parse`** — the item
+  has anchors and no gold, so this parser never located the quote. A parse problem, and
+  the parser axis is exactly how you would find out which parser does better. See
+  [spans-and-anchors.md](spans-and-anchors.md#is_answerable-vs-is_resolved) — this is an
+  item that is answerable but not resolved.
 
 `deep_k` (default 100 when called directly, must be passed explicitly as shown above — it
 is what separates FP2 from FP3: found within `deep_k` but outside `k` is "ranked too low,
@@ -201,13 +256,21 @@ the top `k`:
 
 ### Reading a `FailureReport`
 
+- `.diagnoses` — one `Diagnosis` per question that had ground truth to score against.
+- `.no_ground_truth` — the ids of questions that had none, so were never diagnosed. These
+  appear in no count, no cluster and no histogram; they are a note about the eval set.
+- `.total_items` — `len(.diagnoses) + len(.no_ground_truth)`, i.e. every question the eval
+  set held. The only number that adds the two back together.
 - `.counts()` — a `{failure_value: count}` dict, sorted, including successes (`"none"`).
+  Over `.diagnoses` only, so it never exceeds the number of questions actually scored.
 - `.failures()` — every non-`NONE` diagnosis.
 - `.of(failure_point)` — diagnoses matching one `FailurePoint`.
 - `.dominant` — the `FailurePoint` accounting for the most failures, or `None` if
   everything succeeded.
 - `.summary()` — the report as a sentence: what dominates, and — because
-  `Diagnosis.remedy` looks up `REMEDIES[failure]` — what to actually try next.
+  `Diagnosis.remedy` looks up `REMEDIES[failure]` — what to actually try next. Adds a
+  closing sentence naming any `no_ground_truth` questions; `summary(include_unscored=False)`
+  drops it.
 - `cluster(report)` — failing question ids grouped by failure point. "These twelve
   failures are all evidence ranked just outside k" is worth more than twelve separate
   traces, because it's one fix rather than twelve investigations.

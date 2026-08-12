@@ -54,7 +54,7 @@ markdown · recursive:512 · bm25                          1.000      0.0   0.00
 markdown · recursive:512 · tfidf · hybrid                 1.000      0.0   0.0000
 markdown · recursive:512 · tfidf · dense · lexical@50     1.000      0.0   0.0000
 
-markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 5 configurations on 3 questions. [...]
+markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 5 configurations, scored on 3 questions. [...]
 
 wrote 6 files to /you/are/here/results
 ```
@@ -96,7 +96,7 @@ results = lab.run(evalset, budget_usd=5.00)
 ```
 
 ```
-markdown · recursive:256 · tfidf · dense scored best on recall@3 at 1.000, across 6 configurations on 3 questions. [...] It runs locally at no cost per query, answering at under 1 ms p95.
+markdown · recursive:256 · tfidf · dense scored best on recall@3 at 1.000, across 6 configurations, scored on 3 questions. [...] It runs locally at no cost per query, answering at under 1 ms p95.
 ```
 
 Real embedding models and rerankers use the same shape, once a server or a key is available —
@@ -112,7 +112,7 @@ results = lab.run(evalset, headline="recall@3")
 ```
 
 ```
-markdown · recursive:512 · tei:bge-base-en-v1.5,api_base=http://127.0.0.1:8080 · dense scored best on recall@3 at 1.000, across 1 configurations on 3 questions. It runs locally at no cost per query, answering at under 1 ms p95.
+markdown · recursive:512 · tei:bge-base-en-v1.5,api_base=http://127.0.0.1:8080 · dense scored best on recall@3 at 1.000, across 1 configurations, scored on 3 questions. It runs locally at no cost per query, answering at under 1 ms p95.
 ```
 
 (Run against a stand-in server speaking TEI's real `/embed` wire protocol, so the code path —
@@ -210,23 +210,32 @@ Real findings from building the ten axes out, recorded in full in
 ## Install extras
 
 ```bash
-pip install "context-grid[parse]"      # pymupdf, pdfplumber, pymupdf4llm
-pip install "context-grid[parse-ml]"   # docling, marker — layout models, heavy
-pip install "context-grid[chunk]"      # chonkie, langchain-text-splitters
-pip install "context-grid[embed]"      # tiktoken — exact token counts, for chunking and pricing
-pip install "context-grid[llm]"        # litellm — hosted embedders, rerankers, transforms, judge
-pip install "context-grid[index]"      # faiss-cpu, usearch
-pip install "context-grid[pgvector]"   # psycopg — needs a running Postgres
-pip install "context-grid[agent]"      # agno — the agno parser and agentic retrieval
-pip install "context-grid[judge]"      # deepeval — faithfulness, relevancy, the generation metrics
+pip install "context-grid[parse]"        # pymupdf, pdfplumber, pymupdf4llm
+pip install "context-grid[parse-ml]"     # docling — layout models, heavy
+pip install "context-grid[parse-marker]" # marker-pdf — its own extra, see below
+pip install "context-grid[chunk]"        # chonkie, langchain-text-splitters
+pip install "context-grid[embed]"        # tiktoken — exact token counts, for chunking and pricing
+pip install "context-grid[llm]"          # litellm — hosted embedders, rerankers, transforms, judge
+pip install "context-grid[index]"        # faiss-cpu, usearch
+pip install "context-grid[pgvector]"     # psycopg — needs a running Postgres
+pip install "context-grid[agent]"        # agno — the agno parser and agentic retrieval
+pip install "context-grid[judge]"        # deepeval — faithfulness, relevancy, the generation metrics
 ```
 
-`[embed]` is not what its name suggests: it installs `tiktoken` for exact token counting, not
-an embedding model. The `litellm` embedder is under `[llm]`, and `tei`/`tei-rerank` need no
-extra at all (they talk plain HTTP to a server you run separately). There is no `[all]`. A
-missing extra raises an error naming the exact install command, never a bare `ImportError`.
-Full matrix, sizes, and what each one unlocks:
-[docs/reference/install.md](docs/reference/install.md).
+Ten extras, plus `dev` for the test suite. There is no `[all]`.
+
+**`marker` is not in `[parse-ml]`.** It has its own extra, because `marker-pdf` and `docling`
+cannot share an environment — they want incompatible `transformers` and `pillow` versions, and
+the set pip resolves to installs cleanly and then breaks `docling` at *runtime*. Install
+`[parse-marker]` on its own, in its own environment, when `marker` is the arm you're measuring.
+[install.md](docs/reference/install.md#why-marker-is-its-own-extra-not-part-of-parse-ml) has
+the whole story.
+
+`[embed]` is also not what its name suggests: it installs `tiktoken` for exact token counting,
+not an embedding model. The `litellm` embedder is under `[llm]`, and `tei`/`tei-rerank` need no
+extra at all (they talk plain HTTP to a server you run separately). A missing extra raises an
+error naming the exact install command, never a bare `ImportError`. Full matrix, sizes, and
+what each one unlocks: [docs/reference/install.md](docs/reference/install.md).
 
 ## Checking it rather than trusting it
 
@@ -243,6 +252,11 @@ It checks first that the gold spans point at real text in the documents as loade
 there is a loading problem and invalidates everything after it — then scores the benchmark with
 a deliberately plain configuration and compares against the published number. The point is to
 check the *scorer*, not to win the benchmark.
+
+The benchmark isn't vendored — it is large and not ours to redistribute — so
+[docs/guide/cli.md](docs/guide/cli.md#validate) documents the JSON shape it expects, with a
+two-question example you can hand-write against your own documents to see the command work
+before going to find the real thing.
 
 ## Self-hosting
 

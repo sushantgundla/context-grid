@@ -52,7 +52,7 @@ accepted as JSON. `contextgrid init` always writes YAML.
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `corpus` | path | *(required)* | A directory of documents, or a single file. The only required key. |
-| `evalset` | path or `null` | `null` | A JSONL or CSV file of questions. Required to actually score a sweep — `check` works without it, `run` doesn't. |
+| `evalset` | path or `null` | `null` | A JSONL or CSV file of questions. Required in practice: both `run` and `check` fail without one (`error: no evalset, so there is nothing to score against`), because a sweep with nothing to score against has no result to report. |
 | `name` | string | the filename, or `"experiment"` | Shows up in `describe()` / `check` output and in the report. |
 | `plugins` | string or list of strings | `[]` | Your own modules, imported before any name in this file is resolved. Needed to name a plugin you wrote yourself — see below. |
 | `grid` | mapping | *(see below)* | The axes and the values to try on each. |
@@ -114,11 +114,49 @@ config possible: naming one axis sweeps it and holds everything else still.
 still build a do-nothing plugin, whereas `generator: null` switches the stage off entirely —
 there is nothing for generation to be the identity of.
 
-`contextgrid plugins` lists what's installed for six of the plugin families — parsers,
-chunkers, embedders, indexes, rerankers and tokenizers. It does not cover `ingestion`,
-`transform`, `retrieval` or `generator`; for every axis, including those four, see the
-[plugin catalogue](../reference/plugins.md). `contextgrid init` writes a config listing only
-the values this installation can actually run, on every axis.
+`contextgrid plugins` lists every registry — all twelve, one heading each:
+
+```
+$ contextgrid plugins | grep ':$'
+parsers:
+ingestion strategies:
+chunkers:
+embedders:
+indexes:
+transforms:
+retrieval strategies:
+rerankers:
+generators:
+models (for `run.model`):
+metrics:
+tokenizers:
+```
+
+**That order is the order the pipeline runs in, not alphabetical.** Scan for a family by where
+it sits in the pipeline, not by its first letter, or you will conclude one is missing.
+
+`--family` takes any one of `parser, ingestion, chunker, embedder, index, transform, retrieval,
+reranker, generator, llm, metric, tokenizer` — note `llm` for the `models (for run.model)`
+heading. An unknown name exits 1 and lists all twelve.
+
+A name marked `*` is installed but still needs a model before it will run, and the footnote
+says so:
+
+```
+$ contextgrid plugins --family generator
+generators:
+  extractive               Return the top passage verbatim. The ceiling retrieval alone can reach.
+  llm                    * Answers with a model, using a prompt template that is itself a sweepable axis.
+  * needs a model. Set `run.model` in your config to use it.
+```
+
+`decompose`, `hyde`, `multi-query` and `step-back` carry the same mark under `transform`. It is
+the same state a generated config writes as `# of those, llm needs \`run.model\` set.` — see
+[what the generated file tells you](cli.md#what-the-generated-file-tells-you).
+
+For the fuller reference — spec strings, parameters and which extra each name needs — see the
+[plugin catalogue](../reference/plugins.md). `contextgrid init` writes a config that names, on
+every axis, both what this installation can run and what it would take to unlock the rest.
 
 **A combination that can't run is skipped, not attempted.** `index: dense` swept against
 `embedder: null` (dense search needs vectors) is counted as an "impossible combination" in
@@ -147,8 +185,26 @@ with defaults.
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `out` | path or `null` | `null` | Where to write the result bundle. `null` means nothing is written — the leaderboard still prints to the console. Directories are created if they don't exist. |
-| `formats` | list of `markdown` \| `json` \| `yaml` \| `python` | `[markdown, json]` | Which files to write into `out`. `markdown` → `report.md` (leaderboard + summary). `json` → `results.json` (every run, every metric). `yaml` → `winning-config.yaml` (the winning configuration alone, re-runnable). `python` → `use_winning_config.py` (the winning configuration as a Python snippet). A `manifest.json` and a copy of the source config (`experiment.yaml`) are always written alongside, regardless of `formats`, whenever `out` is set and there's a winner. |
+| `formats` | list of `markdown` \| `json` \| `yaml` \| `python` | `[markdown, json]` | Which files to write into `out`. `markdown` → `report.md` (leaderboard + summary). `json` → `results.json` (every run, every metric). `yaml` → `winning-config.yaml` (the winning configuration alone, re-runnable). `python` → `use_winning_config.py` (the winning configuration as a Python snippet). A copy of the source config (`experiment.yaml`) is always written alongside whenever `out` is set, regardless of `formats` and regardless of whether anything ran. `manifest.json` is written alongside too, but only when there is a winner — it is the winning configuration's fingerprint, so with no winner there is nothing to fingerprint. |
 | `leaderboard_limit` | int | `20` | How many rows the Markdown leaderboard shows. |
+
+**When nothing ran, the folder is still written.** A sweep stopped before its first
+configuration — `budget_usd: 0.0`, for instance — has no winner, so the four winner-derived
+files are absent: no `manifest.json`, no `winning-config.yaml`, no `use_winning_config.py`.
+What you get is `experiment.yaml`, plus `report.md` and `results.json` saying in as many words
+that no configurations were run and why:
+
+```
+$ contextgrid run budget-zero.yaml; ls -1 ./results
+...
+wrote 3 files to /you/are/here/results
+experiment.yaml
+report.md
+results.json
+```
+
+Keeping `experiment.yaml` is deliberate: a run that produced no numbers is still a run you may
+need to explain later, and the config that produced it is the explanation.
 
 ## Errors you'll actually see
 

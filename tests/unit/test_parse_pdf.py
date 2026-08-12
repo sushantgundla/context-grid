@@ -189,8 +189,10 @@ def test_table_evidence_depends_on_how_the_parser_rendered_the_table() -> None:
     resolved_plain, _ = AnchorResolver().resolve(evalset(), {"contract-pdf": plain})
     resolved_piped, _ = AnchorResolver().resolve(evalset(), {"contract-pdf": piped})
 
-    assert resolved_plain.get("q_table").is_answerable  # type: ignore[union-attr]
-    assert not resolved_piped.get("q_table").is_answerable  # type: ignore[union-attr]
+    # `is_resolved`: whether *this* parse located the quote. Both items are answerable --
+    # they carry the same anchor -- and only one parse can find it.
+    assert resolved_plain.get("q_table").is_resolved  # type: ignore[union-attr]
+    assert not resolved_piped.get("q_table").is_resolved  # type: ignore[union-attr]
 
 
 def test_evidence_a_parser_cannot_produce_is_reported_at_the_set_level() -> None:

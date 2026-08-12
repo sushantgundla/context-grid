@@ -169,9 +169,9 @@ def assess(
 ) -> EvalSetQuality:
     """Score an eval set, using a baseline run to judge discriminating power where available."""
     items = list(evalset)
-    # Evidence in either form counts: a freshly generated set has anchors and no
-    # spans yet, and reporting it as zero answerable questions would be nonsense.
-    answerable = [item for item in items if item.has_evidence]
+    # `EvalItem.is_answerable` is the one rule for this, and this line used to be a second
+    # copy of it that counted anchors when the property did not. Same file, two answers.
+    answerable = [item for item in items if item.is_answerable]
 
     discriminating: list[float] = []
     non_discriminating = 0

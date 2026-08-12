@@ -201,13 +201,16 @@ class UnresolvedEvidenceFilter:
     name: str = "unresolved-evidence"
 
     def apply(self, items: Sequence[EvalItem]) -> tuple[list[EvalItem], list[Rejection]]:
-        if not any(item.is_answerable for item in items):
+        # `is_resolved`, not `is_answerable`: this filter asks whether a parse located the
+        # quote, and an unresolved item is answerable in principle -- that is the whole
+        # point of the anchor. Nothing resolved yet means stand down.
+        if not any(item.is_resolved for item in items):
             return list(items), []
 
         kept: list[EvalItem] = []
         rejected: list[Rejection] = []
         for item in items:
-            if item.anchors and not item.is_answerable:
+            if item.anchors and not item.is_resolved:
                 rejected.append(
                     Rejection(
                         item,

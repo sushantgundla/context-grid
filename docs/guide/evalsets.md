@@ -111,8 +111,15 @@ is a worse experience than just reading it. Column names are matched loosely, ca
 | `answer` | `answer`, `expected_answer`, `gold_answer` |
 
 Only `question` is required — a row with a question but no quote/document becomes a question
-with no evidence yet (`is_answerable` is `False` until someone fills that in). A `GoldAnchor` is
-built automatically whenever both a quote and a document are present.
+with no evidence at all, and `is_answerable` stays `False` until someone fills one of them in.
+A `GoldAnchor` is built automatically whenever both a quote and a document are present, and an
+anchor is enough: `is_answerable` is `bool(gold or anchors)`, so a row with a quote and a
+document is answerable the moment it is read, before anything has been scored or even parsed.
+
+The stricter question — "has that evidence been *located* in this parser's output?" — is
+`is_resolved`, which is `bool(gold)` and is `False` on a freshly read CSV. See
+[spans-and-anchors.md](../scoring/spans-and-anchors.md#is_answerable-vs-is_resolved) for why
+the two are separate and what the gap between them measures.
 
 ```csv
 question,document,evidence
@@ -153,6 +160,15 @@ it actually holds the evidence. The imported set's `meta` says so.
 public benchmark that stores ground truth as character spans — the same decision context-grid
 makes. It's what `contextgrid validate` uses to check the scorer itself against a published
 number; see [cli.md](cli.md#validate).
+
+It reads a JSON object with a `tests` array (a bare array works too). Each test needs a `query`
+and a list of `snippets`, and each snippet needs a `file_path` — the document, named relative
+to the corpus directory — and a `span` of `[start, end]` character offsets into that file
+counted from 0. `id` and `answer` are optional; ids default to `lb0`, `lb1`, ... in file order.
+Snippets missing a `file_path` or a two-element `span` are dropped rather than erroring, and a
+test with no `query` is skipped entirely, so a file that imports cleanly can still be short of
+what you put in it — check the length of what comes back.
+[cli.md](cli.md#the-file-it-expects) has a complete example file.
 
 ## Drafting one instead of writing it by hand
 

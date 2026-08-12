@@ -77,13 +77,11 @@ markdown · langchain:recursive:256 · tfidf · dense        0.877   0.831      
 markdown · sentence:3 · tfidf · dense                     0.491   0.478     199
 markdown · structural:200,min_size=24 · tfidf · dense     0.452   0.382     182
 
-markdown · recursive:256,overlap=32 · tfidf · dense scored best on recall@5 at 0.877, across 5
-configurations on 73 questions. markdown · recursive:256,overlap=32 · tfidf · dense and markdown
-· chonkie:recursive:256 · tfidf · dense are not distinguishable on this eval set (n=73). The gap
-of +0.000 on recall@5 sits inside the confidence interval +0.000 to +0.000, so it is consistent
-with no difference at all. They scored identically on every single question, so this is not a
-close call between two different configurations -- they are behaving the same way.
+markdown · recursive:256,overlap=32 · tfidf · dense scored best on recall@5 at 0.877, across 5 configurations, scored on 73 questions. The eval set holds 74 questions in all; the other 1 was not scored, because no chunk in this index held its evidence. markdown · recursive:256,overlap=32 · tfidf · dense and markdown · chonkie:recursive:256 · tfidf · dense are not distinguishable on this eval set (n=73). The gap of +0.000 on recall@5 sits inside the confidence interval +0.000 to +0.000, so it is consistent with no difference at all. They scored identically on every single question, so this is not a close call between two different configurations -- they are behaving the same way. It runs locally at no cost per query, answering at under 1 ms p95. Note that 1 piece of evidence could not be located in this parse at all, so that question was unanswerable whatever the retriever did. 10 of 74 questions failed. 100% of those are fp1_missing_content: the evidence is not in this index at all. Either the parser lost it, the chunker dropped it, or the corpus does not contain it. No retriever can fix this. This was a retrieval-only run, so failure points four to seven -- the ones about what the generator did with the context -- cannot be seen from here.
 ```
+
+That last paragraph is one line as the tool prints it; it is not wrapped here, so what you
+see is what comes off the screen.
 
 ## How to read it
 

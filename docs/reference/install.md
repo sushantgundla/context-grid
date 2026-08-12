@@ -47,14 +47,13 @@ combination working — see the comment above `parse-marker` in `pyproject.toml`
 `marker` alone, in its own environment, when the `marker` arm is specifically what you're
 measuring; don't mix it with `docling` in the same install.
 
-**A stale error message from before the split:** `PARSERS.register_lazy("marker", ...,
-extra="parse-marker", ...)` in `src/contextgrid/parse/__init__.py` correctly names the new
-extra. But `MarkerParser`'s own lazy import, in `src/contextgrid/parse/layout.py` (around line
-273), still raises `MissingExtraError("The marker parser", "parse-ml", package="marker-pdf")`
-— pointing at `parse-ml`, which no longer contains `marker-pdf` at all. If you hit that error
-today, the message is wrong: run `pip install "context-grid[parse-marker]"`, not
-`[parse-ml]`. Worth fixing upstream — this is the registry's own idea of the extra
-disagreeing with the runtime error it doesn't share code with.
+Ask for `marker` without it installed and the error names the right extra and the exact
+command:
+
+```
+MissingExtraError: The marker parser requires the 'parse-marker' extra (needs marker-pdf).
+Install it with: pip install "context-grid[parse-marker]"
+```
 
 ## Sizes, honestly
 

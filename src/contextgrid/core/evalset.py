@@ -152,22 +152,39 @@ class EvalItem:
 
     @property
     def is_answerable(self) -> bool:
-        """False for questions deliberately included with no supporting evidence.
+        """True when this question carries evidence in either form, resolved or not.
 
+        False only for questions deliberately included with no supporting evidence at all.
         Unanswerable questions test whether a system correctly declines to answer, which
         almost no eval set measures and which is a real failure mode in production.
-        """
-        return bool(self.gold)
 
-    @property
-    def has_evidence(self) -> bool:
-        """True when this question points at evidence in either form.
+        Evidence counts in *either* form. The documented best practice is to write anchors
+        rather than spans (`docs/guide/evalsets.md`), so a rule that looked only at `gold`
+        reported every best-practice eval set as entirely unanswerable. A grade-0 anchor or
+        span still counts: this asks "is there evidence here a scorer could resolve", not
+        "is the evidence relevant", and `gold` has always counted grade-0 spans. Filtering
+        grade 0 on the anchor side alone would make the two forms disagree again.
 
-        Distinct from `is_answerable`, which is stricter and means the evidence has been
-        *resolved* to character spans in a particular parse. A freshly generated item has
-        anchors and no spans: it has evidence, and nothing has located it yet.
+        Use `is_resolved` for the stricter question -- "has that evidence been located in
+        *this* parse" -- which is what ranking metrics and the parse dimension need.
         """
         return bool(self.gold or self.anchors)
+
+    #: Older name for `is_answerable`. There were once two rules for "does this question
+    #: have ground truth", and they drifted: the CLI counted anchors, `is_answerable` did
+    #: not, and the same file reported two different answers. One rule now, under both names.
+    has_evidence = is_answerable
+
+    @property
+    def is_resolved(self) -> bool:
+        """True when this item's evidence has been located as character spans in a parse.
+
+        Stricter than `is_answerable`. A freshly authored item has anchors and no spans: it
+        is answerable, and nothing has resolved it yet. Ranking metrics need spans, so they
+        ask this; and `anchors and not is_resolved` is exactly "this parser lost the quoted
+        evidence", which is how the parse dimension is scored.
+        """
+        return bool(self.gold)
 
     @property
     def is_portable(self) -> bool:
@@ -237,22 +254,22 @@ class EvalSet:
 
     @property
     def answerable(self) -> tuple[EvalItem, ...]:
+        """Questions carrying evidence in either form, resolved or not."""
         return tuple(i for i in self.items if i.is_answerable)
 
-    @property
-    def with_evidence(self) -> tuple[EvalItem, ...]:
-        """Questions carrying evidence in either form, resolved or not.
+    #: Older name for `answerable`, from when the two counted differently. See
+    #: `EvalItem.is_answerable`.
+    with_evidence = answerable
 
-        Distinct from `answerable`, which counts only questions whose evidence has been
-        located in a particular parse. A freshly generated set has evidence everywhere and
-        is answerable nowhere until it has been resolved.
-        """
-        return tuple(i for i in self.items if i.has_evidence)
+    @property
+    def resolved(self) -> tuple[EvalItem, ...]:
+        """Questions whose evidence has been located as spans in a particular parse."""
+        return tuple(i for i in self.items if i.is_resolved)
 
     @property
     def is_portable(self) -> bool:
         """True when every item with evidence can be re-resolved against a different parse."""
-        return all(i.is_portable for i in self.items if i.has_evidence)
+        return all(i.is_portable for i in self.items if i.is_answerable)
 
     def by_type(self, qtype: str) -> tuple[EvalItem, ...]:
         return tuple(i for i in self.items if i.qtype == qtype)

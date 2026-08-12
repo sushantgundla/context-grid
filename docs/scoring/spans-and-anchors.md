@@ -72,7 +72,7 @@ by default.
 
 ### Interval algebra over sets of spans
 
-Three module-level functions in `contextgrid.core.span` handle sets of spans, which is
+Five module-level functions in `contextgrid.core.span` handle sets of spans, which is
 what "how much of the gold did the retrieved set cover, in total?" needs:
 
 | Function | What it does |
@@ -81,6 +81,7 @@ what "how much of the gold did the retrieved set cover, in total?" needs:
 | `total_length(spans)` | Characters covered, counting shared characters once (merges first). |
 | `covered_length(target, others)` | Characters of `target` that appear anywhere in `others` — the core of union recall. |
 | `coverage_fraction(target, others)` | `covered_length` as a fraction of `target`. |
+| `intersection_length(left, right)` | Characters covered by **both** sets, each counted once. Both sides are merged first, so overlapping chunks on either side can't inflate the count. This is what the character-level precision and recall in [metrics.md](metrics.md#character-level-precision-recall-and-f1) are built from. |
 
 `covered_length` is what makes split evidence count correctly: a gold span held half by
 one chunk and half by another is fully covered when both come back, even though neither
@@ -109,22 +110,26 @@ Grades follow the usual IR convention: 2 fully answers, 1 partially relevant, 0
 irrelevant. Graded relevance is what makes nDCG mean anything (see [metrics](metrics.md));
 binary gold turns it into a noisier hit rate.
 
-### `is_answerable` vs `has_evidence`
+### `is_answerable` vs `is_resolved`
 
 An `EvalItem` carries both `gold: tuple[GoldSpan, ...]` (resolved) and
-`anchors: tuple[GoldAnchor, ...]` (portable), and it exposes two properties that look
-similar and mean different things:
+`anchors: tuple[GoldAnchor, ...]` (portable), and it exposes two properties that answer two
+different questions about them:
 
-- **`is_answerable`** — `bool(self.gold)`. True only once evidence has been **resolved**
-  to character spans in a particular parse.
-- **`has_evidence`** — `bool(self.gold or self.anchors)`. True when the item points at
-  evidence in *either* form, resolved or not.
+- **`is_answerable`** — `bool(self.gold or self.anchors)`. **Did somebody write down
+  evidence for this question**, in either form? A property of the eval set, and of nothing
+  else. It does not change when you swap the parser.
+- **`is_resolved`** — `bool(self.gold)`. **Did this parse actually locate that evidence**
+  in its own output? A property of one parse of one corpus. The same item can be resolved
+  under one parser and not under another.
 
-A freshly authored item carries anchors and no spans yet. It **has evidence** and is
-**not answerable** — nothing has located that evidence in a parse yet. Conflating the two
-properties was a real bug here three times: code that checked `is_answerable` to decide
-"does this question have ground truth" read every freshly drafted eval set as entirely
-unanswerable, before anchor resolution ever ran.
+A freshly authored item carries anchors and no spans. It is **answerable** — the evidence
+is written down — and **not resolved**, because nothing has gone looking for it yet.
+
+Grade does not enter into it. A `grade: 0` anchor or span counts as evidence, because the
+question being asked is "is there something here a scorer could resolve", not "is that
+something relevant". `gold` has always counted grade-0 spans, and filtering grade 0 on the
+anchor side alone would make the two forms disagree.
 
 ```python
 >>> from contextgrid.core.evalset import EvalItem, GoldAnchor
@@ -133,19 +138,30 @@ unanswerable, before anchor resolution ever ran.
 ...     question="How much notice must a tenant give before leaving?",
 ...     anchors=(GoldAnchor(source_id="doc1", quote="the tenant must give 30 days written notice"),),
 ... )
->>> item.is_answerable   # no gold spans yet -- nothing has been resolved
-False
->>> item.has_evidence    # but there is evidence, in portable form
+>>> item.is_answerable    # evidence was written down, in portable form
 True
+>>> item.is_resolved      # but no parse has located it yet
+False
 >>> item.is_portable      # bool(self.anchors)
 True
 ```
 
-`EvalSet` mirrors the same distinction: `.answerable` (resolved) vs `.with_evidence`
-(either form) vs `.is_portable` (every item with evidence can be re-resolved). Use
-`.with_evidence` to sanity-check a freshly generated eval set before it has been resolved
-against any parse; use `.answerable` once it has, to know how many questions ranking
-metrics will actually score.
+**The gap between the two is the parser axis.** `item.anchors and not item.is_resolved` is
+exactly "this parser lost the quoted evidence" — the measurement the top of this page
+describes, and the reason anchors exist at all. Collapse the two properties into one and
+that measurement disappears.
+
+`EvalSet` mirrors the distinction: `.answerable` (evidence written down) vs `.resolved`
+(located in this parse) vs `.is_portable` (every item with evidence can be re-resolved).
+Use `.answerable` to ask how big your eval set really is; use `.resolved` after a parse to
+know how many questions ranking metrics will actually score, and treat the difference
+between the two counts as a fact about the parser.
+
+**Two older names, kept as aliases.** `EvalItem.has_evidence` and `EvalSet.with_evidence`
+are the same objects as `is_answerable` and `.answerable` — not near-synonyms, the
+identical property. They date from when the two counted differently; see
+[roadmap.md](../roadmap.md) for what went wrong. New code should prefer `is_answerable` and
+`.answerable`, and should never assume `has_evidence` and `is_answerable` can disagree.
 
 ## `SpanResolver` and its three policies
 
@@ -230,9 +246,13 @@ consume — questions with no resolvable gold are **left out**, not included as 
 judgement set, because an empty set would be scored as a legitimate zero for a reason
 that has nothing to do with the retriever.
 
-Items with no gold spans at all (`item.is_answerable is False`) are skipped and logged at
-`Severity.INFO` — they can't contribute judgements, but they're still useful eval items
-for testing whether a system correctly declines to answer.
+Items with no gold spans at all (`item.is_resolved is False`) are skipped and logged at
+`Severity.INFO` — they can't contribute judgements. Two different things land here, and
+`is_answerable` tells them apart. An item that is **not answerable** carries no evidence at
+all: usually deliberate, a question included to test whether a system correctly declines to
+answer. An item that **is answerable but not resolved** carries an anchor this parse failed
+to find — that one is a fact about the parser, not a gap in the eval set, and is worth
+chasing.
 
 ## `AnchorResolver`: exact → normalised → bounded
 
@@ -309,14 +329,15 @@ that loses the evidence cannot retrieve it, whatever the rest of the pipeline do
 >>> parsed_d = ParsedDocument(document=Document(id="doc1", text=broken_text), parser="broken-ocr")
 >>> resolved_evalset, log = AnchorResolver().resolve(evalset, {"doc1": parsed_d})
 >>> resolved_item = resolved_evalset.get("q1")
->>> resolved_item.is_answerable, resolved_item.has_evidence
+>>> resolved_item.is_resolved, resolved_item.is_answerable
 (False, True)
 >>> [str(w) for w in log]
 ["CAUTION [anchor] (q1): the evidence for 'q1' does not appear in 'broken-ocr''s reading of 'doc1': 'the tenant must give 30 days written notice'", "CAUTION [anchor] (broken-ocr): parser 'broken-ocr' lost 1 of 1 pieces of evidence entirely. Those questions cannot be answered under this parse, whatever the retriever does -- which is a fact about the parser, not the eval set"]
 ```
 
-That's `is_answerable` vs `has_evidence` again, one layer up: the item still has evidence
-(the anchor is still there, quote intact) but is not answerable under this parse.
+That's `is_resolved` vs `is_answerable` again, one layer up: the item is still answerable
+(the anchor is there, quote intact) and is not resolved under this parse. The eval set is
+fine; the parser is what lost the evidence, and that is precisely what the warning says.
 
 ### Ambiguous quotes: `occurrence` and `page_hint`
 

@@ -197,10 +197,25 @@ def explain_diff(before: Manifest, after: Manifest) -> str:
     """The difference between two runs, in plain English."""
     changes = diff(before, after)
     if not changes:
+        # The old wording here said "these two runs should have produced identical numbers",
+        # which claims more than a manifest can support. A manifest records the configuration
+        # that won, not the sweep that found it, so a 7-configuration `ofat` run and a
+        # 27-configuration `factorial` run over the same grid write identical manifests when
+        # they pick the same winner. A reader told those runs were the same goes hunting for
+        # nondeterminism that is not there. Nothing in the manifest distinguishes them --
+        # there is no sweep mode and no configuration count in it -- so the honest fix is to
+        # say what was actually compared.
         return (
-            "Nothing in the manifest changed, so these two runs should have produced "
-            "identical numbers. If they did not, something outside the manifest is affecting "
-            "results and that is worth finding."
+            "Nothing in these two manifests is different: same winning configuration, corpus, "
+            "eval set, resolution policy, versions and seeds. On that evidence the two runs "
+            "should have produced identical numbers for this one configuration.\n"
+            "\n"
+            "That is not the same as the two runs being identical. A manifest records the "
+            "configuration that won, not the sweep that found it, so two runs over different "
+            "grids -- or over the same grid in different modes -- can both end up here.\n"
+            "\n"
+            "If this configuration did score differently in the two runs, something outside "
+            "the manifest is affecting results and that is worth finding."
         )
 
     lines = [f"{len(changes)} thing(s) changed between these runs:"]

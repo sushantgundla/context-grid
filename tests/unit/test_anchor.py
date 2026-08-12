@@ -278,7 +278,10 @@ def test_evidence_a_parser_lost_is_reported_as_a_fact_about_the_parser() -> None
     )
 
     assert resolved.gold == ()
-    assert not resolved.is_answerable
+    # `is_resolved`, not `is_answerable`. The question still has evidence -- the quote is
+    # right there -- it is this parse that failed to locate it, which is the measurement.
+    assert not resolved.is_resolved
+    assert resolved.is_answerable
     lost = log.of_code(WarningCode.ANCHOR_NOT_FOUND)
     assert lost
     assert "bad-ocr" in lost[0].message

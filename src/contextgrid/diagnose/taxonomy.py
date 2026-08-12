@@ -107,6 +107,19 @@ class FailureReport:
     diagnoses: list[Diagnosis] = field(default_factory=list)
     k: int = 5
     observed_generation: bool = False
+    #: Questions that carry no ground truth at all -- no gold spans and no anchors -- and so
+    #: were never scored and are not diagnosed.
+    #:
+    #: They used to be swept into `MISSING_CONTENT`, which told the reader their parser,
+    #: chunker or corpus had lost the evidence for a question nobody ever wrote evidence for.
+    #: The eval set has a hole in it; the pipeline is fine. Those are different problems with
+    #: different fixes, so they are counted separately and never enter the histogram.
+    no_ground_truth: list[str] = field(default_factory=list)
+
+    @property
+    def total_items(self) -> int:
+        """Every question the eval set held, diagnosed or not."""
+        return len(self.diagnoses) + len(self.no_ground_truth)
 
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -131,16 +144,22 @@ class FailureReport:
             counts[diagnosis.failure] = counts.get(diagnosis.failure, 0) + 1
         return max(counts, key=lambda point: counts[point])
 
-    def summary(self) -> str:
+    def summary(self, *, include_unscored: bool = True) -> str:
         """What went wrong and what to do about it, as a sentence.
 
         Turns a score into an action. "0.62" tells you nothing; "most failures are evidence
         ranked just outside k, so try a reranker" tells you what to run next.
+
+        `include_unscored=False` drops the eval-set-gap sentence, for callers such as
+        `Results.summary` that have already said it in their own words and would otherwise
+        say it twice in one paragraph.
         """
         total = len(self.diagnoses)
         failures = self.failures()
+        gap = self._eval_set_gap() if include_unscored else []
+
         if not failures:
-            return f"All {total} questions succeeded."
+            return " ".join([f"All {total} questions succeeded.", *gap])
 
         dominant = self.dominant
         assert dominant is not None
@@ -155,7 +174,22 @@ class FailureReport:
                 "This was a retrieval-only run, so failure points four to seven -- the ones "
                 "about what the generator did with the context -- cannot be seen from here."
             )
+        lines.extend(gap)
         return " ".join(lines)
+
+    def _eval_set_gap(self) -> list[str]:
+        """The sentence for questions nobody wrote ground truth for, if there are any."""
+        missing = len(self.no_ground_truth)
+        if not missing:
+            return []
+        one = missing == 1
+        return [
+            f"A further {missing} question{'' if one else 's'} "
+            f"({', '.join(self.no_ground_truth)}) "
+            f"{'has' if one else 'have'} no ground truth -- no gold spans and no anchors -- "
+            f"so {'it was' if one else 'they were'} not scored at all. "
+            "That is a gap in the eval set, not a fault in this pipeline."
+        ]
 
 
 def diagnose(
@@ -175,6 +209,18 @@ def diagnose(
     report = FailureReport(k=k, observed_generation=False)
 
     for item in evalset:
+        # A question with no gold spans *and* no anchors was never given an answer to be
+        # right about. Diagnosing it as FP1 blamed the parser, the chunker and the corpus
+        # for a question the eval set never finished writing -- and inflated the failure
+        # histogram past the number of questions actually scored.
+        #
+        # The fields, not `has_evidence`: that name is an alias of `is_answerable`, which has
+        # already been redefined once, and the distinction this line rests on is the one the
+        # whole fix turns on. An item with anchors and no gold is a parser that lost the
+        # evidence -- a real FP1 -- and must not be swept in here.
+        if not (item.gold or item.anchors):
+            report.no_ground_truth.append(item.id)
+            continue
         judgements = qrels.get(item.id, {})
         ranked = list(run.get(item.id, ()))
         report.diagnoses.append(_diagnose_one(item, judgements, ranked, k, deep_k))
@@ -192,10 +238,19 @@ def _diagnose_one(
     relevant = {chunk_id for chunk_id, grade in judgements.items() if grade > 0}
 
     if not relevant:
+        # This item *does* carry ground truth -- `diagnose` filtered out the ones that do
+        # not -- so nothing matching it in the index is a genuine FP1. Which half of the
+        # pipeline lost it is worth saying: an anchor that never resolved is a parse
+        # problem, gold that resolved and matched no chunk is a chunking problem.
+        lost_at_parse = bool(item.anchors) and not item.gold
         return Diagnosis(
             item.id,
             FailurePoint.MISSING_CONTENT,
-            "no chunk in this index holds the evidence for this question",
+            (
+                "the quoted evidence for this question could not be found in this parse"
+                if lost_at_parse
+                else "no chunk in this index holds the evidence for this question"
+            ),
             retrieved=len(ranked),
         )
 

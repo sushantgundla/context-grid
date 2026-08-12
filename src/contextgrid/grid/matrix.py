@@ -135,8 +135,14 @@ class Matrix:
         """The configurations this mode covers, with redundant ones removed.
 
         Staged expands to the same set as OFAT here, because its later stages depend on
-        earlier results and only the runner can know them. What staged actually runs is a
-        subset, decided as it goes.
+        earlier results and only the runner can know them. So for staged this is a plan and
+        not a count. It is worked out by varying each axis around the *baseline*, and staged
+        does not stay there: it varies each axis around the winner of the stage before it.
+        That can be fewer runs than this -- `candidates` collapses to a single configuration
+        once `reranker: null` is frozen in front of it -- or more, because the same axis
+        becomes three real runs once `reranker: lexical` is frozen there instead. Neither
+        number is wrong; a staged sweep cannot be counted until it has run, and
+        `Runner._staged` says so when what it ran and what was planned differ.
         """
         configs, _ = self.expand_with_report(mode)
         return configs

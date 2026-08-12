@@ -1,0 +1,14 @@
+qid,q,file,evidence,rel,category
+nw1,How many times is a failed card payment retried?,billing.md,retried three times over six days,2,billing
+nw2,How is storage overage measured?,pricing.md,average of hourly samples across the billing period rather than the peak,2,billing
+nw3,Do personal access tokens expire?,api-authentication.md,expire after 90 days and cannot be extended,2,api
+nw4,Can I see an API token again after creating it?,api-authentication.md,shown exactly once,2,api
+nw5,How many times can I download an export?,data-export.md,downloaded up to five times,2,export
+nw6,Which plans get SCIM provisioning?,sso-setup.md,SCIM provisioning is Enterprise only,2,sso
+nw7,How often is uptime sampled?,uptime-and-status.md,sampled every 30 seconds,2,reliability
+nw8,How long do I have to claim a service credit?,uptime-and-status.md,within 30 days of the incident,2,reliability
+nw9,Does closing my account need more than one person to agree?,closing-your-account.md,otherwise the request lapses and nothing happens,2,account
+nw10,When are seats freed after deleting a workspace?,deleting-a-workspace.md,Seats are freed on day 0,2,account
+nw11,How long does a bank transfer take to settle?,billing.md,Up to 10 business days,2,billing
+nw12,Does Northwind Cloud support PayPal?,,,,billing
+nw13,Who is exempt from SSO enforcement?,sso-setup.md,it deliberately does not apply to the account Owner who enabled it,2,sso
