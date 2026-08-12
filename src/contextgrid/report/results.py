@@ -339,7 +339,8 @@ class Results:
         in_evalset = len(winner.failures.diagnoses) if winner.failures is not None else 0
         if in_evalset > winner.scored_queries:
             lines.append(
-                f"The eval set holds {in_evalset} questions in all; the other "
+                f"The eval set holds {in_evalset} question"
+                f"{'' if in_evalset == 1 else 's'} in all; the other "
                 f"{in_evalset - winner.scored_queries} could not be scored, because no chunk "
                 "in this index held their evidence."
             )
@@ -367,19 +368,26 @@ class Results:
             lines.append(f"It runs locally at no cost per query, answering at {latency} p95.")
 
         if winner.unresolved_gold:
+            # One unresolved anchor is an ordinary result, and "1 pieces of evidence ... those
+            # questions were" undoes the care taken over the rest of the paragraph.
+            one = winner.unresolved_gold == 1
+            pieces = "piece" if one else "pieces"
+            questions = "that question was" if one else "those questions were"
             lines.append(
-                f"Note that {winner.unresolved_gold} pieces of evidence could not be located "
-                "in this parse at all, so those questions were unanswerable whatever the "
-                "retriever did."
+                f"Note that {winner.unresolved_gold} {pieces} of evidence could not be located "
+                f"in this parse at all, so {questions} unanswerable whatever the retriever did."
             )
 
         if winner.failures is not None and winner.failures.failures():
             lines.append(winner.failures.summary())
 
         if not self.warnings.is_sound:
+            marking = len(self.warnings.invalidating)
+            one = marking == 1
             lines.append(
-                f"{len(self.warnings.invalidating)} warnings mark this comparison as unsound. "
-                "Read them before acting on any of it."
+                f"{marking} warning{'' if one else 's'} "
+                f"{'marks' if one else 'mark'} this comparison as unsound. "
+                f"Read {'it' if one else 'them'} before acting on any of it."
             )
 
         return " ".join(lines)

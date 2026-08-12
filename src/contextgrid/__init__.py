@@ -107,7 +107,7 @@ from contextgrid.index import (
 )
 from contextgrid.lab import Lab
 from contextgrid.parse import PARSERS, get_parser
-from contextgrid.pipeline import BuiltPipeline, Config, Timings
+from contextgrid.pipeline import BuiltPipeline, Config, Timings, build
 from contextgrid.report import (
     Manifest,
     Results,
@@ -283,6 +283,10 @@ __all__ = [
     "assess",
     "available_metrics",
     "bootstrap_interval",
+    # `cg.build` is the call every exported snippet ends on, and the one the docs have always
+    # written. It only ever resolved because `contextgrid.pipeline` happened to be left as an
+    # attribute by an internal import -- a private name doing public work. Exported properly.
+    "build",
     "build_manifest",
     "character_f1",
     "character_precision",

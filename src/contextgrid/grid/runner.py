@@ -21,7 +21,7 @@ from contextgrid.cost.metering import MeteredLLM, exact_tokenizer_or_none
 from contextgrid.cost.model import CostModel
 from contextgrid.diagnose.taxonomy import diagnose
 from contextgrid.generate import GenerationReport, score_answer
-from contextgrid.grid.matrix import AXIS_ORDER, Matrix, SweepMode
+from contextgrid.grid.matrix import AXIS_ORDER, Matrix, SweepMode, deduplicate
 from contextgrid.pipeline import BuiltPipeline, Config, build, build_qrels, resolve_evalset
 from contextgrid.report.results import Results, RunResult
 from contextgrid.score.anchor import AnchorResolver
@@ -550,38 +550,67 @@ class Runner:
         Cheapest way to a good configuration and the one most people want. It is also
         conditional on the order the axes were swept in, and it cannot see interactions --
         so it says so, rather than presenting its answer as if it had searched the space.
+
+        Progress counts the whole sweep rather than each stage. It used to restart at 1 on
+        every axis and count against that axis's own length, so a five-run sweep announced as
+        five runs reported `[1/3] [2/3] [3/3] [2/2] [2/2]`: two different configurations both
+        called the second of two, and a denominator that moved three times while the header's
+        number never moved at all.
         """
         results = Results(mode="staged", seed=self.seed)
         budget.start()
         current = matrix.baseline()
         seen: dict[Config, RunResult] = {}
 
-        for axis in AXIS_ORDER:
-            candidates = matrix.stage_configs(axis, current)
-            if len(candidates) < 2:
-                continue
+        # The same number `ExperimentConfig.describe` prints as "N to run in staged mode",
+        # from the same call, so the counter and the header agree on the ordinary sweep rather
+        # than agreeing by coincidence. It is a plan and not a count -- see `Matrix.expand`,
+        # and the warning at the bottom of this method for what happens when it is missed.
+        announced = matrix.count(SweepMode.STAGED)
+        total = announced
+        completed = 0
 
-            for position, config in enumerate(candidates, start=1):
+        def run_stage(candidates: Sequence[Config]) -> str | None:
+            """Run whatever this stage has not run already, or say why the sweep stopped.
+
+            The denominator is raised here, once, when the sweep learns this stage holds more
+            work than the plan allowed for -- rather than once per line, which would tick it
+            up under the reader as they watched.
+            """
+            nonlocal completed, total
+            total = max(total, completed + sum(1 for c in candidates if c not in seen))
+            for config in candidates:
                 spent = budget.exceeded()
                 if spent is not None:
-                    results.warnings.add(
-                        WarningCode.BUDGET_REACHED,
-                        f"{spent} during the {axis!r} stage. Later axes were never swept at all",
-                        severity=Severity.CAUTION,
-                        stage="run",
-                    )
-                    results.cache_summary = self.stats.summary()
-                    return results
+                    return spent
 
                 if config in seen:
                     continue
+                completed += 1
                 if on_progress:
-                    on_progress(position, len(candidates), config)
+                    on_progress(completed, total, config)
                 result = self.run_one(config, evalset)
                 seen[config] = result
                 results.runs.append(result)
                 results.warnings.extend(result.warnings)
                 budget.charge(result, len(evalset.items))
+            return None
+
+        for axis in AXIS_ORDER:
+            candidates = matrix.stage_configs(axis, current)
+            if len(candidates) < 2:
+                continue
+
+            spent = run_stage(candidates)
+            if spent is not None:
+                results.warnings.add(
+                    WarningCode.BUDGET_REACHED,
+                    f"{spent} during the {axis!r} stage. Later axes were never swept at all",
+                    severity=Severity.CAUTION,
+                    stage="run",
+                )
+                results.cache_summary = self.stats.summary()
+                return results
 
             best = max(
                 (seen[c] for c in candidates if c in seen),
@@ -590,6 +619,41 @@ class Runner:
             )
             if best is not None:
                 current = best.config
+
+        if not seen:
+            # Every axis holds a single configuration, so every stage above was skipped and
+            # the sweep ran nothing at all -- an empty leaderboard printed directly under a
+            # header promising one run. A matrix with nothing to compare still describes a
+            # configuration, and measuring it is what the header said would happen.
+            only, _ = deduplicate([current])
+            spent = run_stage(only)
+            if spent is not None:
+                results.warnings.add(
+                    WarningCode.BUDGET_REACHED,
+                    f"{spent} before the only configuration in this matrix could run. Nothing "
+                    "was measured, so there is no leaderboard rather than an empty one",
+                    severity=Severity.CAUTION,
+                    stage="run",
+                )
+                results.cache_summary = self.stats.summary()
+                return results
+            if only:
+                current = only[0]
+
+        if completed != announced:
+            results.warnings.add(
+                WarningCode.NON_DETERMINISTIC_STAGE,
+                f"staged mode ran {completed} configuration(s) where {announced} were planned. "
+                "The plan costs out varying each axis around the baseline; staged varies each "
+                "axis around the winner of the stage before it, and an axis can be worth "
+                "sweeping against one winner and meaningless against another -- candidate "
+                "depth does nothing at all until a reranker is frozen in front of it. Neither "
+                "number is wrong: a staged sweep cannot be counted until it has run",
+                severity=Severity.INFO,
+                stage="run",
+                planned=announced,
+                ran=completed,
+            )
 
         varying = matrix.varying_axes
         if len(varying) > 1:

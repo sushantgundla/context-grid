@@ -270,7 +270,7 @@ own — a record of what a `Config` held, with no corpus and nothing to run. It 
 import contextgrid as cg
 
 # parent-document:4 · markdown · recursive:96 · ~relevance-feedback:3 · bm25 · lexical@20
-# Any field not named below is at its default; `winning-config.yaml` spells out all of them.
+# Any field not named below is at its default; `cg.Config()` puts it back.
 config = cg.Config(
     ingestion="parent-document:4",
     chunker="recursive:96",
@@ -282,7 +282,7 @@ config = cg.Config(
     candidates=20,
 )
 
-corpus = cg.Corpus.from_dir("./documents")
+corpus = cg.Corpus.from_dir("/you/are/here/documents")
 pipeline = cg.build(config, corpus)
 
 for chunk_id in pipeline.search("your question here"):
@@ -295,6 +295,13 @@ update `config_to_python()`. An earlier version listed six field names by hand, 
 the dataclass, and exported the winner above with no `ingestion=` and no `retrieval=` line:
 the snippet built plain chunking and plain search while `winning-config.yaml` beside it
 described the real pipeline. Two files from one run, two different answers.
+
+**The corpus is the absolute path that was actually swept**, resolved the same way
+`winning-config.yaml` beside it resolves one, so the two files in a bundle cannot name
+different documents and the snippet runs from any directory. When nothing tells the export
+where the documents are — `write_bundle()` called without `corpus`, the same case that makes
+`config_to_yaml()` fall back to a flat listing — it writes `./documents` under a comment
+saying it is a placeholder, rather than a real-looking path nobody has checked.
 
 Anything left out is at its default, so `cg.Config(...)` puts it back — the snippet
 reconstructs the winner exactly. The label comment on top says which configuration it is,

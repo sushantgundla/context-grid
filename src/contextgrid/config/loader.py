@@ -211,7 +211,10 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
         ),
         "python": (
             "use_winning_config.py",
-            lambda: config_to_python(winner.config) if winner else "",
+            # The corpus, for the same reason the yaml above needs it: without it the snippet
+            # falls back to a placeholder `./documents` and the two files in this directory
+            # disagree about which documents were measured.
+            lambda: config_to_python(winner.config, corpus=config.corpus) if winner else "",
         ),
     }
 

@@ -56,6 +56,32 @@ def _unknown_key(section: str, key: str, known: Sequence[str]) -> ConfigError:
     )
 
 
+def _problems_error(problems: Sequence[str], summary: str) -> ConfigError:
+    """One error carrying however many problems were found.
+
+    A single problem is its own message -- a count and an indented list of one reads like a
+    form letter. More than one gets the summary line and the list, so nothing is buried.
+    """
+    if len(problems) == 1:
+        return ConfigError(problems[0])
+    joined = "\n".join(f"  {problem}" for problem in problems)
+    return ConfigError(f"{summary}:\n{joined}")
+
+
+def _path_problems(corpus: Path, evalset: Path | None) -> list[str]:
+    """The same input checks `ExperimentConfig.validate_paths` makes, as a list.
+
+    Same wording, because the message a user reads should not depend on which command found
+    the problem.
+    """
+    problems: list[str] = []
+    if not corpus.exists():
+        problems.append(f"corpus not found: {corpus}")
+    if evalset is not None and not evalset.exists():
+        problems.append(f"eval set not found: {evalset}")
+    return problems
+
+
 def _plugin_axes() -> dict[str, tuple[Registry[Any], tuple[str, ...]]]:
     """Every axis whose values are plugin names, and where those names come from.
 
@@ -113,7 +139,13 @@ class GridConfig:
     generator: tuple[str | None, ...] = (None,)
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> GridConfig:
+    def from_mapping(cls, data: Mapping[str, Any], *, check_names: bool = True) -> GridConfig:
+        """Parse the axes. `check_names=False` parses without rejecting an unknown name.
+
+        The caller that turns it off is `ExperimentConfig.from_mapping`, which wants the list
+        of bad names rather than the first exception, so it can report them beside whatever
+        else is wrong with the file. Everybody else wants the exception.
+        """
         for key in data:
             if key not in AXIS_ORDER:
                 raise _unknown_key("grid", key, AXIS_ORDER)
@@ -130,7 +162,8 @@ class GridConfig:
             candidates=_as_ints(data.get("candidates", (50,)), "grid.candidates"),
             generator=_as_optional_strings(data.get("generator", (None,)), "grid.generator"),
         )
-        grid.validate_names()
+        if check_names:
+            grid.validate_names()
         return grid
 
     def validate_names(self) -> None:
@@ -146,6 +179,18 @@ class GridConfig:
         will run somewhere else, and it still fails at run time with its own MissingExtraError
         saying what to install. Checking a config must not require being able to run it.
         """
+        problems = self.name_problems()
+        if problems:
+            # Every one of them, because fixing a typo, re-running, and being told about the
+            # next typo is the same wait repeated.
+            raise _problems_error(problems, f"{len(problems)} unknown plugin name(s) in the grid")
+
+    def name_problems(self) -> list[str]:
+        """What `validate_names` would refuse, as a list instead of an exception.
+
+        Split out so a caller holding other problems can report these beside them, rather than
+        raising on whichever class of problem it happened to reach first.
+        """
         problems: list[str] = []
         for axis, (registry, extra) in _plugin_axes().items():
             known = {*registry.names(), *extra}
@@ -159,15 +204,7 @@ class GridConfig:
                     # which line to look at while `chunker` is the only axis you touched.
                     problem = UnknownPluginError(registry.family, name, sorted(known))
                     problems.append(f"grid.{axis}: {problem}")
-
-        if len(problems) == 1:
-            raise ConfigError(problems[0])
-        if problems:
-            # Every one of them, because fixing a typo, re-running, and being told about the
-            # next typo is the same wait repeated -- and `check` already reports its path
-            # problems all at once.
-            joined = "\n".join(f"  {problem}" for problem in problems)
-            raise ConfigError(f"{len(problems)} unknown plugin name(s) in the grid:\n{joined}")
+        return problems
 
     def to_matrix(self, k: int) -> Matrix:
         return Matrix(
@@ -399,10 +436,30 @@ class ExperimentConfig:
 
         plugins = load_plugins(_as_strings(data.get("plugins", ()), "plugins"), base=base)
 
+        corpus = _resolve(data["corpus"], base)
+        evalset = _resolve(data["evalset"], base) if data.get("evalset") else None
+
+        # A typo'd plugin name used to abort here, so `contextgrid check` never reached the
+        # path checks it does afterwards: a config with both a missing corpus and a typo'd
+        # chunker reported the chunker, and the missing corpus only on the next run. The two
+        # are independent -- neither needs the other resolved -- so both are reported at once.
+        # Paths are only looked at on this failing branch. A config still loads with its corpus
+        # absent, which is what `validate_paths` being a separate step is for.
+        grid = GridConfig.from_mapping(_section(data, "grid"), check_names=False)
+        names = grid.name_problems()
+        if names:
+            paths = _path_problems(corpus, evalset)
+            summary = (
+                f"{len(names) + len(paths)} problems with this config"
+                if paths
+                else f"{len(names)} unknown plugin name(s) in the grid"
+            )
+            raise _problems_error([*names, *paths], summary)
+
         return cls(
-            corpus=_resolve(data["corpus"], base),
-            evalset=_resolve(data["evalset"], base) if data.get("evalset") else None,
-            grid=GridConfig.from_mapping(_section(data, "grid")),
+            corpus=corpus,
+            evalset=evalset,
+            grid=grid,
             run=RunConfig.from_mapping(_section(data, "run")),
             report=ReportConfig.from_mapping(_section(data, "report"), base=base),
             name=str(data.get("name", source.stem if source else "experiment")),

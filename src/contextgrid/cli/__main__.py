@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +20,7 @@ from contextgrid.core.registry import Registry
 
 if TYPE_CHECKING:  # imported for types only, so `contextgrid --version` stays a cheap import
     from contextgrid.config.schema import ExperimentConfig
+    from contextgrid.report.manifest import Manifest
     from contextgrid.report.results import Results
 
 
@@ -151,6 +152,9 @@ def _run_config(args: argparse.Namespace) -> int:
     if written:
         print(f"\nwrote {len(written)} files to {config.report.out}")
 
+    # `reasons` is already on the console, immediately under the leaderboard it explains.
+    _print_warnings(results, already_shown=reasons)
+
     if not results.runs:
         # A sweep that measured nothing is a failure, not a result. `budget_usd: 0.0`, and a
         # matrix whose only cell cannot be built, both printed "No configurations were run."
@@ -185,6 +189,48 @@ def _why_nothing_ran(config: ExperimentConfig, results: Results) -> list[str]:
     if config.run.budget_seconds is not None or config.run.budget_usd is not None:
         reasons += [w.message for w in results.warnings.of_code(WarningCode.BUDGET_REACHED)]
     return reasons
+
+
+def _print_warnings(results: Results, *, already_shown: Sequence[str] = ()) -> None:
+    """Put the run's warnings on the console, the same ones the written report carries.
+
+    Warnings are data on the results object, and the only things reading that data were
+    `report.md` and `results.json`. `report.out` defaults to null and `sweep` writes nothing
+    without `--bundle`, so a sweep stopped by its budget after 1 of 15 configurations printed a
+    one-row leaderboard, exited 0 and said nothing at all: the truncation was recorded in a
+    file nobody asked to be written. A partial matrix that looks complete is the failure this
+    package exists to prevent, so it belongs on the console whether or not a report is written.
+
+    The rule is the report's rule, so the two agree: INFO is background detail when there are
+    results to read, and worth saying when there are none.
+
+    On stderr, with the progress lines, because stdout here is the leaderboard people pipe.
+    `--quiet` does not silence these -- it turns off per-config progress, and "this leaderboard
+    is a fifteenth of the matrix you asked for" is exactly what an unattended CI run needs said.
+    """
+    from contextgrid.core.warnings import Severity
+
+    # Unconditionally, before anything is decided: stdout is block-buffered whenever it is not
+    # a terminal, so in the CI logs this exists for, everything written to stderr from here on
+    # -- these warnings, and the `error:` lines after them -- came out *above* the leaderboard
+    # they are about. The budget warning literally says "the leaderboard below is partial".
+    sys.stdout.flush()
+
+    seen = set(already_shown)
+    reportable = [
+        warning
+        for warning in results.warnings.entries
+        if (warning.severity is not Severity.INFO or not results.runs)
+        and warning.message not in seen
+    ]
+    if not reportable:
+        return
+
+    print(file=sys.stderr)
+    for warning in reportable:
+        # Prefixed with the code, as `report.md` prefixes them, so a CI log can be grepped for
+        # `budget_reached` and the console and the report name the same thing the same way.
+        print(f"warning: {warning.code.value}: {warning.message}", file=sys.stderr)
 
 
 def _init(args: argparse.Namespace) -> int:
@@ -394,6 +440,9 @@ def _sweep(args: argparse.Namespace) -> int:
         )
         print(f"\nwrote {len(written)} files to {args.bundle}")
 
+    # `sweep --budget-seconds 0.001` was the worst case of all: no bundle is written unless
+    # `--bundle` is passed, so the warning saying the leaderboard is partial had nowhere to go.
+    _print_warnings(results)
     return 0
 
 
@@ -483,10 +532,55 @@ def _validate(args: argparse.Namespace) -> int:
 
 
 def _diff(args: argparse.Namespace) -> int:
-    from contextgrid.report import Manifest, explain_diff
+    from contextgrid.report import explain_diff
 
-    print(explain_diff(Manifest.load(args.before), Manifest.load(args.after)))
+    print(explain_diff(_load_manifest(args.before), _load_manifest(args.after)))
     return 0
+
+
+def _load_manifest(path: Path) -> Manifest:
+    """Read one manifest, and on failure say which file was wrong and what was wrong with it.
+
+    `Manifest.load` reads, parses and unpacks in one call, so whatever the standard library
+    raised was what reached the user: `error: 'config'` for a JSON file that is not a manifest,
+    `error: Expecting value: line 1 column 1 (char 0)` for a file that is not JSON at all,
+    `error: [Errno 2] No such file or directory: 'nope.json'` for a path that does not exist.
+    None of them says what a manifest is, and the first two do not even name the file -- which
+    matters more here than anywhere else in this CLI, because `diff` is handed two of them and
+    the message has to say which one it is complaining about.
+    """
+    import json
+
+    from contextgrid.report import Manifest
+
+    hint = "A manifest is the manifest.json written into a run's bundle."
+    try:
+        return Manifest.load(path)
+    except FileNotFoundError:
+        raise ValueError(f"no manifest at {path}. {hint}") from None
+    except IsADirectoryError:
+        raise ValueError(
+            f"{path} is a directory, not a manifest. Try {path / 'manifest.json'}"
+        ) from None
+    except OSError as error:
+        raise ValueError(f"could not read {path}: {error.strerror or error}") from None
+    except UnicodeDecodeError:
+        raise ValueError(f"{path} is not text, so it is not a manifest. {hint}") from None
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path} is not valid JSON: {error}. {hint}") from None
+    except KeyError as error:
+        # The manifest fields are read by name, so a JSON file of the wrong shape surfaced as a
+        # bare key: `error: 'config'`, which reads like an internal fault rather than a file the
+        # user pointed at.
+        raise ValueError(
+            f"{path} is JSON, but not a manifest: no {error.args[0]!r} in it. {hint}"
+        ) from None
+    except TypeError:
+        # A JSON file whose top level is a list, a string or a number: indexing it by name
+        # raises rather than missing a key.
+        raise ValueError(
+            f"{path} is JSON, but not a manifest: it is not an object. {hint}"
+        ) from None
 
 
 if __name__ == "__main__":

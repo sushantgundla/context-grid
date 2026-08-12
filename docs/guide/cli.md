@@ -113,12 +113,28 @@ first:
 | The corpus path is missing | `corpus not found: /path/to/absent` |
 | The corpus directory holds nothing readable | `no files under /path/to/docs matched ['*.txt', ...]` |
 | The eval set is missing, or there is none | `no evalset, so there is nothing to score against` |
-| An axis names a plugin that does not exist | `chunker 'banana:999': no chunker named 'banana'. Available: ...` |
+| An axis names a plugin that does not exist | `grid.chunker: no chunker named 'banana'. Available: ...` |
 | A plugin rejects its parameters | `chunker 'recursive:-5': chunk size must be positive, got -5` |
 
 Each message is the one `run` would have printed; `check` only makes it arrive before the
-expensive part. The matrix shape is still printed first — the config parsed fine, only its
-contents are wrong — and then every problem, one `error: ...` line each, on stderr:
+expensive part.
+
+Where they appear depends on when they are knowable. An unknown plugin *name* is caught while
+the file is being parsed, before there is a matrix to print a shape for, so those arrive first,
+as one `error:` block with the missing paths listed alongside them:
+
+```
+$ contextgrid check typo.yaml; echo "exit: $?"
+error: 3 problems with this config:
+  grid.chunker: no chunker named 'banana'. Available: fixed, recursive, semantic, sentence, ...
+  grid.parser: no parser named 'nosuchparser'. Available: markdown, pdfplumber, pymupdf, text, ...
+  corpus not found: /path/to/absent
+exit: 1
+```
+
+Everything else needs the config to have parsed. The matrix shape is printed first — the file
+itself was fine, only its contents are wrong — and then every problem, one `error: ...` line
+each, on stderr:
 
 ```
 $ contextgrid check broken.yaml; echo "exit: $?"
