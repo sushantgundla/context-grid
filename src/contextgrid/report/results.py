@@ -336,14 +336,42 @@ class Results:
         # which was which: "on 17 questions" from `scored_queries` and "8 of 20 questions
         # failed" from the failure report, whose total is the whole eval set. Naming the eval
         # set's size before the failure sentence arrives is what makes the 20 readable.
-        in_evalset = len(winner.failures.diagnoses) if winner.failures is not None else 0
-        if in_evalset > winner.scored_queries:
-            lines.append(
+        #
+        # And the two reasons a question goes unscored are not the same problem. "No chunk in
+        # this index held their evidence" points at the parser, the chunker and the corpus.
+        # A question with no gold spans and no anchors was never given evidence to lose --
+        # the eval set is unfinished, and telling that user to go debug their pipeline sends
+        # them looking for a bug that is not there.
+        in_evalset = winner.failures.total_items if winner.failures is not None else 0
+        no_gold = len(winner.failures.no_ground_truth) if winner.failures is not None else 0
+        unreachable = max(in_evalset - no_gold - winner.scored_queries, 0)
+        if unreachable or no_gold:
+            unscored = unreachable + no_gold
+            named = _named(winner.failures.no_ground_truth) if no_gold else ""  # type: ignore[union-attr]
+            one_gap = no_gold == 1
+            gap_reason = (
+                f"{'it has' if one_gap else 'they have'} no ground truth at all -- no gold "
+                f"spans and no anchors -- so there was nothing to score "
+                f"{'it' if one_gap else 'them'} against. That is a gap in the eval set, not a "
+                f"fault in this pipeline"
+            )
+            stem = (
                 f"The eval set holds {in_evalset} question"
                 f"{'' if in_evalset == 1 else 's'} in all; the other "
-                f"{in_evalset - winner.scored_queries} could not be scored, because no chunk "
-                "in this index held their evidence."
+                f"{unscored} {'was' if unscored == 1 else 'were'} not scored"
             )
+            evidence = (
+                f"no chunk in this index held {'its' if unreachable == 1 else 'their'} evidence"
+            )
+            if unreachable and no_gold:
+                lines.append(
+                    f"{stem}: {unreachable} because {evidence}, and {no_gold} ({named}) "
+                    f"because {gap_reason}."
+                )
+            elif unreachable:
+                lines.append(f"{stem}, because {evidence}.")
+            else:
+                lines.append(f"{stem} ({named}), because {gap_reason}.")
 
         if len(ranked) > 1:
             try:
@@ -379,7 +407,8 @@ class Results:
             )
 
         if winner.failures is not None and winner.failures.failures():
-            lines.append(winner.failures.summary())
+            # The eval-set gap is already stated above, in this paragraph's own words.
+            lines.append(winner.failures.summary(include_unscored=False))
 
         if not self.warnings.is_sound:
             marking = len(self.warnings.invalidating)
@@ -395,6 +424,14 @@ class Results:
 
 #: The sentence `contextgrid.score.significance._sample_size_note` produces when a gap is real
 #: but the eval set is too small to settle it.
+def _named(item_ids: Sequence[str], limit: int = 3) -> str:
+    """Name the questions, but do not paste a hundred ids into a paragraph."""
+    if len(item_ids) <= limit:
+        return ", ".join(item_ids)
+    rest = len(item_ids) - limit
+    return f"{', '.join(item_ids[:limit])} and {rest} more"
+
+
 def _readable_ms(milliseconds: float) -> str:
     """Latency a human can read. "0 ms" is a rounding artefact, not a measurement."""
     if milliseconds < 1:

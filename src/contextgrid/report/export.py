@@ -446,7 +446,11 @@ def _run_payload(run: RunResult) -> dict[str, Any]:
             None if interval is None else {"low": interval.low, "high": interval.high}
         ),
         "by_type": run.by_type,
+        # The histogram covers the questions that were actually diagnosed, so it sums to the
+        # number scored rather than to the size of the eval set. Questions with no ground
+        # truth are listed beside it instead of being counted as retrieval misses.
         "failures": (None if run.failures is None else run.failures.counts()),
+        "no_ground_truth": (None if run.failures is None else list(run.failures.no_ground_truth)),
         # The per-question scores, so somebody can re-run the statistics themselves.
         "per_query": run.per_query,
         # And what the model actually said, so a generation score can be checked rather than

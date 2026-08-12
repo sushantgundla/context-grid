@@ -107,6 +107,24 @@ class GridWarning:
         what = f" ({self.subject})" if self.subject else ""
         return f"{self.severity.value.upper()}{where}{what}: {self.message}"
 
+    @property
+    def identity(self) -> tuple[Any, ...]:
+        """Everything that makes this warning the *same fact* as another one.
+
+        `detail` is part of it, and deliberately so. Two `anchor_normalised` warnings about
+        the same question under two different parsers are two different facts -- one parser
+        reflowed the text and the other did not -- and collapsing them on code and subject
+        alone would delete a real finding about one arm of the sweep.
+        """
+        return (
+            self.code,
+            self.message,
+            self.severity,
+            self.stage,
+            self.subject,
+            tuple(sorted((key, repr(value)) for key, value in self.detail.items())),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "code": self.code.value,
@@ -152,6 +170,28 @@ class WarningLog:
 
     def extend(self, other: Iterable[GridWarning]) -> None:
         self.entries.extend(other)
+
+    def extend_unique(self, other: Iterable[GridWarning]) -> int:
+        """Append only warnings this log does not already hold, and say how many were dropped.
+
+        For collecting many runs' logs into one report. Facts about the *eval set* -- a
+        question with no ground truth, a quote found only after whitespace was collapsed --
+        are re-derived by every configuration that resolves that eval set, so a seven-way
+        sweep used to print the same two warnings six times over and bury everything else.
+
+        Sameness is `GridWarning.identity`, which includes `detail`: a warning that differs
+        by parser, model or threshold is a different fact and survives.
+        """
+        seen = {warning.identity for warning in self.entries}
+        dropped = 0
+        for warning in other:
+            key = warning.identity
+            if key in seen:
+                dropped += 1
+                continue
+            seen.add(key)
+            self.entries.append(warning)
+        return dropped
 
     def merge(self, other: WarningLog) -> WarningLog:
         """Return a new log holding this log's entries followed by the other's."""
