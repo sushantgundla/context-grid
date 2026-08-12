@@ -228,6 +228,17 @@ reported zero answerable questions, the classifier labelled everything `unanswer
 unresolved-evidence filter rejected the entire set. The fix is a second property,
 `has_evidence`, and the discipline of asking which of the two every call site actually meant.
 
+*Later.* The split was right and the names were wrong. `is_answerable` kept reading as "does
+this question have ground truth" to everybody who met it, including us, so call sites kept
+picking the wrong one and the bug came back a fourth time — against the documented best
+practice of writing anchors rather than spans, `is_answerable` reported a perfectly good eval
+set as entirely unanswerable. The two properties survive under names that say what they ask:
+**`is_answerable`** is now `bool(gold or anchors)` — somebody wrote down evidence — and the
+resolved-in-this-parse question moved to **`is_resolved`** (`bool(gold)`), with `.answerable`
+and `.resolved` on `EvalSet`. `has_evidence` and `with_evidence` remain as aliases of
+`is_answerable`. The lesson is not "add a second property"; it is that a property named for
+the question people will ask of it does not get read as the other one.
+
 ---
 
 ## M7 — Credibility ✅ *shipped*

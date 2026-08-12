@@ -132,9 +132,9 @@ error: 3 problems with this config:
 exit: 1
 ```
 
-Everything else needs the config to have parsed. The matrix shape is printed first — the file
-itself was fine, only its contents are wrong — and then every problem, one `error: ...` line
-each, on stderr:
+Everything else needs the config to have parsed. The matrix shape goes to stdout — the file
+itself was fine, only its contents are wrong — and every problem goes to stderr, one
+`error: ...` line each. At a terminal they arrive in that order:
 
 ```
 $ contextgrid check broken.yaml; echo "exit: $?"
@@ -155,6 +155,12 @@ error: no evalset, so there is nothing to score against
 exit: 1
 ```
 
+**Redirect either stream and that order flips.** The two are separate streams, and stdout is
+buffered when it is not a terminal, so `contextgrid check broken.yaml > shape.txt` — or piping
+into anything, or capturing in CI — makes the `error:` lines appear before the shape rather
+than after it. Nothing is missing and nothing has changed; the interleaving you see at a
+terminal is not a guarantee about which came first.
+
 Worth running before any sweep that might take a while — it catches a missing path, an empty
 corpus, a typo'd axis or a typo'd spec string before anything expensive starts.
 
@@ -163,11 +169,18 @@ corpus, a typo'd axis or a typo'd spec string before anything expensive starts.
 Measures a corpus and flags sweep settings its shape rules out, from the documents alone — no
 eval set needed.
 
-It is narrower than it sounds, and the example below is representative rather than truncated:
-today it reports size and encoding, and warns when a chunk size cannot discriminate on
-documents this short. It does not rank the axes for you. Deciding which axis matters is what
-the sweep itself is for — `profile` exists to stop you spending one on a setting the corpus
-already rules out.
+It is narrower than it sounds, and the example below is representative rather than truncated.
+The first line is the corpus as measured: how many files, how many bytes, how many characters
+once the parser has read them, which parser did the reading, and what share of the text is
+tables. Under it come the notes — one per thing the shape tells you, and only for the things it
+does tell you. Three you will see often:
+
+- **Tables.** A high table percentage says parser choice is likely to swamp the other axes, and
+  that a chunker which cuts a table in half loses the answer with it.
+- **Headings.** A high average heading count per document says structural chunking is worth
+  putting on the grid.
+- **Median document length.** Chunk sizes above the median cannot tell two configurations
+  apart, so sweeping them wastes the sweep.
 
 ```bash no-run: usage synopsis, not a literal command
 contextgrid profile corpus [--parser NAME]
@@ -175,9 +188,17 @@ contextgrid profile corpus [--parser NAME]
 
 ```
 $ contextgrid profile ./documents
-2 files, 381 bytes, 381 chars via markdown
-  - The median document is 190 characters. Chunk sizes above that cannot differentiate, so sweep small sizes.
+8 files, 13,699 bytes, 13,635 chars via markdown, 17% tables
+  - 17% of this corpus is tables. Parser choice will probably dominate every other axis here, and a chunker that splits a table in half will lose the answer outright.
+  - Documents average 6 headings each. Structural chunking usually wins on corpora like this.
+  - The median document is 1,773 characters. Chunk sizes above that cannot differentiate, so sweep small sizes.
 ```
+
+Read those notes as pointers at which axes are worth sweeping, not as a result. `profile` runs
+no configuration, scores nothing and produces no leaderboard — "parser choice will probably
+dominate" is a statement about the shape of your documents, not a measurement of any parser.
+Which axis actually matters on your corpus is what the sweep itself is for; `profile` exists to
+stop you spending one on a setting the corpus already rules out.
 
 ## `sweep`
 
@@ -259,7 +280,7 @@ policy-questions v1 (manual)
 3 questions (3 answerable), 0% reviewed, detects differences of 1.00 and above
 types: {'unlabelled': 3}
   - 3 answerable questions can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
-  - only 0% of this set has been looked at by a human. Auto-generated ground truth is the weakest link in any retrieval comparison, and the review queue is the cheapest place to fix it
+  - only 0% of this set is marked as checked by a human. Ground truth nobody has read is the weakest link in any retrieval comparison. If you wrote these questions yourself, say so with `"meta": {"reviewed": true}` on each one; otherwise the review queue is the cheapest place to fix it
 ```
 
 ## `validate`
@@ -279,17 +300,74 @@ contextgrid validate benchmark.json corpus [--limit N] [--recall-at-10 X]
 | `--limit` | Only use the first N questions. |
 | `--recall-at-10` | The published number to compare against. Without it, `validate` still runs and reports its own numbers, just with nothing to diff against. |
 
+### The file it expects
+
+Since nothing is vendored, here is the shape, so you can hand-write one and check the command
+works before you go looking for the real benchmark. A JSON object with a `tests` array (a
+bare array is also accepted):
+
+| Field | Where | Required | What |
+|---|---|---|---|
+| `query` | on each test | yes | The question. A test with an empty or missing `query` is skipped. |
+| `snippets` | on each test | yes, in practice | The evidence. A test with none loads, but has no gold, so it can never be scored. |
+| `file_path` | on each snippet | yes | The document, named **relative to the `corpus` directory** you pass on the command line. `validate` reads `corpus/file_path` and skips any snippet whose file isn't there. |
+| `span` | on each snippet | yes | `[start, end]` — character offsets into that file, half-open, counted from 0. Anything shorter than two entries is skipped. |
+| `id` | on each test | no | Defaults to `lb0`, `lb1`, ... in file order. |
+| `answer` | on each test | no | The expected answer text. Carried through, not scored by `validate`. |
+
+The offsets are into the file **as it sits on disk** — `validate` reads the corpus verbatim
+with the plain-text parser precisely so that nothing reflows the text and moves them. Count
+characters, not lines, and not bytes.
+
+A complete two-question file:
+
+```json
+{
+  "tests": [
+    {
+      "id": "q1",
+      "query": "Does the Northwind Cloud API have any unauthenticated endpoints?",
+      "snippets": [
+        {"file_path": "api-authentication.md", "span": [117, 202]}
+      ]
+    },
+    {
+      "id": "q2",
+      "query": "When is a Northwind Cloud customer billed each month?",
+      "snippets": [
+        {"file_path": "billing.md", "span": [24, 108]}
+      ]
+    }
+  ]
+}
+```
+
+The quickest way to get the two numbers right is to let Python find them, rather than counting
+by hand:
+
+```python no-run: reads a corpus that isn't reconstructed in this snippet
+from pathlib import Path
+
+text = Path("documents/api-authentication.md").read_text()
+quote = "There is no session, no cookie, and no unauthenticated endpoint apart from `/health`."
+start = text.index(quote)
+print([start, start + len(quote)])       # -> [117, 202]
+```
+
+### Running it
+
 It checks first that the benchmark's spans point at real text in the corpus as loaded — a
 mismatch there is a loading problem and invalidates everything that follows — then scores a
-deliberately plain configuration and, if `--recall-at-10` was given, compares it:
+deliberately plain configuration (the text parser, `recursive:512` with 64 overlap, BM25, no
+embedder, `k=10`) and, if `--recall-at-10` was given, compares it:
 
 ```
 $ contextgrid validate legalbench-sample.json ./documents --recall-at-10 0.72
-1 of 1 spans point at real text in the documents as loaded, so the benchmark and the corpus agree and the scoring chain has something valid to run on.
+2 of 2 spans point at real text in the documents as loaded, so the benchmark and the corpus agree and the scoring chain has something valid to run on.
 
 # Validation against LegalBench-RAG
 
-Resolved 1 of 1 questions (100%) to character spans in the corpus.
+Resolved 2 of 2 questions (100%) to character spans in the corpus.
 
 | Metric | Ours | Published | Delta |
 |---|---:|---:|---:|
@@ -297,6 +375,11 @@ Resolved 1 of 1 questions (100%) to character spans in the corpus.
 
 **recall@10 differs by +0.280, outside the 0.05 tolerance.** A difference in retrieval configuration explains some of this; anything left over is a problem with our scoring, not with the benchmark.
 ```
+
+That plain configuration is the point — it is there to check the *scorer*, not to win the
+benchmark, so a `+0.280` delta on a two-question hand-written file says nothing except that the
+chain ran. Leave `--recall-at-10` off and you get the same header followed by every metric the
+run computed, one per line, with nothing to diff against.
 
 Exits 1 if fewer than 95% of spans resolve — below that, nothing downstream means anything, so
 the command stops rather than reporting scores against broken ground truth.

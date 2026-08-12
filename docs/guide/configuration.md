@@ -52,7 +52,7 @@ accepted as JSON. `contextgrid init` always writes YAML.
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `corpus` | path | *(required)* | A directory of documents, or a single file. The only required key. |
-| `evalset` | path or `null` | `null` | A JSONL or CSV file of questions. Required to actually score a sweep — `check` works without it, `run` doesn't. |
+| `evalset` | path or `null` | `null` | A JSONL or CSV file of questions. Required in practice: both `run` and `check` fail without one (`error: no evalset, so there is nothing to score against`), because a sweep with nothing to score against has no result to report. |
 | `name` | string | the filename, or `"experiment"` | Shows up in `describe()` / `check` output and in the report. |
 | `plugins` | string or list of strings | `[]` | Your own modules, imported before any name in this file is resolved. Needed to name a plugin you wrote yourself — see below. |
 | `grid` | mapping | *(see below)* | The axes and the values to try on each. |
@@ -147,8 +147,26 @@ with defaults.
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `out` | path or `null` | `null` | Where to write the result bundle. `null` means nothing is written — the leaderboard still prints to the console. Directories are created if they don't exist. |
-| `formats` | list of `markdown` \| `json` \| `yaml` \| `python` | `[markdown, json]` | Which files to write into `out`. `markdown` → `report.md` (leaderboard + summary). `json` → `results.json` (every run, every metric). `yaml` → `winning-config.yaml` (the winning configuration alone, re-runnable). `python` → `use_winning_config.py` (the winning configuration as a Python snippet). A `manifest.json` and a copy of the source config (`experiment.yaml`) are always written alongside, regardless of `formats`, whenever `out` is set and there's a winner. |
+| `formats` | list of `markdown` \| `json` \| `yaml` \| `python` | `[markdown, json]` | Which files to write into `out`. `markdown` → `report.md` (leaderboard + summary). `json` → `results.json` (every run, every metric). `yaml` → `winning-config.yaml` (the winning configuration alone, re-runnable). `python` → `use_winning_config.py` (the winning configuration as a Python snippet). A copy of the source config (`experiment.yaml`) is always written alongside whenever `out` is set, regardless of `formats` and regardless of whether anything ran. `manifest.json` is written alongside too, but only when there is a winner — it is the winning configuration's fingerprint, so with no winner there is nothing to fingerprint. |
 | `leaderboard_limit` | int | `20` | How many rows the Markdown leaderboard shows. |
+
+**When nothing ran, the folder is still written.** A sweep stopped before its first
+configuration — `budget_usd: 0.0`, for instance — has no winner, so the four winner-derived
+files are absent: no `manifest.json`, no `winning-config.yaml`, no `use_winning_config.py`.
+What you get is `experiment.yaml`, plus `report.md` and `results.json` saying in as many words
+that no configurations were run and why:
+
+```
+$ contextgrid run budget-zero.yaml; ls -1 ./results
+...
+wrote 3 files to /you/are/here/results
+experiment.yaml
+report.md
+results.json
+```
+
+Keeping `experiment.yaml` is deliberate: a run that produced no numbers is still a run you may
+need to explain later, and the config that produced it is the explanation.
 
 ## Errors you'll actually see
 

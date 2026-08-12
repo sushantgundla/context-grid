@@ -143,8 +143,9 @@ wrote 6 files to /you/are/here/results
 ```
 
 (Paths in `report.out` always resolve to absolute — that's the last line's path, not literally
-`./results`. The progress lines go to stderr; pass `--quiet` to a `run` you're scripting to
-suppress them.)
+`./results`. The progress lines go to stderr, everything else to stdout; that is why they sit
+between the shape and the leaderboard at a terminal, and why they will not once you redirect
+one of the two streams. Pass `--quiet` to a `run` you're scripting to suppress them.)
 
 ## Reading the leaderboard
 
@@ -178,6 +179,10 @@ written) gets:
 | `winning-config.yaml` | The winning configuration alone, as a runnable config |
 | `use_winning_config.py` | The winning configuration as a Python snippet |
 | `experiment.yaml` | A copy of the config that produced this — a results folder that can't be re-run is a screenshot |
+
+Five of those six describe a winner. If a sweep runs nothing at all — a budget too small for a
+single configuration — there is no winner to describe, so you get three files instead:
+`experiment.yaml`, `report.md` and `results.json`, and the report says why nothing ran.
 
 The full key-by-key reference for `grid:`, `run:` and `report:` is in
 [configuration.md](configuration.md). Every `contextgrid` subcommand, with its flags, is in

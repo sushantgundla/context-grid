@@ -244,6 +244,11 @@ there is a loading problem and invalidates everything after it — then scores t
 a deliberately plain configuration and compares against the published number. The point is to
 check the *scorer*, not to win the benchmark.
 
+The benchmark isn't vendored — it is large and not ours to redistribute — so
+[docs/guide/cli.md](docs/guide/cli.md#validate) documents the JSON shape it expects, with a
+two-question example you can hand-write against your own documents to see the command work
+before going to find the real thing.
+
 ## Self-hosting
 
 Everything in the default install runs locally and talks to nothing, which is the honest
