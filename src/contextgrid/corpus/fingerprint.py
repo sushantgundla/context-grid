@@ -163,8 +163,11 @@ class CorpusFingerprint:
         parts = [f"{self.file_count} files", f"{self.total_bytes:,} bytes"]
         if self.is_parsed:
             parts.append(f"{self.total_characters:,} chars via {self.parser}")
-            if self.table_ratio:
-                parts.append(f"{self.table_ratio:.0%} tables")
+            # Printed even at 0%. A field that disappears reads as "this parser does not
+            # report tables"; the truth is "this parser found none", and those are opposite
+            # conclusions for somebody choosing a parser. `markdown` finding 17% where
+            # `text` finds 0% *is* the parser axis showing itself, and is worth seeing.
+            parts.append(f"{self.table_ratio:.0%} tables")
         return ", ".join(parts)
 
 
