@@ -72,7 +72,7 @@ by default.
 
 ### Interval algebra over sets of spans
 
-Three module-level functions in `contextgrid.core.span` handle sets of spans, which is
+Five module-level functions in `contextgrid.core.span` handle sets of spans, which is
 what "how much of the gold did the retrieved set cover, in total?" needs:
 
 | Function | What it does |
@@ -81,6 +81,7 @@ what "how much of the gold did the retrieved set cover, in total?" needs:
 | `total_length(spans)` | Characters covered, counting shared characters once (merges first). |
 | `covered_length(target, others)` | Characters of `target` that appear anywhere in `others` — the core of union recall. |
 | `coverage_fraction(target, others)` | `covered_length` as a fraction of `target`. |
+| `intersection_length(left, right)` | Characters covered by **both** sets, each counted once. Both sides are merged first, so overlapping chunks on either side can't inflate the count. This is what the character-level precision and recall in [metrics.md](metrics.md#character-level-precision-recall-and-f1) are built from. |
 
 `covered_length` is what makes split evidence count correctly: a gold span held half by
 one chunk and half by another is fully covered when both come back, even though neither

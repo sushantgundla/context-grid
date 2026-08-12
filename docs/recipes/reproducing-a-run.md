@@ -142,9 +142,9 @@ configuration                            recall@5   p95 ms     $/1k
 markdown · recursive:256 · tfidf · dense    1.000      0.1   0.0000
 markdown · sentence:2 · tfidf · dense       1.000      0.0   0.0000
 
-markdown · recursive:256 · tfidf · dense scored best on recall@5 at 1.000, across 2 configurations
-on 3 questions. markdown · recursive:256 · tfidf · dense and markdown · sentence:2 · tfidf · dense
-are not distinguishable on this eval set (n=3). ...
+markdown · recursive:256 · tfidf · dense scored best on recall@5 at 1.000, across 2 configurations,
+scored on 3 questions. markdown · recursive:256 · tfidf · dense and markdown · sentence:2 · tfidf
+· dense are not distinguishable on this eval set (n=3). ...
 
 wrote 3 files to ./results-x
 ```

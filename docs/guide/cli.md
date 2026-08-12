@@ -55,8 +55,10 @@ the leaderboard it printed is real, and it is marked partial in the warnings.
 
 ## `init`
 
-Writes a starter config listing every plugin *this installation* can actually run as a chosen
-value, and everything else as a comment showing how to unlock it (which extra to install).
+Writes a starter config: a small sweep that runs as written, and — in comments beside every
+axis — the full list of what else *this installation* could put there, and what it would cost
+you to unlock the rest. The file is meant to be edited, and it tells you what your options are
+while you edit it.
 
 ```bash no-run: usage synopsis, not a literal command
 contextgrid init [path] [--corpus DIR] [--evalset FILE] [--force]
@@ -74,6 +76,43 @@ $ contextgrid init contextgrid.yaml --corpus ./documents --evalset ./questions.j
 wrote contextgrid.yaml
 edit it, then run:  contextgrid run contextgrid.yaml
 ```
+
+### What the generated file tells you
+
+Every axis is written in the same shape. Here is the `parser` block, verbatim, from an install
+with every extra except `marker-pdf`:
+
+```yaml
+  parser: [markdown]
+  # also available: agno, docling, pdfplumber, pymupdf, pymupdf4llm, text
+  # needs `pip install "context-grid[parse-marker]"`: marker
+```
+
+Three separate states, and the difference between them is the point:
+
+| Where it appears | What it means |
+|---|---|
+| On the axis line — `parser: [markdown]` | What this config will actually sweep when you run it. |
+| `# also available: ...` | Installed and runnable right now. Move a name onto the axis line and it works, no install needed. |
+| the `# needs pip install ...` line | Not runnable yet. The names are grouped by extra, so the one command shown unlocks every name on that line. |
+
+**The axis line is a starting point, not a recommendation, and deliberately not everything you
+could run.** Sweeping all seven installed parsers on a first run would download two models
+before you had read a line of the file, and the header's own advice is to sweep one axis at a
+time. Widening an axis is one edit; narrowing a sweep you didn't mean to start is a wasted
+afternoon.
+
+There is a fourth state, on the axes where a plugin needs configuration rather than a package:
+
+```yaml
+  generator: [null]
+  # also available: extractive, llm
+  # of those, llm needs `run.model` set.
+```
+
+`llm` is installed and will still be refused by `check` until `run.model` names a model. The
+same line appears under `transform:`, for `decompose`, `hyde`, `multi-query` and `step-back`.
+Nothing is hidden from you — a name you can't run yet is shown along with the reason.
 
 ## `check`
 
@@ -230,7 +269,7 @@ configuration                   recall@3   p95 ms     $/1k
 markdown · recursive:128 · bm25    1.000      0.0   0.0000
 markdown · recursive:256 · bm25    1.000      0.0   0.0000
 
-markdown · recursive:128 · bm25 scored best on recall@3 at 1.000, across 2 configurations on 3 questions. [...]
+markdown · recursive:128 · bm25 scored best on recall@3 at 1.000, across 2 configurations, scored on 3 questions. [...]
 
 cache: 2 of 8 lookups reused (25%), chunk 0/4, parse 2/4
 
@@ -239,13 +278,51 @@ wrote 5 files to sweep-results
 
 ## `plugins`
 
-Lists everything registered for each plugin family — parser, chunker, embedder, index,
-reranker, tokenizer — with a one-line description each. Includes plugins that need an extra
-you haven't installed (unlike the `init` template, which only offers what's runnable).
+Lists everything registered, in all twelve registries, with a one-line description each.
 
 ```bash no-run: usage synopsis, not a literal command
 contextgrid plugins [--family NAME]
 ```
+
+The headings, and the `--family` name for each, **in pipeline order rather than alphabetical**
+— look for a family by where it sits in the pipeline:
+
+```
+$ contextgrid plugins | grep ':$'
+parsers:
+ingestion strategies:
+chunkers:
+embedders:
+indexes:
+transforms:
+retrieval strategies:
+rerankers:
+generators:
+models (for `run.model`):
+metrics:
+tokenizers:
+```
+
+`--family` takes `parser, ingestion, chunker, embedder, index, transform, retrieval, reranker,
+generator, llm, metric, tokenizer`. The one that isn't its heading is `llm`, for `models (for
+run.model)`. An unknown name exits 1 and lists all twelve.
+
+Includes plugins that need an extra you haven't installed, with no distinction drawn between
+those and the ones you can run. The `init` template does draw that line — see [`init`](#init) —
+so use `plugins` to see what exists and a generated config to see what you could run right now.
+
+The one thing it does mark is a plugin that needs a *model* rather than a package:
+
+```
+$ contextgrid plugins --family generator
+generators:
+  extractive               Return the top passage verbatim. The ceiling retrieval alone can reach.
+  llm                    * Answers with a model, using a prompt template that is itself a sweepable axis.
+  * needs a model. Set `run.model` in your config to use it.
+```
+
+`decompose`, `hyde`, `multi-query` and `step-back` carry the same `*` under `transform`. It is
+the state a generated config writes as `# of those, llm needs \`run.model\` set.`
 
 ```
 $ contextgrid plugins --family chunker

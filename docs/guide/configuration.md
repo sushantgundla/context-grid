@@ -114,11 +114,49 @@ config possible: naming one axis sweeps it and holds everything else still.
 still build a do-nothing plugin, whereas `generator: null` switches the stage off entirely —
 there is nothing for generation to be the identity of.
 
-`contextgrid plugins` lists what's installed for six of the plugin families — parsers,
-chunkers, embedders, indexes, rerankers and tokenizers. It does not cover `ingestion`,
-`transform`, `retrieval` or `generator`; for every axis, including those four, see the
-[plugin catalogue](../reference/plugins.md). `contextgrid init` writes a config listing only
-the values this installation can actually run, on every axis.
+`contextgrid plugins` lists every registry — all twelve, one heading each:
+
+```
+$ contextgrid plugins | grep ':$'
+parsers:
+ingestion strategies:
+chunkers:
+embedders:
+indexes:
+transforms:
+retrieval strategies:
+rerankers:
+generators:
+models (for `run.model`):
+metrics:
+tokenizers:
+```
+
+**That order is the order the pipeline runs in, not alphabetical.** Scan for a family by where
+it sits in the pipeline, not by its first letter, or you will conclude one is missing.
+
+`--family` takes any one of `parser, ingestion, chunker, embedder, index, transform, retrieval,
+reranker, generator, llm, metric, tokenizer` — note `llm` for the `models (for run.model)`
+heading. An unknown name exits 1 and lists all twelve.
+
+A name marked `*` is installed but still needs a model before it will run, and the footnote
+says so:
+
+```
+$ contextgrid plugins --family generator
+generators:
+  extractive               Return the top passage verbatim. The ceiling retrieval alone can reach.
+  llm                    * Answers with a model, using a prompt template that is itself a sweepable axis.
+  * needs a model. Set `run.model` in your config to use it.
+```
+
+`decompose`, `hyde`, `multi-query` and `step-back` carry the same mark under `transform`. It is
+the same state a generated config writes as `# of those, llm needs \`run.model\` set.` — see
+[what the generated file tells you](cli.md#what-the-generated-file-tells-you).
+
+For the fuller reference — spec strings, parameters and which extra each name needs — see the
+[plugin catalogue](../reference/plugins.md). `contextgrid init` writes a config that names, on
+every axis, both what this installation can run and what it would take to unlock the rest.
 
 **A combination that can't run is skipped, not attempted.** `index: dense` swept against
 `embedder: null` (dense search needs vectors) is counted as an "impossible combination" in

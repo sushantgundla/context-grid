@@ -56,16 +56,11 @@ PY
 ### The real output
 
 ```
-markdown · recursive:256,overlap=32 · tfidf · dense       0.877
-markdown · recursive:256,overlap=32 · hash:512 · dense    0.863
-markdown · recursive:256,overlap=32 · length · dense      0.164
+markdown · recursive:256,overlap=32 · tfidf · dense   0.877
+markdown · recursive:256,overlap=32 · hash:512 · dense  0.836
+markdown · recursive:256,overlap=32 · length · dense  0.164
 
-markdown · recursive:256,overlap=32 · tfidf · dense scored best on recall@5 at 0.877, across 3
-configurations on 73 questions. markdown · recursive:256,overlap=32 · tfidf · dense and markdown
-· recursive:256,overlap=32 · hash:512 · dense are not distinguishable on this eval set (n=73).
-The gap of +0.014 on recall@5 sits inside the confidence interval -0.027 to +0.068, so it is
-consistent with no difference at all. About 20890 questions would be needed to settle a gap
-this size.
+markdown · recursive:256,overlap=32 · tfidf · dense scored best on recall@5 at 0.877, across 3 configurations, scored on 73 questions. The eval set holds 74 questions in all; the other 1 was not scored, because no chunk in this index held its evidence. markdown · recursive:256,overlap=32 · tfidf · dense and markdown · recursive:256,overlap=32 · hash:512 · dense are not distinguishable on this eval set (n=73). The gap of +0.041 on recall@5 sits inside the confidence interval -0.027 to +0.110, so it is consistent with no difference at all. Settling a gap this size would take roughly 2,300 questions -- on a two-sided test at alpha 0.05 with 80% power, assuming per-question scores vary as much as a 0-1 score possibly can. It is an order of magnitude, not a count. It runs locally at no cost per query, answering at under 1 ms p95. Note that 1 piece of evidence could not be located in this parse at all, so that question was unanswerable whatever the retriever did. 10 of 74 questions failed. 100% of those are fp1_missing_content: the evidence is not in this index at all. Either the parser lost it, the chunker dropped it, or the corpus does not contain it. No retriever can fix this. This was a retrieval-only run, so failure points four to seven -- the ones about what the generator did with the context -- cannot be seen from here.
 ```
 
 ### How to read it
@@ -75,11 +70,15 @@ would land near k/chunks ≈ 5/35 ≈ 0.14, close enough that this is basically 
 below `tfidf`'s 0.877. That's the sanity check passing: the eval set can tell a real signal from
 none.
 
-`tfidf` beats `hash:512` by 0.014 — and the tool says plainly that gap is noise: **"about 20890
-questions would be needed to settle a gap this size."** That number is doing real work. It isn't
-"maybe with more data" hand-waving — it's the eval set's own quality assessment telling you
-exactly how far you are from a trustworthy answer, and 20,890 is far enough that nobody should
-act on this gap. Report the leaderboard order if you like; don't report a winner.
+`tfidf` beats `hash:512` by 0.041 — and the tool says plainly that gap is noise: **"Settling a
+gap this size would take roughly 2,300 questions -- on a two-sided test at alpha 0.05 with 80%
+power, assuming per-question scores vary as much as a 0-1 score possibly can. It is an order of
+magnitude, not a count."** That number is doing real work. It isn't "maybe with more data"
+hand-waving — it's the eval set's own quality assessment telling you how far you are from a
+trustworthy answer, and 2,300 against this set's 74 is far enough that nobody should act on this
+gap. Note that the tool calls it an order of magnitude rather than a count, and means it: the
+estimate assumes the worst possible per-question variance, so treat "thousands, not dozens" as
+the claim. Report the leaderboard order if you like; don't report a winner.
 
 ### Real models: what it takes, and the offline stand-in
 
@@ -131,9 +130,20 @@ print(result.metric("recall@5"))
 
 Run for real: **`recall@5: 0.123`** — near the random-chunk floor, exactly as it should be,
 because `fake_embed` returns pure noise with no relationship to the text at all. That's not a
-finding about embedders; it's proof the wiring works. (The seed has to come from a stable hash
-of the text, not Python's built-in `hash()` — that's randomised per process, so a "deterministic"
-stand-in built on it would print a different number on every run.) Swap `fake_embed` for a real
+finding about embedders; it's proof the wiring works.
+
+**The seed has to come from a stable hash of the text, not Python's built-in `hash()`** —
+that's randomised per process, so a "deterministic" stand-in built on it prints a different
+number on every run. This is not just advice for people writing their own stand-in: it
+describes what the shipped `hash` embedder does. It did not always. It used to read `hash()`,
+which meant the same corpus and the same spec string gave different vectors in different
+processes, and `hash:512,seed=3` changed the output without pinning it. The `hash:512` numbers
+on this page are lower than they once were for exactly that reason, and they now reproduce
+across processes and across `PYTHONHASHSEED` values. Any embedder that hashes tokens has this
+failure mode, and a recipe page is where you find out — a sweep will happily report a
+difference that is really just two processes.
+
+Swap `fake_embed` for a real
 batch call and the same script measures a real model — see [local-only.md](local-only.md) for a
 fuller offline sweep on the same idea. Note the API: `run_one(config, evalset)` takes a single
 already-built `Config`, not the string-based `matrix()` — `matrix()` deliberately rejects plugin
@@ -177,12 +187,15 @@ PY
 ```
 chunks: 232
 tfidf -> coherence +0.416, anisotropy 0.134, 19/510 effective dimensions, 0.0% collapsed, over 232 chunks
-hash:512 -> coherence +0.386, anisotropy 0.228, 13/512 effective dimensions, 0.0% collapsed, over 232 chunks
+hash:512 -> coherence +0.396, anisotropy 0.214, 13/512 effective dimensions, 0.0% collapsed, over 232 chunks
 ```
+
+Both lines reproduce exactly on a re-run, in a fresh process, under any `PYTHONHASHSEED`.
+That is worth stating because it was not always true — see the note on `hash()` below.
 
 ### How to read it
 
-- **Coherence is positive for both (+0.416, +0.386).** Consecutive chunks land closer together
+- **Coherence is positive for both (+0.416, +0.396).** Consecutive chunks land closer together
   in vector space than random pairs do — both models see *some* structure in the text. Neither
   is degenerate.
 - **`tfidf` uses more of its space:** 19 of 510 dimensions actually carry variance, against
@@ -194,7 +207,7 @@ hash:512 -> coherence +0.386, anisotropy 0.228, 13/512 effective dimensions, 0.0
   company names and numbers — specifically to make retrieval hard. You might expect that to trip
   the "templated corpus" flag (`redundancy > 0`: documents look more alike than they cohere
   internally). It doesn't, under either embedder, because `redundancy` came back negative
-  (-0.416 and -0.386): each contract's *vendor name* is a token TF-IDF and hashing both weight
+  (-0.416 and -0.396): each contract's *vendor name* is a token TF-IDF and hashing both weight
   heavily, so the near-duplicates aren't actually close in these vector spaces. That's the honest
   limit of a lexical embedder's geometry: it separates documents by their unique tokens, not by
   their structure, and "templated" here would need a model that reads the *shape* of the text

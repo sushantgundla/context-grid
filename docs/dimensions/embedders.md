@@ -57,6 +57,16 @@ Parameters: `dimensions: int = 256`, `seed: int = 0`. Two documents are close wh
 words; word order is invisible. Its job is to be the floor — a dense model that cannot beat this
 on your corpus is not earning its cost.
 
+`dimensions` and `seed` are the whole of its state, and the digest behind them is
+`hashlib.blake2b`, so **the same spec string on the same text gives the same vectors on any
+machine and in any process.** `seed` genuinely pins the output: `hash:512,seed=3` and
+`hash:512,seed=4` give different vectors, and each is stable across runs. That is worth saying
+because it was not true before version `2` of this embedder, which hashed with Python's
+built-in `hash()` — salted per process, so the same corpus scored differently on every run. The
+`version` is part of the embed cache key, so bumping it retired the vectors the old one wrote
+rather than serving them back. If you have a cached run from before, its `hash` numbers were
+never reproducible and should not be compared against new ones.
+
 ### `tfidf` — the classical baseline that keeps winning
 
 ```python

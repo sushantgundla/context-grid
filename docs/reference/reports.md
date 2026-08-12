@@ -48,11 +48,7 @@ averaged 0.71 against recursive's 0.63" — an interpretable sentence, not a 48-
 significance test against the runner-up:
 
 ```
-markdown · structural:800 · tfidf · dense scored best on recall@5 at 0.760, across 2
-configurations on 40 questions. markdown · structural:800 · tfidf · dense beats markdown ·
-recursive:512 · tfidf · dense by 0.060 on recall@5 (95% CI +0.060 to +0.060, p=0.000, n=40).
-It wins on 40 questions, loses on 0 and ties on 0. It runs locally at no cost per query,
-answering at 33 ms p95.
+markdown · structural:800 · tfidf · dense scored best on recall@5 at 0.760, across 2 configurations, scored on 40 questions. markdown · structural:800 · tfidf · dense beats markdown · recursive:512 · tfidf · dense by 0.060 on recall@5 (95% CI +0.060 to +0.060, p=0.000, n=40). It wins on 40 questions, loses on 0 and ties on 0. It runs locally at no cost per query, answering at 33 ms p95.
 ```
 
 ## Manifest
@@ -120,9 +116,18 @@ after.json` prints (`_diff()` in `src/contextgrid/cli/__main__.py`, wrapping
 Two manifests with nothing different:
 
 ```
-Nothing in the manifest changed, so these two runs should have produced identical numbers. If
-they did not, something outside the manifest is affecting results and that is worth finding.
+Nothing in these two manifests is different: same winning configuration, corpus, eval set, resolution policy, versions and seeds. On that evidence the two runs should have produced identical numbers for this one configuration.
+
+That is not the same as the two runs being identical. A manifest records the configuration that won, not the sweep that found it, so two runs over different grids -- or over the same grid in different modes -- can both end up here.
+
+If this configuration did score differently in the two runs, something outside the manifest is affecting results and that is worth finding.
 ```
+
+The middle paragraph is the one to read twice. A manifest pins the **winner**, so an `ofat`
+sweep of six configurations and a `factorial` sweep of twenty-seven over the same grid produce
+identical manifests whenever they pick the same winner — and this message will say so. It is
+telling you that one configuration should score the same in both runs, not that the two sweeps
+were the same sweep.
 
 **When a metric drops, diff the manifest against the last passing run — the changed line is
 the suspect.** That's the whole design goal: turn regression triage from an investigation
@@ -153,9 +158,17 @@ per the module docstring.
 
 ## What to use
 
-markdown · structural:800 · tfidf · dense scored best on recall@5 at 0.760, across 2
-configurations on 40 questions. ... It runs locally at no cost per query, answering at 33 ms
-p95.
+markdown · structural:800 · tfidf · dense scored best on recall@5 at 0.760, across 2 configurations, scored on 40 questions. markdown · structural:800 · tfidf · dense beats markdown · recursive:512 · tfidf · dense by 0.060 on recall@5 (95% CI +0.060 to +0.060, p=0.000, n=40). It wins on 40 questions, loses on 0 and ties on 0. It runs locally at no cost per query, answering at 33 ms p95.
+
+## Score
+
+**76/100 over 1 dimension(s): retrieval (not measured: chunk, embed, generation, parse)**
+
+| Dimension | Score |
+|---|---:|
+| `retrieval` | 0.760 |
+
+Comparable only against another score computed over the same dimensions.
 
 ## Leaderboard
 
@@ -168,6 +181,24 @@ p95.
 
 - **Chunker**: `structural:800` was best, +0.050 over the worst value tried.
 
+> **These are averages over runs, not controlled comparisons.** In `ofat` mode each value appears in a different number of configurations, so a value that happens to sit in the baseline arm is averaged over different company than one that does not. Treat this as a pointer to what to sweep properly in `factorial` mode, not as a measured effect.
+```
+
+That is the whole report for this run, captured from the page's own
+[regeneration snippet](#regenerating-the-examples-on-this-page). Two sections in it are
+conditional:
+
+- **`## Score`** is the [composite](../scoring/composite.md) — always present, and always
+  naming which dimensions it did and did not measure, because a 76 over one dimension is not
+  the same claim as a 76 over five.
+- **The blockquote after "Which decision mattered"** appears only in `ofat` mode, where the
+  per-axis averages are not controlled comparisons. A `factorial` run omits it.
+
+Two more appear when the run warrants them. **`## Reproducing this`** needs a manifest — the
+snippet above passes none, so it is absent here; a real `contextgrid run` bundle always has
+one and the section looks like this:
+
+```
 ## Reproducing this
 
 - Manifest: `99d9c948541a`

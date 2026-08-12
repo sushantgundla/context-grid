@@ -94,11 +94,13 @@ for strategy in [SimpleRetrieval(), WidenedRetrieval(factor=4), DecomposedRetrie
 ```
 
 ```
-simple       searches=1  queries=['what is the refund window and are digital goods refundable?']  notes={}
-widened      searches=1  queries=['what is the refund window and are digital goods refundable?']  notes={'depth': 20}
-decomposed   searches=3  queries=['what is the refund window and are digital goods refundable?',
-                                   'what is the refund window', 'are digital goods refundable']    notes={'parts': 3}
+simple 1 ['what is the refund window and are digital goods refundable?'] {}
+widened 1 ['what is the refund window and are digital goods refundable?'] {'depth': 20}
+decomposed 3 ['what is the refund window and are digital goods refundable?', 'what is the refund window', 'are digital goods refundable'] {'parts': 3}
 ```
+
+That is `name`, `trace.searches`, `trace.queries`, `trace.notes` in the order the `print`
+puts them — bare values, no labels.
 
 `widened` made one search too, but asked the index for 20 results instead of 5 (`depth` in the
 notes); `decomposed` made three, splitting the question. Neither made a model call.

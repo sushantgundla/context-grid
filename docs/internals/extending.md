@@ -987,7 +987,7 @@ markdown · sentence:1 · tfidf · dense                 0.778  0.833
 
 winner.has('weighted_recall@5'): True
 winner.has('made_up_metric@5'): False
-markdown · fixed:20,overlap=0 · tfidf · dense scored best on weighted_recall@5 at 1.000, across 2 configurations on 3 questions. markdown · fixed:20,overlap=0 · tfidf · dense and markdown · sentence:1 · tfidf · dense are not distinguishable on this eval set (n=3). The gap of +0.222 on weighted_recall@5 sits inside the confidence interval +0.000 to +0.667, so it is consistent with no difference at all. About 80 questions would be needed to settle a gap this size. It runs locally at no cost per query, answering at under 1 ms p95.
+markdown · fixed:20,overlap=0 · tfidf · dense scored best on weighted_recall@5 at 1.000, across 2 configurations, scored on 3 questions. markdown · fixed:20,overlap=0 · tfidf · dense and markdown · sentence:1 · tfidf · dense are not distinguishable on this eval set (n=3). The gap of +0.222 on weighted_recall@5 sits inside the confidence interval +0.000 to +0.667, so it is consistent with no difference at all. About 80 questions would be needed to settle a gap this size. It runs locally at no cost per query, answering at under 1 ms p95.
 ```
 
 `sentence:1` scores lower on `weighted_recall@5` (0.778) than on plain `recall@5` (0.833) —
