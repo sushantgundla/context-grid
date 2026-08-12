@@ -3,6 +3,24 @@
 Deliberately shows every axis with the plugins that are *actually installed*, commented with
 the ones that are not and how to get them. A template listing plugins the user cannot run
 teaches them the wrong thing on their first contact with the tool.
+
+**Three states, said apart, because they need three different things from the reader.** A
+plugin can be installed and swept (it is on the axis line), installed and not swept (`also
+available:` -- move the name up to the line and it runs), or not installed at all (`needs
+pip install ...`, naming the extra). Rolling the last two together was the old behaviour and
+it was the worst of both: `marker`, the one parser this installation genuinely cannot run,
+was silently left out of the file altogether, while `text` -- which needs no extra at all --
+sat in a comment that said nothing about how to use it. A comment that does not distinguish
+"type this name" from "run this pip command" gives the reader no way to tell which they are
+looking at.
+
+**The axis line is a small sweep, not everything runnable.** The docs describe the chosen
+values as "every plugin this installation can actually run", and that is the one thing here
+deliberately not done: with every extra installed, `parser` alone would sweep seven parsers,
+two of which download models on first use, before the reader has changed a single line. The
+file already tells them to "start by sweeping one axis at a time", and a template that
+contradicts its own advice on line one is not a good first experience. So the axis line stays
+a small honest default and the comment underneath carries the rest, in the two states above.
 """
 
 from __future__ import annotations
@@ -114,52 +132,105 @@ def render(
         chunkers=_axis("chunker", ["recursive:512", "sentence:3"], CHUNKERS),
         embedders=_axis("embedder", ["tfidf", "null"], EMBEDDERS),
         indexes=_axis("index", ["dense", "bm25", "hybrid"], INDEXES),
-        transforms=_axis("transform", ["null"], TRANSFORMS, extra=MODEL_BACKED),
+        transforms=_axis("transform", ["null"], TRANSFORMS, extra=MODEL_BACKED, needs_model=True),
         retrievers=_axis("retrieval", ["simple"], RETRIEVERS),
         rerankers=_axis("reranker", ["null", "lexical"], RERANKERS),
-        generators=_axis("generator", ["null"], GENERATORS, extra=GENERATOR_MODEL_BACKED),
+        generators=_axis(
+            "generator", ["null"], GENERATORS, extra=GENERATOR_MODEL_BACKED, needs_model=True
+        ),
     )
 
 
-def _axis(name: str, chosen: list[str], registry: object, extra: tuple[str, ...] = ()) -> str:
-    """One axis line, plus a comment listing everything else this installation can run.
+def _axis(
+    name: str,
+    chosen: list[str],
+    registry: object,
+    extra: tuple[str, ...] = (),
+    *,
+    needs_model: bool = False,
+) -> str:
+    """One axis line, then a comment for each of the two states the line does not cover.
 
-    `extra` is for values that cannot be registered but do exist -- the transforms needing a
-    model, which were reachable only by somebody who already knew their names.
+    `extra` is for values that cannot be registered but do exist -- the transforms and the
+    generator needing a model, which were reachable only by somebody who already knew their
+    names. `needs_model` says so out loud, because those names are installed, are not blocked
+    by any extra, and still will not run until `run.model` is set: moving one up to the axis
+    line without that is the one move this comment invites and `check` then refuses.
     """
-    already = {value.split(":", 1)[0] if ":" in value else value for value in chosen}
+    installed, blocked = _split(registry)
+    unrunnable = {name for names in blocked.values() for name in names}
+
+    # A chosen default that cannot run here would be a config `init` wrote and `check` then
+    # rejected. Nothing optional is chosen today, so this never fires -- it is here so that
+    # the day one of these defaults acquires an extra, the template degrades instead of lying.
+    chosen = [value for value in chosen if _base(registry, value) not in unrunnable]
+    already = {_base(registry, value) for value in chosen}
+
+    lines = [f"  {name}: [{', '.join(chosen)}]"]
+
     # `recursive:512` is already on the line; listing `recursive` again under "also available"
     # reads as a second, different plugin.
-    rest = sorted({*_installed(registry), *extra} - already)
+    rest = sorted({*installed, *extra} - already)
+    if rest:
+        lines.append(_wrapped("also available: " + ", ".join(rest)))
+    if extra and needs_model:
+        names = sorted(extra)
+        verb = "needs" if len(names) == 1 else "need"
+        lines.append(_wrapped(f"of those, {_listed(names)} {verb} `run.model` set."))
 
-    line = f"  {name}: [{', '.join(chosen)}]"
-    return line if not rest else f"{line}\n{_wrapped('also available: ' + ', '.join(rest))}"
+    # Grouped by extra rather than one line per plugin: `pip install "context-grid[parse]"` is
+    # the same command for three parsers, and printing it three times makes it look like three
+    # different installs. The command comes first so wrapping cannot break it in half.
+    for missing_extra, names in sorted(blocked.items()):
+        lines.append(
+            _wrapped(f'needs `pip install "context-grid[{missing_extra}]"`: {", ".join(names)}')
+        )
+
+    return "\n".join(lines)
 
 
-def _installed(registry: object) -> list[str]:
-    """The plugins whose dependencies are actually present.
+def _split(registry: object) -> tuple[list[str], dict[str, list[str]]]:
+    """The plugins that can run here, and the ones that cannot grouped by the extra they want.
 
     Every optional plugin is registered whether or not its package is installed, so the
     registry alone would advertise chunkers that raise on first use. Somebody's first contact
     with the tool should not be an ImportError from a file the tool wrote for them.
+
+    Asked through `extra_missing_for`, which is what `contextgrid check` asks, so the file
+    `init` writes and the verdict `check` gives on it come from one fact rather than two
+    opinions. The two used to disagree, and in both directions: this module tried to import
+    the *distribution* name, so `faiss` (whose distribution is `faiss-cpu` and whose module is
+    `faiss`) was left out of a template on an installation that runs it perfectly well, and
+    `marker` was excluded for the same wrong reason rather than for the right one.
     """
-    entries = list(getattr(registry, "__iter__", list)())
-    names: list[str] = []
-    for entry in entries:
-        package = getattr(entry, "package", None) or getattr(entry, "module", None)
-        if package and not _importable(str(package).split(".")[0].replace("-", "_")):
-            continue
-        names.append(str(entry.name))
-    return sorted(names)
+    from contextgrid.config.plugins import extra_missing_for
+
+    installed: list[str] = []
+    blocked: dict[str, list[str]] = {}
+    for entry in registry:  # type: ignore[attr-defined]
+        absent = extra_missing_for(entry)
+        if absent is None:
+            installed.append(str(entry.name))
+        else:
+            blocked.setdefault(str(entry.extra), []).append(str(entry.name))
+    return sorted(installed), {extra: sorted(names) for extra, names in blocked.items()}
 
 
-def _importable(module: str) -> bool:
-    from importlib.util import find_spec
+def _base(registry: object, value: str) -> str:
+    """The plugin a chosen value names. `recursive:512` is the `recursive` chunker.
 
-    try:
-        return find_spec(module) is not None
-    except (ImportError, ValueError):
-        return False
+    Asked of the registry rather than split on the first colon, because a colon is in some
+    plugin *names* too: `chonkie:recursive:512` is `chonkie:recursive` with a size, and
+    splitting naively would look for a plugin called `chonkie`.
+    """
+    return str(registry.name_in(value))  # type: ignore[attr-defined]
+
+
+def _listed(names: list[str]) -> str:
+    """`a, b and c`, so a sentence about four transforms reads as a sentence."""
+    if len(names) < 2:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def _wrapped(text: str, width: int = 88) -> str:

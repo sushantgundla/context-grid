@@ -220,11 +220,20 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
     writers: dict[str, tuple[str, Callable[[], str]]] = {
         "markdown": (
             "report.md",
+            # The experiment's name, so the one file a human opens first is titled after the
+            # sweep. It already reaches the console banner, `experiment.yaml` and
+            # `winning-config.yaml`; `report.md` was the only place in the bundle that fell
+            # back to a generic heading for a config that had said what it was called.
+            #
+            # Passed unconditionally. Whether a name is a real name or the sentinel default
+            # is `results_to_markdown`'s decision, and making it here as well would give two
+            # places that have to agree about what "unnamed" means.
             lambda: results_to_markdown(
                 results,
                 metric=config.run.headline,
                 manifest=manifest,
                 limit=config.report.leaderboard_limit,
+                name=config.name,
             ),
         ),
         "json": ("results.json", lambda: results_to_json(results, manifest=manifest)),

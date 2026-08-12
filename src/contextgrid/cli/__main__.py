@@ -270,6 +270,8 @@ def _check(args: argparse.Namespace) -> int:
         problems.append("no evalset, so there is nothing to score against")
     elif not config.evalset.exists():
         problems.append(f"eval set not found: {config.evalset}")
+    else:
+        problems.extend(_evalset_problems(config))
 
     for axis, values in config.grid.as_dict().items():
         print(f"  {axis:11} {values}")
@@ -295,19 +297,61 @@ def _corpus_problems(config: ExperimentConfig) -> list[str]:
     a clone without its data, or a `git clean`, or a path off by one directory.
 
     `Corpus.from_dir` is what `run` calls and what raises the message, so this reuses it rather
-    than re-implementing the glob. `max_files=1` because the question is "is there anything
-    readable here", and the emptiness check happens before any file is read -- so `check` never
-    pulls a whole corpus into memory to answer it.
+    than re-implementing the glob. `max_files=0`, not 1: the emptiness check is the glob, and
+    it happens before the limit is applied, so zero is enough to ask the question and it is
+    the only value that reads nothing at all. `max_files=1` answered the same question and
+    pulled one document's bytes into memory doing it, which is a document more than
+    `cli.md:105` -- "reads no documents, embeds nothing, indexes nothing" -- allows for.
+
+    A corpus that is a single named file is the one place this still reads bytes, because
+    there is no glob to ask instead and the file is the whole corpus.
     """
     from contextgrid.corpus import Corpus
 
     try:
         if config.corpus.is_dir():
-            Corpus.from_dir(config.corpus, max_files=1)
+            Corpus.from_dir(config.corpus, max_files=0)
         else:
             Corpus.from_files([config.corpus])
     except Exception as error:
         return [str(error)]
+    return []
+
+
+def _evalset_problems(config: ExperimentConfig) -> list[str]:
+    """Whether the questions file can actually be read, and has questions in it.
+
+    `evalset.exists()` was the whole check, so `check` resolved the path and never opened the
+    file. A JSONL of something that is not JSON, or a spreadsheet whose question column is
+    called something nobody guessed, both got "config is valid." and then stopped `run` a
+    second later with an error `check` was standing right next to. `cli.md` promises that
+    every message `check` prints is "the one `run` would have printed" and only earlier, so
+    this reuses `build_evalset` -- literally the function `run` calls -- rather than a second
+    reader that could disagree with it about what a valid eval set is.
+
+    **An eval set with no items is the third case, and it is not an error `run` raises.** An
+    empty file, or a JSONL carrying only its `_evalset` header line, parses perfectly and
+    yields nothing to ask. The sweep then runs the whole matrix -- parsing, chunking,
+    embedding and indexing every document -- to score zero questions, and reports every metric
+    as zero next to a warning about unresolvable evidence. That is the most expensive way this
+    tool has of telling somebody their questions file is empty, and it is exactly the money
+    `check` exists to save.
+
+    Cheap, and deliberately kept cheap: this opens one small text file the user wrote by hand.
+    It reads no document, builds no index and calls no model, so the promise at `cli.md:105`
+    still holds.
+    """
+    from contextgrid.config.loader import build_evalset
+
+    try:
+        evalset = build_evalset(config)
+    except Exception as error:
+        return [str(error)]
+
+    if not evalset.items:
+        return [
+            f"{config.evalset} has no questions in it, so a sweep over it would score nothing"
+        ]
     return []
 
 
@@ -496,24 +540,74 @@ def _sweep(args: argparse.Namespace) -> int:
 
 
 def _plural(name: str) -> str:
-    """The axis name as a heading. Only `index` is irregular."""
+    """The axis name as a heading, for a family `_HEADINGS` does not name.
+
+    A fallback rather than the rule: the rule gets `index` wrong ("indexs"), and it has no
+    idea what to do with `ingestion`. It is here so that a registry added later and forgotten
+    about prints an awkward heading instead of crashing the command with a `KeyError`.
+    """
     return "indexes" if name == "index" else f"{name}s"
 
 
+#: The heading each family prints under. Written out rather than pluralised by rule, because
+#: the rule is wrong more often than it is right here: `index` gives "indexs", and `ingestion`
+#: and `retrieval` are not things you can have two of. Every value is the word the
+#: documentation uses for that axis, so a heading printed here can be searched for there.
+_HEADINGS: dict[str, str] = {
+    "parser": "parsers",
+    "ingestion": "ingestion strategies",
+    "chunker": "chunkers",
+    "embedder": "embedders",
+    "index": "indexes",
+    "transform": "transforms",
+    "retrieval": "retrieval strategies",
+    "reranker": "rerankers",
+    "generator": "generators",
+    "llm": "models (for `run.model`)",
+    "metric": "metrics",
+    "tokenizer": "tokenizers",
+}
+
+
 def _plugins(args: argparse.Namespace) -> int:
+    """Everything registered, on every axis. `cli.md:21`: "List everything registered".
+
+    It listed six of the twelve. The six it skipped -- `ingestion`, `transform`, `retrieval`,
+    `generator`, `metric` and the models behind `run.model` -- are not obscure: four of them
+    are sweepable axes with their own tables in `plugins.md`, which calls this command the
+    authoritative live list. So `contextgrid plugins --family transform` answered "unknown
+    plugin family 'transform'" about an axis the config file accepts and the starter template
+    writes a comment about.
+
+    Ordered as a pipeline rather than alphabetically -- parse, ingest, chunk, embed, index,
+    transform, retrieve, rerank, generate -- so reading the output top to bottom is reading
+    the order the stages actually run in. The three that are not stages come last.
+    """
     from contextgrid.chunk import CHUNKERS
     from contextgrid.embed import EMBEDDERS
+    from contextgrid.evalset.llm import LLMS
+    from contextgrid.generate import GENERATORS
     from contextgrid.index import INDEXES
+    from contextgrid.ingest import INGESTERS
     from contextgrid.parse import PARSERS
     from contextgrid.rerank import RERANKERS
+    from contextgrid.retrieve import RETRIEVERS
+    from contextgrid.score.base import METRICS
     from contextgrid.tokens import TOKENIZERS
+    from contextgrid.transform import TRANSFORMS
 
     families: dict[str, Registry[Any]] = {
         "parser": PARSERS,
+        "ingestion": INGESTERS,
         "chunker": CHUNKERS,
         "embedder": EMBEDDERS,
         "index": INDEXES,
+        "transform": TRANSFORMS,
+        "retrieval": RETRIEVERS,
         "reranker": RERANKERS,
+        "generator": GENERATORS,
+        "llm": LLMS,
+        "metric": METRICS,
         "tokenizer": TOKENIZERS,
     }
 
@@ -523,7 +617,7 @@ def _plugins(args: argparse.Namespace) -> int:
     # word printed one line above -- was the easiest possible way to hit it.
     #
     # Checked here rather than with argparse `choices=`, because filling those in means
-    # importing all six registries to parse *any* command line, and `contextgrid --version`
+    # importing all twelve registries to parse *any* command line, and `contextgrid --version`
     # is deliberately a cheap import.
     if args.family is not None and args.family not in families:
         raise ValueError(
@@ -533,14 +627,61 @@ def _plugins(args: argparse.Namespace) -> int:
     for name, registry in families.items():
         if args.family and args.family != name:
             continue
-        # Not `f"{name}s"`: that printed "indexs", and every page of the documentation calls
-        # this axis `index` or `indexes`. A heading nobody can search for is a small thing that
-        # makes a reference feel untrustworthy.
-        print(f"{_plural(name)}:")
-        for plugin, description in registry.describe().items():
-            print(f"  {plugin:24} {description}")
+        listing = dict(registry.describe())
+        needs_model = _model_backed_in(name)
+        listing.update(needs_model)
+
+        print(f"{_HEADINGS.get(name, _plural(name))}:")
+        for plugin, description in sorted(listing.items()):
+            # A marker column rather than a suffix on the description: the note is the same
+            # for every starred name, and repeating it on four lines out of six buries the
+            # part that differs.
+            mark = "*" if plugin in needs_model else " "
+            print(f"  {plugin:22} {mark} {description}")
+        if needs_model:
+            print("  * needs a model. Set `run.model` in your config to use it.")
         print()
     return 0
+
+
+def _model_backed_in(family: str) -> dict[str, str]:
+    """The plugins on this axis that exist, are documented, and are not in the registry.
+
+    `hyde` and the rest of `transform.MODEL_BACKED`, and the `llm` generator, cannot be
+    registered: building one from a spec string alone would silently produce a transform with
+    no model, which is the identity, and a config that looks like it is testing HyDE while
+    testing nothing is worse than an error. `plugins.md:196` nevertheless says
+    `available_transforms()` "is what `contextgrid plugins` and the config template actually
+    print" -- and the template does print them. Only the command was short, so the axis looked
+    like it had two arms when it has six.
+
+    The descriptions are the classes' own first docstring lines, not invented here. They read
+    in exactly the style of the registry's `doc=` strings because the same person wrote them
+    for the same purpose; the only difference is where they are stored.
+    """
+    if family == "transform":
+        from contextgrid.transform import MODEL_BACKED, Decompose, HyDE, MultiQuery, StepBack
+
+        classes: dict[str, type] = {
+            "hyde": HyDE,
+            "multi-query": MultiQuery,
+            "decompose": Decompose,
+            "step-back": StepBack,
+        }
+        return {name: _first_line(classes[name]) for name in MODEL_BACKED if name in classes}
+
+    if family == "generator":
+        from contextgrid.generate import LLMGenerator
+
+        return {"llm": _first_line(LLMGenerator)}
+
+    return {}
+
+
+def _first_line(cls: type) -> str:
+    """A class's one-line summary, or a plain admission that it has none."""
+    doc = (cls.__doc__ or "").strip()
+    return doc.splitlines()[0].strip() if doc else "(no description)"
 
 
 def _evalset(args: argparse.Namespace) -> int:

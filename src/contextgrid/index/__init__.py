@@ -85,7 +85,12 @@ INDEXES.register_lazy(
     extra="index",
     package="usearch",
     shorthand="dtype",
-    doc="usearch HNSW, with f32/f16/i8/b1 storage. A second opinion on the same idea.",
+    # `f32/f16/i8`, matching `USearchIndex.DTYPES`. It said `f32/f16/i8/b1`, which is the one
+    # dtype this index deliberately does not have: usearch's binary mode wants bit-packed
+    # input and a Hamming metric, and `usearch:dtype=b1` has always raised. So the single
+    # sentence `contextgrid plugins` prints about this index was pointing at the one setting
+    # guaranteed to fail. `quantized:binary` is the arm that does binary properly.
+    doc="usearch HNSW, with f32/f16/i8 storage. A second opinion on the same idea.",
 )
 INDEXES.register_lazy(
     "pgvector",
