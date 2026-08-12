@@ -75,18 +75,17 @@ class Corpus:
         if not root.is_dir():
             raise CorpusError(f"{root} is not a directory")
 
-        found: list[Path] = []
+        matched: set[Path] = set()
         for pattern in patterns:
             glob = f"**/{pattern}" if recursive else pattern
-            found.extend(p for p in root.glob(glob) if _is_candidate(p))
+            matched.update(p for p in root.glob(glob) if p.is_file())
 
-        ordered = sorted(set(found))
+        ordered = sorted(p for p in matched if _is_candidate(p, root))
         if not ordered:
             raise CorpusError(
                 f"no files under {root} matched {list(patterns)}."
-                f"{_extensions_present(root, recursive=recursive)} "
-                "Point the corpus at a directory holding files with those extensions, or "
-                "rename the files to one of them. (Widening the list is Python-API only: "
+                f"{_why_nothing_matched(root, matched, recursive=recursive)} "
+                "(Widening the list is Python-API only: "
                 "`Corpus.from_dir(path, patterns=[...])`. There is no `patterns:` config key.)"
             )
         if max_files is not None:
@@ -185,24 +184,69 @@ class Corpus:
         return len(self.files)
 
 
-def _extensions_present(root: Path, *, recursive: bool) -> str:
-    """Name the extensions that *are* there, so the mismatch is obvious rather than guessed.
+_ADVICE = (
+    "Point the corpus at a directory holding files with those extensions, or "
+    "rename the files to one of them."
+)
 
-    Error path only, so the extra walk costs nothing anybody waits for. An empty directory
-    and a directory full of `.parquet` are different mistakes and deserve different reading.
+_HIDDEN_RULE = (
+    "Entries inside the corpus whose name starts with a dot, and build directories "
+    f"({', '.join(sorted(_SKIP_DIRECTORIES))}), are always skipped -- the corpus "
+    "directory you named is never skipped, only what sits below it."
+)
+
+
+def _why_nothing_matched(root: Path, matched: set[Path], *, recursive: bool) -> str:
+    """Say why the corpus came out empty, checking each claim before making it.
+
+    Error path only, so the extra walk costs nothing anybody waits for. An empty directory,
+    a directory full of `.parquet`, and a directory whose files are all hidden are three
+    different mistakes and deserve three different sentences.
     """
     glob = "**/*" if recursive else "*"
-    suffixes = sorted({p.suffix for p in root.glob(glob) if p.suffix and _is_candidate(p)})
+    present = [p for p in root.glob(glob) if p.is_file()]
+    if not present:
+        return f" The directory holds no files at all. {_ADVICE}"
+
+    if matched:
+        count = len(matched)
+        verb = "was" if count == 1 else "were"
+        noun = "file" if count == 1 else "files"
+        return (
+            f" {count} {noun} matched the patterns but {verb} skipped as hidden. "
+            f"{_HIDDEN_RULE} Move them out of the hidden directory to load them."
+        )
+
+    visible = [p for p in present if _is_candidate(p, root)]
+    total = len(present)
+    noun = "file" if total == 1 else "files"
+    if not visible:
+        return (
+            f" It holds {total} {noun}, none matching the patterns, and every one hidden. "
+            f"{_HIDDEN_RULE} {_ADVICE}"
+        )
+
+    suffixes = sorted({p.suffix for p in visible if p.suffix})
     if not suffixes:
-        return " The directory holds no files at all."
+        return f" It holds {total} {noun}, none with a file extension. {_ADVICE}"
     listed = ", ".join(suffixes[:5])
     more = "" if len(suffixes) <= 5 else f" and {len(suffixes) - 5} more"
-    return f" It holds {listed}{more}."
+    return f" It holds {total} {noun}: {listed}{more}. {_ADVICE}"
 
 
-def _is_candidate(path: Path) -> bool:
+def _is_candidate(path: Path, root: Path) -> bool:
+    """Is this a file the corpus should load?
+
+    Hidden and build directories are skipped, but only *below* the root. The root itself is
+    whatever the user named -- a corpus under `.data/` or `~/.local/share/...` is a real
+    corpus, not something to filter away.
+    """
     if not path.is_file():
         return False
-    if any(part.startswith(".") for part in path.parts):
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        parts = path.parts
+    if any(part.startswith(".") for part in parts):
         return False
-    return not any(part in _SKIP_DIRECTORIES for part in path.parts)
+    return not any(part in _SKIP_DIRECTORIES for part in parts)
