@@ -19,14 +19,99 @@ validate the whole scoring chain against.
 from __future__ import annotations
 
 import csv
+import io
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from contextgrid.core.errors import EvalSetError
+from contextgrid.core.errors import EvalSetError, SpanError
 from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor, GoldSpan
 from contextgrid.core.span import Span
+
+# ---------------------------------------------------------------------------
+# opening the file at all
+# ---------------------------------------------------------------------------
+
+#: What an eval set is, in one clause, for the messages that have to say it.
+_WANTED = "An eval set is a JSONL or CSV file of questions"
+
+#: Extensions worth naming when the bytes turn out not to be text. Pointing a config's
+#: `evalset:` at the spreadsheet the questions were written in is an easy mistake, and
+#: "invalid continuation byte" is a terrible way to be told about it.
+_BINARY_FORMATS: dict[str, str] = {
+    ".xlsx": "an Excel workbook -- save the sheet as CSV and point at that instead",
+    ".xls": "an Excel workbook -- save the sheet as CSV and point at that instead",
+    ".ods": "a spreadsheet -- save the sheet as CSV and point at that instead",
+    ".numbers": "a Numbers spreadsheet -- export it as CSV and point at that instead",
+    ".pdf": "a PDF. Questions come from a JSONL or CSV file, not from a document",
+    ".docx": "a Word document. Questions come from a JSONL or CSV file",
+    ".doc": "a Word document. Questions come from a JSONL or CSV file",
+    ".parquet": "a Parquet file -- export it as CSV and point at that instead",
+    ".zip": "a zip archive. Point at the file inside it",
+    ".gz": "a compressed file. Uncompress it and point at what comes out",
+    ".db": "a database file -- export the questions as CSV and point at that instead",
+    ".sqlite": "a database file -- export the questions as CSV and point at that instead",
+}
+
+#: Extensions an eval set is actually read from. Anything else still gets tried as JSONL --
+#: `read_evalset` routes by extension and `config/loader.py` does the same, so refusing an
+#: unusual name here would make one of them say yes and the other no about the same file.
+#: This set only decides whether a *failure* is worth explaining as a format mistake.
+_TEXT_FORMATS = frozenset({"", ".jsonl", ".json", ".ndjson", ".csv", ".tsv", ".txt"})
+
+
+def _read_eval_file(source_path: Path, *, encoding: str = "utf-8") -> str:
+    """The text of an eval set file, or an error saying what was expected instead.
+
+    Every way of failing to open the file used to arrive as a raw OS or Python string with an
+    `error:` prefix in front of it -- `[Errno 21] Is a directory`, or `'utf-8' codec can't
+    decode byte 0xca in position 0`. True, and no use: neither says what an eval set is or
+    what should have been named. This is the one place both readers open their file, so both
+    the config loader's route and `read_evalset`'s route give the same answer.
+    """
+    if not source_path.exists():
+        raise EvalSetError(f"no eval set at {source_path}")
+    if source_path.is_dir():
+        raise EvalSetError(
+            f"{source_path} is a directory, and an eval set file was expected. Name the "
+            ".jsonl or .csv file of questions itself, not the folder holding it."
+        )
+    if not source_path.is_file():
+        raise EvalSetError(f"{source_path} is not a regular file. {_WANTED}.")
+
+    try:
+        return source_path.read_text(encoding=encoding)
+    except UnicodeDecodeError as exc:
+        raise EvalSetError(
+            f"{source_path} is not text -- {exc.reason} at byte {exc.start}. {_WANTED}"
+            f".{_binary_format_hint(source_path)}"
+        ) from exc
+    except OSError as exc:
+        raise EvalSetError(f"{source_path} could not be read: {exc.strerror or exc}") from exc
+
+
+def _binary_format_hint(source_path: Path) -> str:
+    """Name the format when the extension says what the file really is."""
+    told = _BINARY_FORMATS.get(source_path.suffix.lower())
+    return f" This looks like {told}." if told else ""
+
+
+def _wrong_format_hint(source_path: Path) -> str:
+    """Say what was expected when a file that is text is not either format we read.
+
+    Only on failure. A `.yaml` pointed at `evalset:` parses as text, fails on line 1, and the
+    JSON error alone leaves somebody looking for a typo in a file that was never the right
+    kind of file.
+    """
+    suffix = source_path.suffix.lower()
+    if suffix in _TEXT_FORMATS:
+        return ""
+    return (
+        f" A `{suffix}` file is not a format an eval set is read from: expected .jsonl "
+        "(one question per line) or .csv."
+    )
+
 
 # ---------------------------------------------------------------------------
 # JSONL -- the native format
@@ -56,26 +141,37 @@ def write_jsonl(evalset: EvalSet, path: str | Path) -> Path:
 def read_jsonl(path: str | Path) -> EvalSet:
     """Read an eval set written by `write_jsonl`, or a bare list of items."""
     source_path = Path(path).expanduser()
-    if not source_path.exists():
-        raise EvalSetError(f"no eval set at {source_path}")
+    contents = _read_eval_file(source_path)
 
     identity: dict[str, Any] = {}
     items: list[EvalItem] = []
 
-    with source_path.open(encoding="utf-8") as handle:
-        for number, line in enumerate(handle, start=1):
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                record = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise EvalSetError(f"{source_path}:{number} is not valid JSON: {exc}") from exc
+    for number, line in enumerate(io.StringIO(contents), start=1):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            record = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise EvalSetError(
+                f"{source_path}:{number} is not valid JSON: {exc}.{_wrong_format_hint(source_path)}"
+            ) from exc
 
-            if "_evalset" in record:
-                identity = record["_evalset"]
-                continue
-            items.append(EvalItem.from_dict(record))
+        if not isinstance(record, Mapping):
+            raise EvalSetError(
+                f"{source_path}:{number} is {_json_kind(record)}, and every line of a JSONL "
+                "eval set has to be an object -- one question per line."
+            )
+        if "_evalset" in record:
+            header = record["_evalset"]
+            if not isinstance(header, Mapping):
+                raise EvalSetError(
+                    f"{source_path}:{number}: `_evalset` is {_json_kind(header)}, expected an "
+                    "object carrying the set's id, version and source."
+                )
+            identity = dict(header)
+            continue
+        items.append(EvalItem.from_dict(record))
 
     return EvalSet(
         id=identity.get("id", source_path.stem),
@@ -111,10 +207,9 @@ def read_csv(path: str | Path, *, evalset_id: str | None = None) -> EvalSet:
     spreadsheet is wrong when it is perfectly clear.
     """
     source_path = Path(path).expanduser()
-    if not source_path.exists():
-        raise EvalSetError(f"no eval set at {source_path}")
+    contents = _read_eval_file(source_path, encoding="utf-8-sig")
 
-    with source_path.open(encoding="utf-8-sig", newline="") as handle:
+    with io.StringIO(contents, newline="") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             raise EvalSetError(f"{source_path} has no header row")
@@ -293,34 +388,54 @@ def read_legalbench_rag(path: str | Path, *, evalset_id: str = "legalbench-rag")
     the published ones, and if they do not, the problem is ours.
 
     Expected shape: `{"tests": [{"query": ..., "snippets": [{"file_path", "span": [s, e]}]}]}`.
+    A bare array of tests is accepted too, because that is how several published dumps of the
+    benchmark are actually shaped and the documentation says so.
+
+    Two kinds of imperfection, treated differently. A snippet with *no* `file_path` or *no*
+    two-element `span` is dropped quietly -- that is documented, and it is what an
+    incompletely annotated benchmark looks like. A field of the *wrong shape* -- `span` as a
+    string, `tests` as an object, a snippet that is not an object -- raises, naming the file
+    and what was expected, because the alternative is loading something silently wrong:
+    `"span": "117,202"` used to import as characters 1 to 1 and score against nothing.
+
+    What was dropped is counted and recorded on the returned set's `meta`, because a quiet
+    drop and a silent one are not the same thing. A benchmark file whose every snippet was
+    discarded imports as tests with no gold, which used to look exactly like a benchmark
+    pointing at the wrong corpus. `describe_skipped(evalset)` turns the counts into a line
+    somebody can act on.
     """
     source_path = Path(path).expanduser()
     if not source_path.exists():
         raise EvalSetError(f"no LegalBench-RAG file at {source_path}")
 
-    payload = json.loads(source_path.read_text(encoding="utf-8"))
-    tests = payload.get("tests", payload if isinstance(payload, list) else [])
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise EvalSetError(f"{source_path} is not valid JSON: {exc}") from exc
+
+    tests = _legalbench_tests(payload, source_path)
+    skipped: dict[str, int] = {}
 
     items: list[EvalItem] = []
     for index, test in enumerate(tests):
-        question = str(test.get("query", "")).strip()
-        if not question:
-            continue
+        where = f"{source_path}: test {index}"
+        if not isinstance(test, Mapping):
+            raise EvalSetError(
+                f"{where} is {_json_kind(test)}, expected an object with a `query` and "
+                "a `snippets` array."
+            )
 
-        gold: list[GoldSpan] = []
-        for snippet in test.get("snippets", []):
-            span = snippet.get("span")
-            file_path = snippet.get("file_path")
-            if not span or not file_path or len(span) < 2:
-                continue
-            gold.append(GoldSpan(span=Span(str(file_path), int(span[0]), int(span[1])), grade=2))
+        question = _legalbench_text(test.get("query"), field="query", where=where).strip()
+        if not question:
+            skipped[_NO_QUERY] = skipped.get(_NO_QUERY, 0) + 1
+            continue
 
         items.append(
             EvalItem(
-                id=str(test.get("id", f"lb{index}")),
+                id=_legalbench_id(test.get("id"), fallback=f"lb{index}", where=where),
                 question=question,
-                gold=tuple(gold),
-                answer=test.get("answer"),
+                gold=tuple(_legalbench_gold(test.get("snippets"), where=where, skipped=skipped)),
+                answer=_legalbench_text(test.get("answer"), field="answer", where=where) or None,
             )
         )
 
@@ -328,8 +443,179 @@ def read_legalbench_rag(path: str | Path, *, evalset_id: str = "legalbench-rag")
         id=evalset_id,
         items=tuple(items),
         source="legalbench-rag",
-        meta={"granularity": "span"},
+        meta={
+            "granularity": "span",
+            "source_file": str(source_path),
+            "tests_in_file": len(tests),
+            "tests_skipped": skipped.get(_NO_QUERY, 0),
+            "snippets_skipped": {
+                reason: count for reason, count in skipped.items() if reason != _NO_QUERY
+            },
+        },
     )
+
+
+#: Why a test or a snippet was left out, in the words the message will use.
+_NO_QUERY = "had no `query`"
+_NO_FILE_PATH = "had no `file_path`"
+_NO_SPAN = "had no `span`"
+_SHORT_SPAN = "had a span shorter than two offsets"
+
+
+def describe_skipped(evalset: EvalSet) -> str:
+    """One line naming everything an import left out, or an empty string if it left nothing.
+
+    A count of what was dropped is the difference between "this file did not give you what
+    you think it did" and finding out from a percentage three commands later. It reads off
+    `meta` rather than being recomputed, so it cannot drift from what was actually skipped.
+    """
+    parts: list[str] = []
+
+    tests_skipped = int(evalset.meta.get("tests_skipped", 0) or 0)
+    if tests_skipped:
+        word = "test" if tests_skipped == 1 else "tests"
+        parts.append(f"{tests_skipped} {word} skipped: no `query`")
+
+    snippets = evalset.meta.get("snippets_skipped") or {}
+    total = sum(int(count) for count in snippets.values())
+    if total:
+        word = "snippet" if total == 1 else "snippets"
+        reasons = ", ".join(f"{count} {reason}" for reason, count in snippets.items() if int(count))
+        parts.append(f"{total} {word} skipped: {reasons}")
+
+    return ". ".join(parts) + "." if parts else ""
+
+
+def _legalbench_tests(payload: Any, source_path: Path) -> Sequence[Any]:
+    """The list of tests, from either accepted top-level shape."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, Mapping):
+        raise EvalSetError(
+            f"{source_path} is {_json_kind(payload)}. Expected a JSON object with a `tests` "
+            "array, or a bare array of tests."
+        )
+    if "tests" not in payload:
+        found = ", ".join(sorted(str(key) for key in payload)) or "none"
+        raise EvalSetError(
+            f"{source_path} has no `tests` key. Expected a JSON object with a `tests` array, "
+            f"or a bare array of tests. Keys found: {found}."
+        )
+    tests = payload["tests"]
+    if not isinstance(tests, list):
+        raise EvalSetError(
+            f"{source_path}: `tests` is {_json_kind(tests)}, expected an array of tests."
+        )
+    return tests
+
+
+def _legalbench_gold(snippets: Any, *, where: str, skipped: dict[str, int]) -> list[GoldSpan]:
+    """The gold spans of one test, dropping the incomplete and rejecting the misshapen.
+
+    `skipped` is added to, not replaced: the counts are for the whole file, and the caller
+    keeps them.
+    """
+    if snippets is None:
+        return []
+    if not isinstance(snippets, list):
+        raise EvalSetError(
+            f"{where}: `snippets` is {_json_kind(snippets)}, expected an array of snippets, "
+            'each with a `file_path` and a `span` like {"file_path": "a.md", "span": [0, 12]}.'
+        )
+
+    gold: list[GoldSpan] = []
+    for position, snippet in enumerate(snippets):
+        place = f"{where}, snippet {position}"
+        if not isinstance(snippet, Mapping):
+            raise EvalSetError(
+                f"{place} is {_json_kind(snippet)}, expected an object with a `file_path` "
+                "and a `span`."
+            )
+
+        file_path = snippet.get("file_path")
+        span = snippet.get("span")
+
+        # Documented drops. Counted rather than announced one by one, because a benchmark
+        # with a thousand incomplete rows should report a number, not a thousand lines.
+        if file_path is None:
+            skipped[_NO_FILE_PATH] = skipped.get(_NO_FILE_PATH, 0) + 1
+            continue
+        if not isinstance(file_path, str):
+            raise EvalSetError(
+                f"{place}: `file_path` is {_json_kind(file_path)}, expected a string naming "
+                "a document relative to the corpus directory."
+            )
+        if not file_path.strip():
+            skipped[_NO_FILE_PATH] = skipped.get(_NO_FILE_PATH, 0) + 1
+            continue
+        if span is None:
+            skipped[_NO_SPAN] = skipped.get(_NO_SPAN, 0) + 1
+            continue
+        if not isinstance(span, (list, tuple)):
+            raise EvalSetError(
+                f"{place}: `span` is {_json_kind(span)}, expected an array of two character "
+                "offsets, like [117, 202]."
+            )
+        if len(span) < 2:
+            skipped[_SHORT_SPAN] = skipped.get(_SHORT_SPAN, 0) + 1
+            continue
+
+        try:
+            start, end = _as_offset(span[0], place=place), _as_offset(span[1], place=place)
+            gold.append(GoldSpan(span=Span(file_path, start, end), grade=2))
+        except SpanError as exc:
+            raise EvalSetError(f"{place}: {exc}") from exc
+    return gold
+
+
+def _as_offset(value: Any, *, place: str) -> int:
+    """One end of a span, which has to be a whole number of characters."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise EvalSetError(
+            f"{place}: `span` offsets must be whole numbers counted from 0, found "
+            f"{_json_kind(value)}."
+        )
+    try:
+        return int(str(value).strip())
+    except ValueError as exc:
+        raise EvalSetError(
+            f"{place}: `span` offsets must be whole numbers counted from 0, found {value!r}."
+        ) from exc
+
+
+def _legalbench_text(value: Any, *, field: str, where: str) -> str:
+    """A string field, absent or otherwise."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise EvalSetError(f"{where}: `{field}` is {_json_kind(value)}, expected a string.")
+    return value
+
+
+def _legalbench_id(value: Any, *, fallback: str, where: str) -> str:
+    """The test's id. Numbers are accepted because benchmarks number their tests."""
+    if value is None:
+        return fallback
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise EvalSetError(f"{where}: `id` is {_json_kind(value)}, expected a string or a number.")
+    return str(value)
+
+
+def _json_kind(value: Any) -> str:
+    """What a JSON value is, in words somebody can read back against their file."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a true/false value"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, Mapping):
+        return "an object"
+    return f"a {type(value).__name__}"
 
 
 # ---------------------------------------------------------------------------

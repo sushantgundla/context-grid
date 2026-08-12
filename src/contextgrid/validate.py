@@ -26,7 +26,7 @@ from contextgrid.core.documents import MediaType, SourceFile
 from contextgrid.core.errors import ContextGridError
 from contextgrid.core.evalset import EvalItem, EvalSet
 from contextgrid.corpus import Corpus
-from contextgrid.evalset.io import read_legalbench_rag
+from contextgrid.evalset.io import describe_skipped, read_legalbench_rag
 from contextgrid.grid.runner import Runner
 from contextgrid.pipeline import Config
 from contextgrid.score.resolve import SpanResolver
@@ -130,7 +130,16 @@ def load_benchmark(
     if limit is not None:
         evalset = evalset.with_items(evalset.items[:limit])
 
+    # Three different failures that used to share one message, and the shared one was
+    # "none of the 0 documents the benchmark refers to were found" -- self-contradicting,
+    # and it sent people to check a corpus path when the problem was in the benchmark file.
+    if not len(evalset):
+        raise ValidationError(_nothing_loaded(benchmark, evalset))
+
     wanted = {span.doc_id for item in evalset for span in item.gold_spans}
+    if not wanted:
+        raise ValidationError(_nothing_to_point_at(benchmark, evalset))
+
     files: list[SourceFile] = []
     for doc_id in sorted(wanted):
         path = documents / doc_id
@@ -153,6 +162,49 @@ def load_benchmark(
         )
 
     return Corpus(files=tuple(files), name="legalbench-rag"), evalset
+
+
+def _nothing_loaded(benchmark: Path, evalset: EvalSet) -> str:
+    """The benchmark file gave us no questions at all.
+
+    Nothing to do with the corpus, so the message does not mention it. The old one did, and
+    sent people off to check a directory that was perfectly fine.
+    """
+    in_file = int(evalset.meta.get("tests_in_file", 0) or 0)
+    if not in_file:
+        return (
+            f"{benchmark} contains no tests. Expected a JSON object with a `tests` array, or "
+            "a bare array of tests, with at least one test in it."
+        )
+    word = "test" if in_file == 1 else "tests"
+    return (
+        f"{benchmark} contains no usable tests: all {in_file} {word} in it were skipped. "
+        f"{describe_skipped(evalset)} A test needs a non-empty `query` to be loaded at all."
+    )
+
+
+def _nothing_to_point_at(benchmark: Path, evalset: EvalSet) -> str:
+    """Questions loaded, but not one of them carries a span to check.
+
+    A different problem from an empty file and a different one again from a corpus that does
+    not have the documents, so it gets its own message. Without gold there is nothing to
+    resolve, so the run cannot start -- and the reason is almost always that every snippet
+    was dropped for a reason worth printing.
+    """
+    one = len(evalset) == 1
+    word = "test" if one else "tests"
+    between = "in it" if one else "between them"
+    notes = describe_skipped(evalset)
+    detail = (
+        f" {notes}"
+        if notes
+        else f" {'It does' if one else 'None of them'} not carry a `snippets` array with a "
+        "`file_path` and a `span`."
+    )
+    return (
+        f"{benchmark} loaded {len(evalset)} {word}, but not one usable gold span {between}, "
+        f"so there is nothing to check against the corpus.{detail}"
+    )
 
 
 def validate(
@@ -194,6 +246,20 @@ def self_check(corpus: Corpus, evalset: EvalSet) -> dict[str, Any]:
     Narrower than a full validation run and more diagnostic. It asks one question: do the
     benchmark's gold spans point at text that exists in the corpus we loaded? If they do not,
     nothing downstream can be trusted and the cause is loading rather than retrieval.
+
+    A snippet naming a file that is not in the corpus is counted separately and left out of
+    the rate, because it is a different problem with a different fix. "This document is
+    missing" means add the file; "these offsets miss the text" means the corpus is the wrong
+    edition of documents you already have. Charging one against the other produced advice
+    that was simply wrong -- a four-test benchmark with one absent document reported that the
+    corpus was "almost certainly not the one the annotations were made against", when in fact
+    three of its three loadable spans were exact. Missing files are reported by name, and
+    loudly, so nothing is skipped in silence.
+
+    Anything the import itself dropped -- a snippet with no `file_path`, a span with one
+    offset -- is reported here too, on a run that otherwise succeeds. Those drops are
+    correct and documented; saying nothing about them is not, because a file whose every
+    snippet was discarded scores exactly like a file that was never annotated.
     """
     from contextgrid.parse import get_parser
 
@@ -203,45 +269,92 @@ def self_check(corpus: Corpus, evalset: EvalSet) -> dict[str, Any]:
     checked = 0
     valid = 0
     empty = 0
+    missing = 0
+    missing_files: set[str] = set()
     for item in evalset:
         for gold in item.gold:
-            checked += 1
             parsed = parses.get(gold.doc_id)
             if parsed is None:
+                missing += 1
+                missing_files.add(gold.doc_id)
                 continue
+            checked += 1
             if not parsed.document.contains_span(gold.span):
                 continue
             valid += 1
             if not parsed.document.slice(gold.span).strip():
                 empty += 1
 
+    absent = sorted(missing_files)
+    skipped = describe_skipped(evalset)
     return {
         "spans_checked": checked,
         "spans_in_range": valid,
         "spans_empty": empty,
+        "spans_missing_file": missing,
+        "missing_files": absent,
+        "skipped_on_import": skipped,
         "in_range_rate": valid / checked if checked else 0.0,
-        "verdict": _self_check_verdict(checked, valid, empty),
+        "verdict": _self_check_verdict(checked, valid, empty, missing, absent, skipped),
     }
 
 
-def _self_check_verdict(checked: int, valid: int, empty: int) -> str:
+def _self_check_verdict(
+    checked: int,
+    valid: int,
+    empty: int,
+    missing: int = 0,
+    missing_files: Sequence[str] = (),
+    skipped: str = "",
+) -> str:
+    notice = f"{skipped} " if skipped else ""
+    notice += _missing_files_notice(missing, missing_files)
+
+    if checked == 0 and missing:
+        return (
+            f"{notice}Every gold span in the benchmark points at a file that is not in the "
+            "corpus, so there is nothing left to check."
+        )
     if checked == 0:
         return "the benchmark contains no gold spans to check"
+
     rate = valid / checked
     if rate < 0.95:
         return (
-            f"only {rate:.0%} of the benchmark's spans fall inside the documents as loaded. "
-            "The corpus is almost certainly not the one the annotations were made against, "
-            "and no number from this run means anything until that is fixed."
+            f"{notice}only {rate:.0%} of the benchmark's spans fall inside the documents as "
+            "loaded. The corpus is almost certainly not the one the annotations were made "
+            "against, and no number from this run means anything until that is fixed."
         )
     if empty:
         return (
-            f"{empty} spans point at whitespace. Either the annotations are off by a little "
-            "or the files were re-encoded after they were made."
+            f"{notice}{empty} spans point at whitespace. Either the annotations are off by a "
+            "little or the files were re-encoded after they were made."
         )
     return (
-        f"{valid} of {checked} spans point at real text in the documents as loaded, so the "
-        "benchmark and the corpus agree and the scoring chain has something valid to run on."
+        f"{notice}{valid} of {checked} spans point at real text in the documents as loaded, "
+        "so the benchmark and the corpus agree and the scoring chain has something valid to "
+        "run on."
+    )
+
+
+def _missing_files_notice(missing: int, missing_files: Sequence[str]) -> str:
+    """The line that goes in front of every verdict when documents are absent.
+
+    In front, not appended, because the CLI prints the verdict and then decides whether to
+    carry on -- and a skipped document has to be read before the number it is not part of.
+    """
+    if not missing:
+        return ""
+    names = ", ".join(missing_files[:5])
+    if len(missing_files) > 5:
+        names += f", and {len(missing_files) - 5} more"
+    span_word = "span" if missing == 1 else "spans"
+    one_file = len(missing_files) == 1
+    file_phrase = "1 file that is not" if one_file else f"{len(missing_files)} files that are not"
+    return (
+        f"Skipped {missing} {span_word} pointing at {file_phrase} in the corpus: {names}. "
+        f"Add {'it' if one_file else 'them'}, or drop those tests -- they are not counted "
+        "either way. Of the rest: "
     )
 
 
