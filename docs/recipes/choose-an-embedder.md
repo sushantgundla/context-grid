@@ -228,5 +228,5 @@ That is worth stating because it was not always true — see the note on `hash()
   geometry of a genuine sentence embedding is a different shape entirely from TF-IDF's sparse
   bag-of-words space, and `anisotropy` in particular is where transformer embeddings are known to
   struggle (the "crowded cone" problem `contextgrid/embed/quality.py` describes at length).
-- **More questions**, to make Part 1's comparison trustworthy — 20,890 is a real number, not a
-  hedge. See [evalsets](../guide/evalsets.md) for eval set sizing.
+- **More questions**, to make Part 1's comparison trustworthy — the 2,300 above is a real number,
+  not a hedge. See [evalsets](../guide/evalsets.md) for eval set sizing.

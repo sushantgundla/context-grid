@@ -152,9 +152,18 @@ table in half is one of the most damaging things a chunker can do and one of the
 from a leaderboard alone. `keep_heading_path` reliably helps retrieval — a paragraph under
 "Termination > Notice period" carries those words into its own embedding — but it also means the
 chunk text is no longer a literal slice of the document, so chunks produced that way declare
-`offsets_exact=False`. Spec: `structural`, `structural:512` (shorthand for `max_size=512`; note
-`min_size` defaults to 64, so a `max_size` below 64 needs `min_size=` set explicitly too, or the
-constructor raises).
+`offsets_exact=False`. Spec: `structural`, `structural:512` (shorthand for `max_size=512`).
+
+`min_size` is not a fixed number. It defaults to `max_size // 8` — 64 at the default `max_size` of
+512, 12 at `structural:100`, 4 at `structural:32` — so a small `max_size` scales its own floor down
+with it rather than refusing to build. Set `min_size=` explicitly when you want a particular floor:
+
+```python
+>>> get_chunker("structural:32")
+StructuralChunker(max_size=32, min_size=4, keep_heading_path=False, split_tables=False, tokenizer=None)
+>>> get_chunker("structural:32,min_size=30")
+StructuralChunker(max_size=32, min_size=30, keep_heading_path=False, split_tables=False, tokenizer=None)
+```
 
 ```python
 >>> chunks = get_chunker("structural:64,min_size=0,keep_heading_path=true").chunk(parsed)

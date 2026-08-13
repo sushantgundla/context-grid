@@ -206,14 +206,28 @@ results.json
 Keeping `experiment.yaml` is deliberate: a run that produced no numbers is still a run you may
 need to explain later, and the config that produced it is the explanation.
 
+**The exit code is 1, though, and the reason is repeated on stderr.** Nothing was measured, so a
+script must not carry on as if it had a leaderboard — hence the failure code, even for an outcome
+this deliberate. The files above are written first, then:
+
+```
+$ contextgrid run budget-zero.yaml >/dev/null; echo $?
+error: no configurations were run, so nothing was measured
+error: none of the 1 configurations ran: the $0.00 budget ran out ($0.0000 spent). Nothing was measured, so there is no leaderboard rather than an empty one
+1
+```
+
+If you want the bundle without the failure code, test for it: `contextgrid run budget-zero.yaml ||
+test -f results/report.md`.
+
 ## Errors you'll actually see
 
 - **Unknown key**: `unknown key 'chunkers' in the 'grid' section. Did you mean 'chunker'? Known
   keys: ...` — a typo is guessed at with a Levenshtein-style match, and the full list of valid
   keys is always printed alongside.
 - **Wrong section type**: `the 'grid' section must be a mapping, got list`.
-- **Missing corpus**: `every config needs a corpus: a directory of documents, or a list of
-  files.`
+- **Missing corpus**: `` every config needs a `corpus`: a directory of documents, or a list of
+  files. ``
 - **Bad headline**: `run.headline must name a cut-off, like 'recall@5'. Got 'recall'` — or, for
   a non-numeric cutoff, `run.headline has a non-numeric cut-off: 'recall@five'`.
 - **Unset env var**: `the config refers to ${API_KEY} but that environment variable is not

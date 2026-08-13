@@ -211,12 +211,37 @@ draft = generate(chunks, KeywordProbeGenerator(), sample=None)
 
 ```
 >>> print(draft.count, "questions drafted,", draft.chunks_skipped, "chunks skipped")
-2 questions drafted, 0 chunks skipped
+1 questions drafted, 0 chunks skipped
 >>> for item in draft.evalset:
 ...     print(item.id, "|", item.question, "|", item.anchors[0].quote)
-refunds.md:0-191#probe | issued item provided purchase refunds unopened | Refunds are issued within 30 days of purchase, provided the item is unopened.
-shipping.md:0-188#probe | additional arrives business costs express next | Express shipping arrives the next business day and costs an additional $15.
+policy.md:0-220#probe | digital downloaded goods once refundable | Digital goods are not refundable once downloaded.
 ```
+
+One question, not two: the whole file is one chunk at `recursive:256`, and the generator writes at
+most one probe per chunk.
+
+`generate` skips any chunk shorter than `min_chunk_words` (default 25) — there isn't enough text in
+a short chunk to build a question about. That is why chunking *smaller* can hand you fewer questions,
+or none at all. When it does, `draft.warnings` says so in as many words, so read it before concluding
+the generator is broken:
+
+```python
+chunker = get_chunker("sentence:1")   # four chunks, all under 25 words
+chunks = [c for source in corpus for c in chunker.chunk(parser.parse(source))]
+draft = generate(chunks, KeywordProbeGenerator(), sample=None)
+print(draft.count, "questions drafted,", draft.chunks_skipped, "chunks skipped")
+for w in draft.warnings:
+    print(w.severity.value, "|", w.message)
+```
+
+```
+0 questions drafted, 4 chunks skipped
+invalid | none of the 4 chunks has 25 words, so there is nothing to write questions about. Try a larger chunk size
+```
+
+`generate`'s other keyword arguments are `sample` (default `50` — how many chunks to draw, spread
+across documents rather than uniformly; `None` means all of them), `seed` (default `0`, so the
+sample is reproducible), `min_chunk_words` (above), and `evalset_id` (default `"generated"`).
 
 ## Eval set quality
 

@@ -35,7 +35,8 @@ cat results-a/manifest.json
   "config": {
     "ingestion": null, "parser": "markdown", "chunker": "recursive:256",
     "embedder": "tfidf", "index": "dense", "transform": null,
-    "retrieval": null, "reranker": null, "k": 5, "candidates": 50
+    "retrieval": null, "reranker": null, "k": 5, "candidates": 50,
+    "generator": null
   },
   "corpus_hash": "ee52e863fe5961642bf9ece5e1c8de10e83fcb12cbc06758da98f6c4761dd64b",
   "corpus_files": 2,
@@ -128,12 +129,17 @@ its own any more — both fall back to the seed the run itself was configured wi
 ```bash no-run: narrative walkthrough -- config-x.yaml/config-y.yaml aren't reconstructed in this snippet
 .venv/bin/contextgrid run config-x.yaml --quiet   # run.seed: 7, ./results-x
 .venv/bin/contextgrid run config-y.yaml --quiet   # identical config, run.seed: 7, ./results-y
-diff out-x.txt out-y.txt
+
+# Two lines differ, and neither is the pipeline: the first line carries the run's name, which
+# defaults to the config's filename, and the last names the output folder. Both are things you
+# chose differently. Drop them and compare the rest.
+strip() { sed '1d;/^wrote /d' "$1" ; }
+diff <(strip out-x.txt) <(strip out-y.txt)
 ```
 
 ```
-(no output -- the two runs' printed leaderboard, summary and significance verdict are
-byte-identical, down to the confidence interval)
+(no output -- setting the name and output folder aside, the two runs' printed leaderboard,
+summary and significance verdict are byte-identical, down to the confidence interval)
 
 seed-demo: 1 × 1 × 2 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 2 on paper, 2 to run in factorial mode, scored on recall@5
 
@@ -158,6 +164,29 @@ print(json.load(open("results-x/manifest.json"))["seeds"])  # {"run": 7}
 That's the reproducibility claim, checked rather than assumed: two independent `contextgrid run`
 processes, same config, same `seed: 7`, produced the identical significance verdict — and the
 manifest's recorded seed (7) is the one that was actually used.
+
+One caveat on the `diff`: the `p95 ms` column is real wall-clock timing, so on a busier machine it
+can wobble between two otherwise identical runs. The seed promises nothing about the clock.
+
+`results.json` draws the line exactly. Comparing the two files field by field, only three things
+ever differ — `runs[*].timings`, `runs[*].cost.compute_seconds` and `manifest.created_at`. Every
+score, confidence interval, `per_query` entry, failure count and `config` value is identical. So if
+you want the reproducibility claim without the clock in the way, compare `results.json` with those
+three set aside:
+
+```python no-run: narrative walkthrough -- results-x/results-y come from the two runs above
+import json
+
+def scores_only(path):
+    d = json.load(open(path))
+    for run in d["runs"]:
+        run.pop("timings")
+        run["cost"].pop("compute_seconds")
+    d["manifest"].pop("created_at")
+    return json.dumps(d, sort_keys=True)
+
+print(scores_only("results-x/results.json") == scores_only("results-y/results.json"))  # True
+```
 
 **On this 3-question corpus the two configs simply tie, so there's nothing for the seed to
 flip.** To see the seed actually change the *call*, not just reproduce it, construct a case

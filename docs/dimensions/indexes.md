@@ -26,8 +26,28 @@ def is_exact(self) -> bool:
 ```
 
 `dense`, `bm25`, `hybrid` and `pgvector:exact` are exact — every candidate is actually scored.
-`faiss` (except `kind="flat"`), `usearch` and the ANN pgvector kinds are approximate: they trade
-recall for speed and memory, and the size of that trade is corpus-specific. `is_exact` is what
+`faiss` (except `kind="flat"`), `usearch`, `quantized` and the ANN pgvector kinds are approximate:
+they trade recall for speed and memory, and the size of that trade is corpus-specific.
+
+`quantized` is the one worth a sentence on its own, because it declares `is_exact=False` for **every**
+scheme — including `scheme=none`, which applies no compression and returns the same top `k` as `dense`
+does:
+
+```python
+>>> from contextgrid.index import get_index
+>>> [(s, get_index(f"quantized:scheme={s}").is_exact) for s in ("none", "scalar", "product", "binary")]
+[('none', False), ('scalar', False), ('product', False), ('binary', False)]
+```
+
+That is deliberate, not an oversight. `is_exact` is a property of the index *family*, fixed on the
+class, and a family whose whole purpose is to throw information away should not be able to claim
+exactness because one of its settings happens not to. `quantized:scheme=none` is the reference row you
+measure the other schemes against — its results really are exact, and
+`tests/unit/test_quantize.py::test_no_quantization_is_exactly_exact` pins that at recall 1.0 against
+`dense` — but reaching for it as an *exact twin* in `recall_against_exact()` means comparing the
+family to itself. Use `dense` for that.
+
+`is_exact` is what
 lets `recall_against_exact()` (`src/contextgrid/index/quantize.py`) turn "I tuned `efSearch`
 until it felt fast" into a number:
 
