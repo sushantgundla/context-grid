@@ -1,0 +1,131 @@
+---
+title: "Spans and Offsets"
+description: "The guarantee that makes comparing two chunkers valid: every chunk knows the exact character range of the source it came from."
+---
+
+Nothing in context-grid is identified by a chunk ID. IDs change the moment you change the
+chunker — which is the one thing this tool exists to compare. Instead, every piece of text
+knows exactly which characters of which document it came from. That's a `Span`, and it's the
+one idea the whole package rests on.
+
+## `Span`
+
+```python no-run: signature shown for reference, not a runnable statement
+Span(doc_id: str, start: int, end: int)
+```
+
+A half-open range `[start, end)` — `document.text[start:end]` is the literal slice, no
+off-by-one to remember. `start` must be `>= 0` and `end` must be `>= start`, or construction
+raises `cg.SpanError`.
+
+## Seeing it on a real chunk
+
+This page reads one file, `./mydocs/refund.md`. Create it first:
+
+```python
+from pathlib import Path
+
+Path("mydocs").mkdir(exist_ok=True)
+Path("mydocs/refund.md").write_text(
+    "# Refund policy\n\n"
+    "Customers can request a refund within 14 days of delivery. Outside that window,\n"
+    "we only offer store credit. Contact support to request one.\n\n"
+    "Email support@example.com with your order number.\n"
+)
+```
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("./mydocs")
+parser = cg.get_parser("markdown")
+parsed = parser.parse(corpus.require("refund.md"))
+
+chunker = cg.get_chunker("recursive:20")
+for c in chunker.chunk(parsed):
+    print(c.id, c.span, repr(c.text[:30]))
+    assert parsed.text[c.span.start:c.span.end] == c.text
+```
+
+```
+refund.md:0-96 Span('refund.md', 0, 96) '# Refund policy\n\nCustomers can'
+refund.md:89-156 Span('refund.md', 89, 156) 'window,\nwe only offer store cr'
+refund.md:152-207 Span('refund.md', 152, 207) 'one.\n\nEmail support@example.co'
+```
+
+Every `Chunk` carries `.span` (the `Span`), plus `.doc_id`, `.char_start`, `.char_end`, and
+`.char_length` as shortcuts onto it. The `assert` above is the guarantee itself: for a chunk
+with `offsets_exact=True`, its `.text` is always exactly `parsed.text[span.start:span.end]`.
+
+## `offsets_exact`: the honesty flag
+
+Both `ParsedDocument` and `Chunk` carry `offsets_exact: bool = True`. It's true when the
+text is a literal slice of what it claims to span. Most parsers and most chunkers keep it
+true. Some can't:
+
+- **`StructuralChunker(keep_heading_path=True)`** prepends the heading chain to a chunk's
+  text (`"Refund policy\n\n..."`), so the chunk is no longer a literal slice of the document —
+  it sets `offsets_exact=False` on those chunks. Every other structural-chunker chunk keeps
+  it true.
+- The four "paid" ingestion strategies that rewrite what gets indexed — `contextual`,
+  `hypothetical-questions`, `propositions`, `summary` — set `offsets_exact=False` on the
+  *indexed* text they generate. The *retrievable* side (what a hit actually returns) keeps
+  real offsets; only the rewritten, indexed side is approximate.
+- A parser that reflows columns, reorders reading sequence, or rewrites table cells sets
+  `offsets_exact=False` on the whole `ParsedDocument` it returns, and every chunk cut from it
+  inherits that.
+
+```python
+structural = cg.get_chunker("structural:200,keep_heading_path=true")
+for c in structural.chunk(parsed):
+    print(c.offsets_exact, repr(c.text[:40]))
+    print("still a literal slice:", parsed.text[c.span.start:c.span.end] == c.text)
+```
+
+```
+False '# Refund policy\n\n# Refund policy\n\nCusto'
+still a literal slice: False
+```
+
+<Warning>
+`offsets_exact=False` is not a crash, and nothing stops you from using those chunks. It's a
+flag telling you that a comparison built on their offsets is approximate. Scoring checks it:
+if any chunk resolving a question's gold span has `offsets_exact=False`, the run adds a
+`WarningCode.APPROXIMATE_RESOLUTION` warning — "some chunks report approximate offsets, so
+their text is not a literal slice of the source. Relevance judgements against them are
+estimates" — rather than reporting the number as if it were exact.
+</Warning>
+
+## The span helper functions
+
+`Span` itself has overlap arithmetic (`.overlap_len()`, `.intersection()`, `.contains()`,
+`.iou()`, `.coverage_of()`), and the module has free functions for sets of spans — this is
+what scoring is built on, turning "did the retrieved chunks cover the gold evidence" into a
+character count rather than a chunk-ID lookup:
+
+```python
+a = cg.Span("refund.md", 0, 50)
+b = cg.Span("refund.md", 40, 90)
+
+print("overlap_len:", a.overlap_len(b))
+print("merge_spans:", cg.merge_spans([a, b]))
+print("coverage_fraction:", cg.coverage_fraction(cg.Span("refund.md", 0, 100), [a, b]))
+```
+
+```
+overlap_len: 10
+merge_spans: [Span('refund.md', 0, 90)]
+coverage_fraction: 0.9
+```
+
+- **`merge_spans(spans)`** — collapses overlapping and touching spans into a minimal disjoint
+  set, grouped by document, in reading order.
+- **`total_length(spans)`** — characters covered by a set of spans, counting shared
+  characters once.
+- **`covered_length(target, others)`** / **`coverage_fraction(target, others)`** — how much
+  of `target` is covered by `others`, as a count or a fraction in `[0, 1]`. This is the core
+  of union recall: a gold span split across two retrieved chunks is fully covered when both
+  come back, even though neither alone clears a per-chunk threshold.
+- **`intersection_length(left, right)`** — characters covered by both sets, each side merged
+  first so overlapping chunks on either side don't inflate the count. What character-level
+  precision and recall are built from — see [Metrics](/scoring/metrics).

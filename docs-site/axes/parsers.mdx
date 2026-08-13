@@ -1,0 +1,336 @@
+---
+title: "Parsers"
+description: "The 8 parsers that turn a source file into text, their arguments, and how to pick one for your documents."
+---
+
+A parser is the first axis in the grid. It turns a [`SourceFile`](/concepts/corpus) — raw
+bytes plus a media type — into a `ParsedDocument`: text, plus the blocks (headings,
+paragraphs, tables) the parser found in it. Every later axis works on that text, so a bad
+parser choice caps everything downstream before chunking even starts.
+
+Resolve one by name with `contextgrid.get_parser`:
+
+```python
+import contextgrid as cg
+
+parser = cg.get_parser("markdown")
+print(repr(parser))
+```
+```
+MarkdownParser()
+```
+
+<Note>
+`text` and `markdown` are `cg.TextParser` / `cg.MarkdownParser` — no, they aren't. Despite
+being the two simplest parsers, they are **not** in `contextgrid`'s top-level `__all__`. Write
+`contextgrid.parse.TextParser()` / `contextgrid.parse.MarkdownParser()` if you want the class
+directly; `cg.get_parser("text")` works fine either way.
+</Note>
+
+## The spec grammar
+
+A parser spec is a name, optionally followed by a colon and arguments:
+
+```
+"pymupdf"                                        # defaults
+"pymupdf:detect_headings=False,margin_ratio=0.08" # keyword arguments
+```
+
+Only two parsers have a **shorthand** — a bare value right after the colon, with no
+`key=` in front of it: `agno` (shorthand fills `reader`) and `marker` (shorthand fills
+`languages`). Every other parser rejects a bare value:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_parser("pymupdf:512")
+except Exception as e:
+    print(type(e).__name__, e)
+```
+```
+ContextGridError '512' in 'pymupdf:512' must be written as key=value
+```
+
+Asking for a name that was never a real parser raises `UnknownPluginError`, which lists every
+registered name so a typo is easy to spot:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_parser("unstructured")
+except Exception as e:
+    print(type(e).__name__, e)
+```
+```
+UnknownPluginError no parser named 'unstructured'. Available: agno, docling, markdown, marker, pdfplumber, pymupdf, pymupdf4llm, text
+```
+
+`unstructured` was planned once and never built — if you see it mentioned anywhere older, it
+does not exist in the current package.
+
+## The 8
+
+| name | good for | extra | shorthand |
+|---|---|---|---|
+| `text` | Plain text, split into paragraphs on blank lines. No dependencies. | — | — |
+| `markdown` | Markdown with headings, code, lists, quotes and tables identified. No dependencies. | — | — |
+| `pymupdf` | Fast PDF text extraction, no table awareness. The speed baseline. | `parse` | — |
+| `pdfplumber` | Slower PDF extraction that finds tables, in reading order. | `parse` | — |
+| `docling` | IBM's layout and table-structure models. Also reads DOCX, PPTX, HTML — the widest format coverage. | `parse-ml` | — |
+| `marker` | Surya layout and OCR, 90+ languages. The most faithful, and roughly 100x slower than a text extractor. | `parse-marker` | `languages` |
+| `agno` | Text via agno's reader framework — what most RAG stacks reach for by default without choosing a parser at all. | `agent` | `reader` |
+| `pymupdf4llm` | Markdown output from the same extraction engine as `pymupdf`. Isolates whether Markdown structure helps, apart from extraction quality. | `parse` | — |
+
+Only `text` and `markdown` need nothing installed. Every PDF-capable parser needs at least the
+`parse` extra: `pip install "context-grid[parse]"` covers `pymupdf`, `pdfplumber` and
+`pymupdf4llm`; `docling` and `marker` each need their own heavier extra.
+
+## Arguments and real defaults
+
+Every parser below is a real, verified `cg.get_parser(...)` call and its printed repr.
+
+<AccordionGroup>
+
+<Accordion title="text — contextgrid.parse.TextParser">
+No fields at all.
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("text")))
+```
+```
+TextParser()
+```
+</Accordion>
+
+<Accordion title="markdown — contextgrid.parse.MarkdownParser">
+No fields at all.
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("markdown")))
+```
+```
+MarkdownParser()
+```
+</Accordion>
+
+<Accordion title="pymupdf — contextgrid.parse.pymupdf.PyMuPDFParser">
+<ParamField path="detect_headings" type="bool" default="True">
+  Guess headings from font size.
+</ParamField>
+<ParamField path="margin_ratio" type="float" default="0.0">
+  Strips top and bottom page bands as a **fraction of page height** (repeated headers and
+  footers) — not a size in points or pixels, despite reading like one. `0.0` means nothing is
+  stripped.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("pymupdf")))
+print(repr(cg.get_parser("pymupdf:detect_headings=False,margin_ratio=0.08")))
+```
+```
+PyMuPDFParser(detect_headings=True, margin_ratio=0.0)
+PyMuPDFParser(detect_headings=False, margin_ratio=0.08)
+```
+</Accordion>
+
+<Accordion title="pdfplumber — contextgrid.parse.pdfplumber.PDFPlumberParser">
+<ParamField path="extract_tables" type="bool" default="True">
+  Detect and render tables.
+</ParamField>
+<ParamField path="table_format" type="str" default='"pipe"'>
+  One of `"pipe"`, `"tsv"`, `"plain"`. Anything else raises `DocumentError`, but not until a
+  table is actually hit during parsing — a typo here does not fail at construction time.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("pdfplumber")))
+```
+```
+PDFPlumberParser(extract_tables=True, table_format='pipe')
+```
+</Accordion>
+
+<Accordion title="docling — contextgrid.parse.layout.DoclingParser">
+<ParamField path="table_structure" type="bool" default="True">
+  Run docling's table-structure model.
+</ParamField>
+<ParamField path="ocr" type="bool" default="False">
+  Run OCR. Turning `ocr=False` on a text-layer PDF recovers most of the speed for no quality
+  loss on that corpus — but on a scanned PDF, `ocr=False` silently returns nothing
+  extractable. `table_structure` and `ocr` are separate cost toggles; each one you turn off
+  buys speed on the documents it doesn't apply to and loses content on the ones it does.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("docling")))
+```
+```
+DoclingParser(table_structure=True, ocr=False)
+```
+</Accordion>
+
+<Accordion title="marker — contextgrid.parse.layout.MarkerParser">
+<ParamField path="languages" type="str" default='"en"'>
+  The shorthand parameter — `marker:fr` means `languages="fr"`.
+</ParamField>
+<ParamField path="use_llm" type="bool" default="False">
+  Have a model clean up marker's output.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("marker")))
+```
+```
+MarkerParser(languages='en', use_llm=False)
+```
+
+<Warning>
+Constructing `cg.get_parser("marker")` never fails, even without the `parse-marker` extra
+installed — the import only happens inside `.parse(...)`, when the parser is actually used.
+The first real run also downloads Surya's model weights over the network and can look hung
+for minutes; the "install this" error message only appears on a genuine failure, not on a
+slow-but-working first call.
+</Warning>
+</Accordion>
+
+<Accordion title="agno — contextgrid.parse.layout.AgnoParser">
+<ParamField path="reader" type="str" default='"auto"'>
+  The shorthand parameter. `"auto"` picks a reader by file extension; its PDF path needs
+  `pypdf` separately from the `agent` extra — missing it raises `DocumentError` naming
+  `pip install 'context-grid[agent]'`, a different exception type than every other
+  missing-dependency path among the parsers.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("agno")))
+```
+```
+AgnoParser(reader='auto')
+```
+</Accordion>
+
+<Accordion title="pymupdf4llm — contextgrid.parse.layout.PyMuPDF4LLMParser">
+<ParamField path="page_chunks" type="bool" default="True">
+  Keep page boundaries in the output.
+</ParamField>
+<ParamField path="table_strategy" type="str" default='"lines_strict"'>
+  Passed straight through to pymupdf4llm's own table detection.
+</ParamField>
+<ParamField path="isolate" type="bool" default="True">
+  Runs each document in its own subprocess. This is not a performance knob to casually turn
+  off: pymupdf4llm's C-layer state leaks across documents converted in the same interpreter.
+  The module's own docstring records a measured effect on its fixtures — a prose PDF that
+  parses to 1182 clean characters alone parses to 919 mangled ones once a table PDF has gone
+  through the same process first. `isolate=False` re-enables that failure silently, for about
+  a 0.1s/doc speedup.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_parser("pymupdf4llm")))
+```
+```
+PyMuPDF4LLMParser(page_chunks=True, table_strategy='lines_strict', isolate=True)
+```
+</Accordion>
+
+</AccordionGroup>
+
+## Using one on a real file
+
+Every PDF parser raises `DocumentError` if the `SourceFile` it's given has no bytes loaded —
+loading the extra is necessary but not sufficient. Load your files through
+[`Corpus`](/concepts/corpus), which reads the bytes for you:
+
+```python
+from pathlib import Path
+
+Path("corpus").mkdir(exist_ok=True)
+Path("corpus/policy.md").write_text(
+    "# Termination\n\n"
+    "## Notice period\n\n"
+    "Either party may end this agreement with thirty days written notice, or "
+    "immediately by mutual written agreement.\n\n"
+    "## Refunds\n\n"
+    "Refunds are issued within 14 days of a valid cancellation, minus a processing "
+    "fee, credited to the original payment method or a different account on "
+    "request.\n\n"
+    "## Data retention\n\n"
+    "Account data is retained for 90 days after cancellation, then permanently "
+    "deleted from every backup and log we keep.\n"
+)
+```
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("corpus")   # a directory with one policy.md in it
+parser = cg.get_parser("markdown")
+doc = parser.parse(corpus.files[0])
+
+print(type(doc).__name__, doc.id)
+print(repr(doc.text[:80]))
+```
+```
+ParsedDocument policy.md
+'# Termination\n\n## Notice period\n\nEither party may end this agreement with thirty'
+```
+
+Parsing an empty `SourceFile` directly shows the failure mode:
+
+```python
+from contextgrid.core.documents import SourceFile, MediaType
+import contextgrid as cg
+
+parser = cg.get_parser("pymupdf")
+empty = SourceFile(id="no-bytes.pdf", media_type=MediaType.PDF)
+try:
+    parser.parse(empty)
+except Exception as e:
+    print(type(e).__name__, e)
+```
+```
+DocumentError source file 'no-bytes.pdf' has no bytes loaded. Read the file before parsing it.
+```
+
+## How to choose
+
+<Steps>
+<Step title="Start with markdown or pymupdf">
+`markdown` for Markdown sources, `pymupdf` for PDFs — both are free, fast, and good enough to
+get a first sweep running before you spend anything on a heavier parser.
+</Step>
+<Step title="Add pdfplumber or docling if your PDFs have tables">
+`pymupdf` doesn't see table structure at all. `pdfplumber` is slower but finds tables in
+reading order; `docling` goes further with a dedicated table-structure model and also reads
+DOCX, PPTX and HTML.
+</Step>
+<Step title="Reach for marker only when fidelity matters more than speed">
+Scanned documents, non-Latin scripts, or layouts other parsers mangle. Budget for it — it's
+roughly 100x slower and downloads model weights on first use.
+</Step>
+<Step title="Put the parser on the grid and let recall tell you">
+Sweep two or three candidates against your eval set rather than guessing:
+`parser: [markdown, pymupdf, docling]` in a config file. See [Running](/lab/running).
+</Step>
+</Steps>
+
+Have a parser for a format none of these cover? See [Writing a Custom Plugin](/concepts/plugins)
+for the `Parser` protocol and how to register one.

@@ -1,0 +1,210 @@
+---
+title: "Metrics"
+description: "Every built-in metric with its registry name, how cut-offs work, and the character-level scores that catch context waste a chunk-level score can't see."
+---
+
+Two inputs feed every metric in context-grid: `qrels` (which chunks are actually relevant to
+each question, and at what grade) and `run` (which chunk ids your pipeline returned, in rank
+order). Both are plain dicts:
+
+```python
+qrels = {"q1": {"c1": 2, "c2": 1, "c3": 0}, "q2": {"c4": 2}}
+run = {"q1": ["c3", "c1", "c5", "c2"], "q2": ["c9", "c4", "c1"]}
+```
+
+`qrels[question_id]` maps chunk id to grade (`2` fully relevant, `1` partial, `0` irrelevant —
+same IR convention as `GoldSpan.grade`). `run[question_id]` is a ranked list of chunk ids, best
+first. In practice you get `qrels` from a `SpanResolver` and `run` from a pipeline search — see
+[Diagnosing Failures](/scoring/diagnostics) and [Search](/pipeline/search) — but any dict in
+this shape works, which is what makes the examples below self-contained.
+
+## The six built-in metrics
+
+Registered under `cg.METRICS`, resolved by name — not by `cg.X` import:
+
+```python
+import contextgrid as cg
+print(cg.available_metrics())
+# ('hit_rate', 'map', 'mrr', 'ndcg', 'precision', 'recall')
+```
+
+| Registry name | What it measures |
+|---|---|
+| `recall` | fraction of relevant chunks that made it into the top k. `0.0` if the question has no relevant chunks. |
+| `precision` | relevant chunks in the top k, divided by `k` itself — not by how many chunks the run actually returned. A run that only returns 3 chunks still divides by `k=10`. |
+| `hit_rate` | `1.0` if at least one relevant chunk is in the top k, else `0.0`. |
+| `mrr` | `1 / position` of the first relevant chunk in the top k, else `0.0`. |
+| `map` | mean average precision. |
+| `ndcg` | normalized discounted cumulative gain, using the actual grade as the gain (so a grade-2 hit outweighs a grade-1 hit). `0.0` if the ideal ranking would also score 0. |
+
+<Warning>
+`map`'s denominator is `len(relevant)` — the trec_eval/MAP@k convention — not
+`min(len(relevant), k)`. A question with 20 relevant chunks caps at `0.25` at `k=5` no matter
+how perfect your top 5 is. This is intentional, not a bug, but it is the most common "why does
+my MAP look low" surprise.
+</Warning>
+
+You can pull a single metric out of the registry directly:
+
+```python
+recall_metric = cg.get_metric("recall")
+print(recall_metric)
+# RecallMetric()
+```
+
+`get_metric` only accepts the plain registry name. Passing a cut-off along with it, like
+`cg.get_metric("recall@5")`, raises:
+
+```python
+try:
+    cg.get_metric("recall@5")
+except Exception as e:
+    print(type(e).__name__, e)
+# UnknownPluginError no metric named 'recall@5'. Available: hit_rate, map, mrr, ndcg, precision, recall
+```
+
+## Cut-offs: `k`, `DEFAULT_KS`, and the `metric@k` result keys
+
+A metric on its own doesn't know about `k` — `k` is passed in at call time. `evaluate()` scores
+every metric at every `k` in `ks` and names each result `f"{metric}@{k}"`:
+
+```python
+DEFAULT_KS = (1, 3, 5, 10, 20)  # cg.DEFAULT_KS
+```
+
+So `"recall@5"`, `"ndcg@10"`, and so on are **result labels that `evaluate()` builds**, not
+strings you feed back into `get_metric` or the registry. Keep that straight: the registry name
+is always bare (`"recall"`); the `@k` suffix only exists on the way out.
+
+## `evaluate()` — score a whole run
+
+```python no-run: signature shown for reference, not a runnable statement
+def evaluate(
+    qrels: Qrels,
+    run: Mapping[str, Sequence[str]],
+    *,
+    ks: Sequence[int] = DEFAULT_KS,
+    metrics: Sequence[str] = ("recall", "precision", "hit_rate", "mrr", "map", "ndcg"),
+    warnings: WarningLog | None = None,
+) -> dict[str, float]
+```
+
+```python
+import contextgrid as cg
+
+qrels = {"q1": {"c1": 2, "c2": 1, "c3": 0}, "q2": {"c4": 2}}
+run = {"q1": ["c3", "c1", "c5", "c2"], "q2": ["c9", "c4", "c1"]}
+
+scores = cg.evaluate(qrels, run, ks=[1, 3], metrics=["recall", "ndcg"])
+print(scores)
+# {'recall@1': 0.0, 'recall@3': 0.75, 'ndcg@1': 0.0, 'ndcg@3': 0.5552773433538603}
+```
+
+Only question ids present (and non-empty) in `qrels` get averaged over. A question that's in
+`qrels` but that `run` never answered for scores `0.0` for that question — that's a real
+retrieval failure, not something `evaluate()` quietly excludes.
+
+<Warning>
+`metrics` defaults to the six built-ins by name, not to "whatever's currently registered" — a
+custom metric you `cg.METRICS.register(...)` yourself does not show up in `evaluate()`'s output
+unless you list its name in `metrics=` explicitly.
+
+Passing a name that isn't registered at all raises `ValueError` up front. But **a registered
+metric that raises partway through scoring is caught per-metric and silently dropped from the
+result dict** — it does not appear as `0.0`, it just isn't a key in the returned dict at all.
+Pass `warnings=cg.WarningLog()` to actually see it happened:
+</Warning>
+
+```python
+from dataclasses import dataclass
+from typing import ClassVar, Mapping, Sequence
+
+# A registered metric that raises partway through scoring -- not an unregistered name,
+# which would raise ValueError before scoring even starts.
+@dataclass(frozen=True, slots=True)
+class BrokenMetric:
+    name: ClassVar[str] = "broken"
+    version: ClassVar[str] = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        raise RuntimeError("oops")
+
+cg.METRICS.register("broken")(BrokenMetric)
+
+warnings = cg.WarningLog()
+result = cg.evaluate(qrels, run, ks=[5], metrics=["recall", "broken"], warnings=warnings)
+print(result)
+# {'recall@5': 1.0}   -- 'broken@5' is just absent, not zero
+for w in warnings.entries:
+    print(w)
+# CAUTION [score] (broken): the 'broken' metric raised RuntimeError('oops') and was left out
+# of this run's results rather than silently scoring zero
+```
+
+This is also why `RunResult.has(name)` exists elsewhere in the toolkit — checking for a key's
+presence, not trusting a `0.0`, is the only safe way to tell "this metric scored zero" apart
+from "this metric never ran."
+
+## `per_query()` — one metric, one `k`, per question
+
+```python no-run: signature shown for reference, not a runnable statement
+def per_query(qrels: Qrels, run: Mapping[str, Sequence[str]], metric: str, k: int) -> dict[str, float]
+```
+
+```python
+pq = cg.per_query(qrels, run, "recall", 3)
+print(pq)
+# {'q1': 0.5, 'q2': 1.0}
+```
+
+This is the shape [Is the Winner Real?](/scoring/significance) needs — a `{question_id: score}`
+dict per configuration, which its paired tests line up by question id. Only questions with
+non-empty judgements in `qrels` are included; an unregistered `metric` raises `ValueError`, same
+as `evaluate()`.
+
+## Character-level scores: catching context waste
+
+Chunk-level recall answers "did a relevant chunk come back." It says nothing about how much
+irrelevant text came back alongside it. A config can score `recall@5 = 1.0` while burying the
+actual answer in a huge chunk full of padding — the character-level functions are what expose
+that:
+
+| Function | Signature | What it's for |
+|---|---|---|
+| `character_recall` | `(item: EvalItem, retrieved: Iterable[Chunk]) -> float` | fraction of the gold evidence's characters that appear somewhere in what was retrieved. `0.0` if the item has no gold spans. |
+| `character_precision` | `(item, retrieved) -> float` | fraction of the retrieved characters that are actually gold. `0.0` if nothing was retrieved. |
+| `character_f1` | `(item, retrieved) -> float` | harmonic mean of the two above. |
+| `retrieved_character_count` | `(retrieved: Iterable[Chunk]) -> int` | total characters retrieved, overlapping spans merged and counted once. |
+| `gold_coverage_by_chunk` | `(item: EvalItem, chunks: Sequence[Chunk]) -> dict[str, float]` | per-chunk fraction of the gold evidence each individual chunk holds — feeds a "this chunk holds 60% of the evidence" display, not a flat relevant/not-relevant mark. |
+
+```python
+import contextgrid as cg
+
+item = cg.EvalItem(
+    id="q1",
+    question="What was the settlement amount?",
+    gold=(cg.GoldSpan(cg.Span("doc1", 100, 270)),),
+)
+
+# same evidence, retrieved two different ways
+big_chunk = cg.Chunk(id="c1", span=cg.Span("doc1", 0, 2000), text="x" * 2000)
+small_chunk = cg.Chunk(id="c2", span=cg.Span("doc1", 100, 270), text="x" * 170)
+
+print(cg.character_recall(item, [big_chunk]), cg.character_precision(item, [big_chunk]))
+# 1.0 0.085
+print(cg.character_recall(item, [small_chunk]), cg.character_precision(item, [small_chunk]))
+# 1.0 1.0
+```
+
+Both chunks give perfect `recall@k` and perfect `character_recall` — the evidence is in both.
+But `character_precision` is `0.085` for the big chunk against `1.0` for the small one: only
+8.5% of what came back is actually the answer. A generator reading the big chunk has to find
+the needle itself; a generator reading the small chunk doesn't.
+
+```python
+print(cg.retrieved_character_count([big_chunk, small_chunk]))
+# 2000  -- small_chunk's span is entirely inside big_chunk's, so it adds nothing new
+
+print(cg.gold_coverage_by_chunk(item, [big_chunk, small_chunk]))
+# {'c1': 1.0, 'c2': 1.0}  -- both chunks individually hold 100% of this gold span
+```

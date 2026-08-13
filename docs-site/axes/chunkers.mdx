@@ -1,0 +1,485 @@
+---
+title: "Chunkers"
+description: "The 12 chunkers that cut a parsed document into retrievable pieces, every argument and its real default, and the trade-off each one makes."
+---
+
+A chunker takes the `ParsedDocument` a [parser](/axes/parsers) produced and cuts it into
+`Chunk` objects — the units that actually get embedded, indexed and retrieved. Chunk sizes
+are always counted in **tokens**, and always in this package's own tokenizer, not characters
+and not whichever tokenizer a library defaults to internally. `size=512` under a byte-pair
+tokenizer and `size=512` under whitespace splitting are different amounts of text, which is
+why every chunker below takes a `tokenizer` argument.
+
+Resolve one by name with `contextgrid.get_chunker`:
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_chunker("recursive")))
+```
+```
+RecursiveChunker(size=512, overlap=64, separators=('\n\n', '\n', '. ', '? ', '! ', '; ', ', ', ' ', ''), tokenizer=None)
+```
+
+<Note>
+Only `cg.SemanticChunker` and `cg.ChunkerError` are top-level names. `FixedTokenChunker`,
+`RecursiveChunker`, `SentenceWindowChunker` and `StructuralChunker` exist as
+`contextgrid.chunk.X` — not `cg.X`. `cg.get_chunker(...)` works for all twelve regardless;
+only direct class construction cares about this.
+</Note>
+
+## The spec grammar
+
+```
+"recursive"                    # defaults
+"recursive:512"                # shorthand value — "size" for most chunkers
+"recursive:512,overlap=64"     # shorthand + keyword arguments
+"recursive:overlap=64"         # keyword arguments alone, no shorthand value
+```
+
+The shorthand parameter differs by chunker family: `size` for most, `max_size` for
+`structural`, `window` for `sentence`, `percentile` for `semantic`. Verified:
+
+```python
+import contextgrid as cg
+
+print(cg.CHUNKERS.parse_spec("structural:512,min_size=30"))
+```
+```
+('structural', {'max_size': 512, 'min_size': 30})
+```
+
+Namespaced names use the **longest registered prefix**, so `chonkie:token` is one plugin name,
+not the plugin `chonkie` with an argument:
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_chunker("chonkie:recursive:32")))
+```
+```
+ChonkieRecursiveChunker(size=32, tokenizer=None, min_characters=24)
+```
+
+An unregistered name still raises `UnknownPluginError` and lists every chunker registered:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_chunker("recursiv:128")
+except Exception as e:
+    print(type(e).__name__, e)
+```
+```
+UnknownPluginError no chunker named 'recursiv'. Available: chonkie:code, chonkie:recursive, chonkie:sentence, chonkie:token, fixed, langchain:character, langchain:markdown, langchain:recursive, recursive, semantic, sentence, structural
+```
+
+## The 12
+
+Five are this package's own. Seven adapt the two libraries most RAG stacks already run —
+chonkie and LangChain — through the same `Chunk` shape, so a sweep can put "the chunker
+already running in your stack" on the same leaderboard as everything else instead of only
+comparing this package against itself.
+
+| name | shorthand | extra | the trade-off |
+|---|---|---|---|
+| `fixed` | `size` | — | Ignores every boundary. The naive arm everything else has to beat. |
+| `recursive` | `size` | — | Splits on the largest separator that fits, packs back up to `size`. The de-facto default. |
+| `sentence` | `window` | — | A sliding window of whole sentences. Never cuts mid-sentence, but window count varies with sentence length. |
+| `structural` | `max_size` | — | One chunk per heading section. Falls back to `recursive` silently on documents with no detected headings. |
+| `semantic` | `percentile` | — | Cuts where similarity drops relative to **this document's own** distribution, not an absolute threshold. |
+| `chonkie:token` | `size` | `chunk` | Chonkie's fixed token windows. |
+| `chonkie:recursive` | `size` | `chunk` | Chonkie's recursive splitter — the direct head-to-head against this package's `recursive`. |
+| `chonkie:sentence` | `size` | `chunk` | Chonkie's sentence splitter. |
+| `chonkie:code` | `size` | `chunk` | Splits on the syntax tree. Nothing hand-written here comes close for code. |
+| `langchain:recursive` | `size` | `chunk` | What most deployed RAG systems are actually running today. |
+| `langchain:character` | `size` | `chunk` | One separator only (`\n\n` by default) — the naive library baseline. |
+| `langchain:markdown` | `size` | `chunk` | LangChain's recursive splitter, Markdown boundaries first. |
+
+`chonkie:*` and `langchain:*` all need the `chunk` extra: `pip install "context-grid[chunk]"`,
+which installs `chonkie`, `langchain-text-splitters` and `litellm`. Constructing or chunking
+without it does **not** raise `MissingExtraError` the way a parser does — it raises
+`cg.ChunkerError` instead, from inside `.chunk()` itself: `"chonkie chunkers need chonkie.
+Install it with: pip install 'context-grid[chunk]'"` / `"langchain chunkers need
+langchain-text-splitters. Install with: pip install 'context-grid[chunk]'"`. This package's
+sizes are what get counted, not chonkie's or LangChain's own — a `_TokenizerBridge` is
+injected under the hood so `chonkie:recursive:512` and `recursive:512` mean the same 512
+tokens.
+
+## Arguments and real defaults
+
+Every block below is a real, verified `cg.get_chunker(...)` call and its printed repr —
+including the defaults that are **computed from another argument**, not literal numbers.
+
+<AccordionGroup>
+
+<Accordion title="fixed — contextgrid.chunk.FixedTokenChunker">
+<ParamField path="size" type="int" default="512">
+  Tokens per chunk.
+</ParamField>
+<ParamField path="overlap" type="int | None" default="None">
+  Tokens carried back from the previous chunk. `None` resolves to `size // 8`, not zero —
+  verified: `FixedTokenChunker(size=100).overlap == 12`. This is deliberate: a literal
+  default like 64 would collide with and reject a user-chosen `size=64`. Pass `overlap=0`
+  explicitly for none.
+</ParamField>
+<ParamField path="tokenizer" type="str | Tokenizer | None" default="None">
+  `None` resolves to the `"regex"` tokenizer, not a model-accurate BPE tokenizer.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_chunker("fixed")))
+print(repr(cg.get_chunker("fixed:256")))
+```
+```
+FixedTokenChunker(size=512, overlap=64, tokenizer=None)
+FixedTokenChunker(size=256, overlap=32, tokenizer=None)
+```
+
+An overlap you *do* name is still validated — it must be smaller than `size`, or the window
+never advances:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_chunker("fixed:64,overlap=64")
+except cg.ChunkerError as e:
+    print(e)
+```
+```
+overlap (64) must be smaller than size (64); an overlap at or above the chunk size never advances through the document
+```
+</Accordion>
+
+<Accordion title="recursive — contextgrid.chunk.RecursiveChunker">
+<ParamField path="size" type="int" default="512">
+  Tokens per chunk.
+</ParamField>
+<ParamField path="overlap" type="int | None" default="None">
+  Same computed default as `fixed`: `size // 8`.
+</ParamField>
+<ParamField path="separators" type="tuple[str, ...]" default='("\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", "")'>
+  Tried largest to smallest — paragraph, then line, then sentence punctuation, then word,
+  then anywhere — falling back only when nothing bigger fits.
+</ParamField>
+<ParamField path="tokenizer" type="str | Tokenizer | None" default="None">
+  Same as `fixed`.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_chunker("recursive:512,overlap=64")))
+```
+```
+RecursiveChunker(size=512, overlap=64, separators=('\n\n', '\n', '. ', '? ', '! ', '; ', ', ', ' ', ''), tokenizer=None)
+```
+
+A real chunk run on a short Markdown document (three headed sections). Create it first,
+then chunk it — the other examples on this page reuse the same `corpus/policy.md`:
+
+```python
+from pathlib import Path
+
+Path("corpus").mkdir(exist_ok=True)
+Path("corpus/policy.md").write_text(
+    "# Termination\n\n"
+    "## Notice period\n\n"
+    "Either party may end this agreement with thirty days written notice, or "
+    "immediately by mutual written agreement.\n\n"
+    "## Refunds\n\n"
+    "Refunds are issued within 14 days of a valid cancellation, minus a processing "
+    "fee, credited to the original payment method or a different account on "
+    "request.\n\n"
+    "## Data retention\n\n"
+    "Account data is retained for 90 days after cancellation, then permanently "
+    "deleted from every backup and log we keep.\n"
+)
+```
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("corpus")
+doc = cg.get_parser("markdown").parse(corpus.files[0])
+chunks = cg.get_chunker("recursive:64").chunk(doc)
+
+print(len(chunks), "chunks")
+for c in chunks:
+    print(repr(c.text[:60]), c.token_counts)
+```
+```
+2 chunks
+'# Termination\n\n## Notice period\n\nEither party may end this a' {'regex': 61}
+'account on request.\n\n## Data retention\n\nAccount data is reta' {'regex': 29}
+```
+</Accordion>
+
+<Accordion title="sentence — contextgrid.chunk.SentenceWindowChunker">
+<ParamField path="window" type="int" default="3">
+  Whole sentences per chunk. The shorthand parameter.
+</ParamField>
+<ParamField path="stride" type="int" default="1">
+  Sentences the window advances by each step.
+</ParamField>
+<ParamField path="tokenizer" type="str | Tokenizer | None" default="None">
+  Same as `fixed`.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_chunker("sentence:3")))
+```
+```
+SentenceWindowChunker(window=3, stride=1, tokenizer=None)
+```
+</Accordion>
+
+<Accordion title="structural — contextgrid.chunk.StructuralChunker">
+<ParamField path="max_size" type="int" default="512">
+  Cap per section. The shorthand parameter.
+</ParamField>
+<ParamField path="min_size" type="int | None" default="None">
+  `None` resolves to `max_size // 8` — verified: `StructuralChunker(max_size=100).min_size ==
+  12`. Small sections are merged up to this size before being emitted.
+</ParamField>
+<ParamField path="keep_heading_path" type="bool" default="False">
+  Prepends the heading chain to the chunk text (e.g. `"Termination > Notice period\n\n..."`).
+  This makes the chunk **not a literal slice** of the document — those chunks get
+  `offsets_exact=False`, unlike every other structural-chunker output.
+</ParamField>
+<ParamField path="split_tables" type="bool" default="False">
+  Let an oversized table get cut mid-table rather than kept whole.
+</ParamField>
+<ParamField path="tokenizer" type="str | Tokenizer | None" default="None">
+  Same as `fixed`.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_chunker("structural:512,min_size=30")))
+```
+```
+StructuralChunker(max_size=512, min_size=30, keep_heading_path=False, split_tables=False, tokenizer=None)
+```
+
+`min_size` you do name is still checked against `max_size`:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_chunker("structural:64,min_size=64")
+except cg.ChunkerError as e:
+    print(e)
+```
+```
+min_size (64) must be below max_size (64)
+```
+
+`keep_heading_path=True` in practice — the heading chain gets prepended, and `offsets_exact`
+flips to `False`:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("corpus")
+doc = cg.get_parser("markdown").parse(corpus.files[0])
+chunks = cg.get_chunker("structural:512,keep_heading_path=True").chunk(doc)
+
+for c in chunks:
+    print(repr(c.text[:60]), "offsets_exact=", c.offsets_exact)
+```
+```
+'# Termination\n\n# Termination\n\n## Notice period\n\nEither party' offsets_exact= False
+```
+
+<Warning>
+`structural` chunking a document with no detected headings is not an error — it silently
+falls back to plain `recursive` cutting under the `structural` name. Read a `structural`-only
+run with that in mind rather than assuming every chunk followed a heading boundary.
+</Warning>
+</Accordion>
+
+<Accordion title="semantic — cg.SemanticChunker">
+<ParamField path="embedder" type="str | Embedder" default='"tfidf"'>
+  What measures consecutive-sentence similarity.
+</ParamField>
+<ParamField path="percentile" type="float" default="90.0">
+  The shorthand parameter. A percentile of **this document's own** similarity-drop
+  distribution — not an absolute similarity threshold in `[0, 1]`.
+</ParamField>
+<ParamField path="buffer_size" type="int" default="1">
+  Sentences grouped on each side before measuring a drop.
+</ParamField>
+<ParamField path="max_size" type="int" default="1024">
+  Hard cap per chunk regardless of where the next similarity drop falls.
+</ParamField>
+<ParamField path="min_sentences" type="int" default="1">
+  Floor on sentences per chunk.
+</ParamField>
+<ParamField path="tokenizer" type="str | Tokenizer | None" default="None">
+  Same as `fixed`.
+</ParamField>
+
+```python
+import contextgrid as cg
+
+print(repr(cg.get_chunker("semantic:90")))
+```
+```
+SemanticChunker(embedder='tfidf', percentile=90, buffer_size=1, max_size=1024, min_sentences=1, tokenizer=None)
+```
+
+A "0.7 similarity threshold" from a blog post does not translate here — `percentile` must be
+between 0 and 100:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_chunker("semantic:150")
+except cg.ChunkerError as e:
+    print(e)
+```
+```
+percentile must be between 0 and 100, got 150. It is a percentile of this document's own similarity drops, not a similarity.
+```
+</Accordion>
+
+<Accordion title="chonkie:token, chonkie:recursive, chonkie:sentence, chonkie:code — contextgrid.chunk.chonkie">
+```python no-run: signature shown for reference, not a runnable statement
+ChonkieTokenChunker(size: int = 512, tokenizer=None, overlap: int = 0)
+ChonkieRecursiveChunker(size: int = 512, tokenizer=None, min_characters: int = 24)
+ChonkieSentenceChunker(size: int = 512, tokenizer=None, overlap: int = 0, min_sentences: int = 1)
+ChonkieCodeChunker(size: int = 512, tokenizer=None, language: str = "auto")
+```
+
+```python
+import contextgrid as cg
+
+for spec in ["chonkie:token", "chonkie:recursive", "chonkie:sentence", "chonkie:code"]:
+    print(spec, "->", repr(cg.get_chunker(spec)))
+```
+```
+chonkie:token -> ChonkieTokenChunker(size=512, tokenizer=None, overlap=0)
+chonkie:recursive -> ChonkieRecursiveChunker(size=512, tokenizer=None, min_characters=24)
+chonkie:sentence -> ChonkieSentenceChunker(size=512, tokenizer=None, overlap=0, min_sentences=1)
+chonkie:code -> ChonkieCodeChunker(size=512, tokenizer=None, language='auto')
+```
+
+A real run against the same Markdown document:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("corpus")
+doc = cg.get_parser("markdown").parse(corpus.files[0])
+chunks = cg.get_chunker("chonkie:recursive:64").chunk(doc)
+
+print(len(chunks), "chunks")
+for c in chunks[:2]:
+    print(repr(c.text[:50]), c.token_counts)
+```
+```
+2 chunks
+'# Termination\n\n## Notice period\n\nEither party may ' {'regex': 61}
+'Account data is retained for 90 days after cancell' {'regex': 21}
+```
+
+Offsets are re-verified against the source text every call, so chonkie's own offset reporting
+is never trusted blindly.
+</Accordion>
+
+<Accordion title="langchain:recursive, langchain:character, langchain:markdown — contextgrid.chunk.langchain">
+```python no-run: signature shown for reference, not a runnable statement
+LangChainRecursiveChunker(size: int = 512, overlap: int = 0, tokenizer=None)
+LangChainCharacterChunker(size: int = 512, overlap: int = 0, tokenizer=None, separator: str = "\n\n")
+LangChainMarkdownChunker(size: int = 512, overlap: int = 0, tokenizer=None)
+```
+
+```python
+import contextgrid as cg
+
+for spec in ["langchain:recursive", "langchain:character", "langchain:markdown"]:
+    print(spec, "->", repr(cg.get_chunker(spec)))
+```
+```
+langchain:recursive -> LangChainRecursiveChunker(size=512, overlap=0, tokenizer=None)
+langchain:character -> LangChainCharacterChunker(size=512, overlap=0, tokenizer=None, separator='\n\n')
+langchain:markdown -> LangChainMarkdownChunker(size=512, overlap=0, tokenizer=None)
+```
+
+<Warning>
+`langchain:*` default `overlap=0`, not the size-derived default the other chunkers use. This
+is deliberate — a literal-zero default is what makes the `size` shorthand alone always work
+(`langchain:recursive:32` never collides with an inherited overlap). Ask for overlap
+explicitly: `langchain:recursive:512,overlap=64`.
+</Warning>
+
+A real run:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("corpus")
+doc = cg.get_parser("markdown").parse(corpus.files[0])
+chunks = cg.get_chunker("langchain:recursive:64,overlap=8").chunk(doc)
+
+print(len(chunks), "chunks")
+for c in chunks[:2]:
+    print(repr(c.text[:50]), c.token_counts)
+```
+```
+2 chunks
+'# Termination\n\n## Notice period\n\nEither party may ' {'regex': 61}
+'## Data retention\n\nAccount data is retained for 90' {'regex': 25}
+```
+
+<Warning>
+LangChain's splitters strip whitespace, so their chunks do not tile the document — a
+character between two chunks can belong to neither. A gold span landing in that gap resolves
+to nothing; the run reports this, it does not silently drop the question.
+</Warning>
+</Accordion>
+
+</AccordionGroup>
+
+## How to choose
+
+<Steps>
+<Step title="Start with recursive">
+`recursive:512` is the config template's own default, and the closest thing to a neutral
+baseline: it respects paragraph and sentence boundaries without needing headings or a model.
+</Step>
+<Step title="Add structural if your documents have real headings">
+One chunk per section reads better to a human and often retrieves better — but check that
+your parser is actually detecting headings first, or `structural` quietly becomes `recursive`
+under a different name.
+</Step>
+<Step title="Try langchain:recursive or chonkie:recursive as your production control">
+If you already have a chunker running somewhere, put its equivalent on the grid next to this
+package's own. A win against your own baseline is the number worth trusting, not a win
+against a chunker nobody deploys.
+</Step>
+<Step title="Reach for semantic or sentence:code last">
+`semantic` costs an embedding pass per document and is worth it mainly on long, topic-drifting
+text. `chonkie:code` is worth it specifically for source code, where syntax-tree boundaries
+beat every text-based splitter here.
+</Step>
+</Steps>
+
+<Tip>
+Sizes are only comparable across chunkers when the tokenizer is the same. If you set
+`tokenizer=` on one arm of a sweep, set it on every arm — otherwise "512 tokens" means two
+different amounts of text and the comparison is not measuring what it looks like it measures.
+</Tip>
+
+Need a chunker none of these twelve cover — your own splitting logic, wrapped for a sweep? See
+[Writing a Custom Plugin](/concepts/plugins) for the `Chunker` protocol and how to register one.

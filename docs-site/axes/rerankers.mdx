@@ -1,0 +1,329 @@
+---
+title: "Rerankers"
+description: "All five rerankers, their arguments, what candidates controls, and what happens when a reranker drops a candidate."
+---
+
+A reranker reorders a candidate list using the query and each passage *together*, instead of
+comparing the query to a vector that was computed on its own. That's why it can tell whether a
+passage answers *this* question rather than just sitting nearby in embedding space — and why it
+costs more per candidate than the retriever did.
+
+Set it with `reranker` in `Config` or `grid.reranker` in a config file. Every reranker is a spec
+string resolved through the registry:
+
+```python
+from contextgrid.rerank import RERANKERS, get_reranker
+
+RERANKERS.names()
+```
+
+```
+['lexical', 'litellm-rerank', 'mmr', 'none', 'tei-rerank']
+```
+
+<Note>
+Only `RERANKERS`, `Reranker` and `get_reranker` are exported from top-level `contextgrid`. The
+five reranker classes themselves — `LexicalOverlapReranker`, `MMRReranker`, `NoReranker`,
+`TEIReranker`, `LiteLLMReranker` — are not on `contextgrid` (there is no `contextgrid.LexicalOverlapReranker`).
+Import them from `contextgrid.rerank` instead:
+
+```python
+from contextgrid.rerank import LexicalOverlapReranker, MMRReranker
+```
+</Note>
+
+## `candidates`: the parameter every blog post skips
+
+Almost all "use a reranker" advice stops at naming a model. It rarely says how many candidates to
+hand it, and that second number is where most of the effect actually lives:
+
+- Over the top 10, a reranker can only reorder what the retriever already found.
+- Over the top 100, it can rescue a passage the retriever ranked 47th.
+
+Cost scales with depth; benefit doesn't scale the same way, and the right point on that curve is
+specific to your corpus. That's why `candidates` is its own axis on the grid:
+
+```yaml
+grid:
+  reranker: [null, lexical, "tei-rerank:bge-reranker-base"]
+  candidates: [10, 50, 100]
+```
+
+With a reranker set, `contextgrid.pipeline.BuiltPipeline.search` asks the retriever for
+`candidates` results and the reranker cuts that back to `k`. With no reranker, the retriever is
+asked for `k` directly, so the no-reranker arm never pays for depth it would only throw away.
+
+`candidates` is meaningless without a reranker, so `contextgrid.grid.matrix.canonicalise` resets
+it back to its default (`50`) whenever `reranker` is `None` — a sweep doesn't waste runs on
+configurations that differ only in an unused number:
+
+```python
+from contextgrid.grid.matrix import canonicalise
+from contextgrid.pipeline import Config
+
+canonicalise(Config(reranker=None, candidates=100)).candidates
+```
+
+```
+50
+```
+
+```python
+canonicalise(Config(reranker="lexical", candidates=100)).candidates
+```
+
+```
+100
+```
+
+## The five rerankers
+
+| name | spec | extra needed | when to use it |
+|---|---|---|---|
+| `none` | `none` | — | the arm every reranker has to beat |
+| `lexical` | `lexical` or `lexical:0.4` | — | free floor: query-term coverage |
+| `mmr` | `mmr` or `mmr:0.6` | — | fixes a top-k that's near-duplicate passages |
+| `tei-rerank` | `tei-rerank:bge-reranker-base` | none (plain `urllib`) | a real cross-encoder, self-hosted |
+| `litellm-rerank` | `litellm-rerank:cohere/rerank-english-v3.0` | `pip install "context-grid[llm]"` | a hosted cross-encoder: Cohere, Jina, Voyage, AWS |
+
+### `none` — `NoReranker`
+
+```python
+from contextgrid.rerank import NoReranker
+```
+
+Keeps the retriever's order — no fields, nothing to configure. Not a placeholder: an honest
+comparison needs this baseline sitting on the same leaderboard, with the same cost and latency
+columns, as every reranker you're actually testing.
+
+### `lexical` — `LexicalOverlapReranker`
+
+Scores a passage by how much of the query it actually contains, divided by the passage's
+length raised to `length_penalty` — a cross-encoder without the encoder. Weak, free, and a real
+floor: a neural reranker that costs money and beats this by 0.01 has told you something about
+whether it's worth deploying at all.
+
+```python
+from contextgrid import Chunk, Span
+from contextgrid.rerank import get_reranker
+
+texts = [
+    "Shipping takes five to seven business days.",
+    "Refunds are issued within thirty days of purchase.",
+    "The office is closed on public holidays.",
+    "Digital goods are not refundable once downloaded.",
+]
+chunks = [
+    Chunk(id=f"doc:{i}", span=Span("doc", i * 100, i * 100 + len(t)), text=t)
+    for i, t in enumerate(texts)
+]
+top = get_reranker("lexical").rerank("do I get a refund on digital goods?", chunks, k=2)
+[scored.chunk_id for scored in top]
+```
+
+```
+['doc:3', 'doc:2']
+```
+
+<ParamField path="length_penalty" type="float" default="0.25">
+How much longer passages are punished for their length. `lexical:0.4` sets `length_penalty=0.4`.
+</ParamField>
+
+### `mmr` — `MMRReranker`
+
+Maximal marginal relevance: relevance minus similarity to what's already been picked. It's the
+fix for a top-k that's five near-copies of the same paragraph — overlapping chunks make a
+leaderboard look fine (the evidence really was retrieved, five times), while a generator reading
+that context sees one fact repeated instead of five distinct ones.
+
+`diversity` isn't validated anywhere — there's no bounds check. `diversity=0` keeps the
+retriever's order; `diversity=1` ignores relevance entirely and greedily picks whatever remaining
+passage is most different. The relevance signal MMR reorders against is synthesized from the
+incoming rank (`1 - position / len(candidates)`), not from any real score — MMR here always
+reorders, it never rescales an actual number.
+
+```python
+mmr_texts = [
+    "Refunds are issued within thirty days of purchase.",
+    "You can get a refund within thirty days of buying the product.",
+    "Purchases are refundable for up to thirty days.",
+    "Shipping takes five to seven business days.",
+    "The office is closed on public holidays.",
+]
+mmr_chunks = [
+    Chunk(id=f"doc:{i}", span=Span("doc", i * 100, i * 100 + len(t)), text=t)
+    for i, t in enumerate(mmr_texts)
+]
+none_order = [s.chunk_id for s in get_reranker(None).rerank("refund policy", mmr_chunks, k=3)]
+mmr_order = [s.chunk_id for s in get_reranker("mmr:0.6").rerank("refund policy", mmr_chunks, k=3)]
+none_order, mmr_order
+```
+
+```
+(['doc:0', 'doc:1', 'doc:2'], ['doc:0', 'doc:1', 'doc:3'])
+```
+
+Three candidates in a row say almost the same thing about refunds. `none` keeps all three;
+`mmr:0.6` swaps the third for the shipping passage instead, once two refund answers are already
+in the top 3.
+
+<ParamField path="diversity" type="float" default="0.3">
+`0` keeps the retriever's order. `1` always picks the most different remaining passage,
+regardless of relevance. `mmr:0.6` sets `diversity=0.6`.
+</ParamField>
+
+### `tei-rerank` — `TEIReranker`
+
+```python
+from contextgrid.rerank.remote import TEIReranker
+```
+
+A cross-encoder served by [text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference)
+(TEI). No API key, no extra Python dependency — reached over plain `urllib`.
+
+```bash no-run: needs a running Docker daemon and pulls an image from ghcr.io
+docker run -p 8081:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
+    --model-id BAAI/bge-reranker-base
+```
+
+```yaml
+grid:
+  reranker: ["tei-rerank:bge-reranker-base,api_base=http://localhost:8081"]
+```
+
+<Warning>
+The default port is `8081`, distinct from the embedder's TEI default of `8080`. One TEI process
+serves one model, so embedding and reranking need two separate servers on two separate ports.
+Assuming one server does both fails with a confusing HTTP error, not one that names the real
+problem.
+</Warning>
+
+<ParamField path="model" type="str" default="&quot;&quot;">
+Required, e.g. `bge-reranker-base`.
+</ParamField>
+<ParamField path="api_base" type="str | None" default="http://localhost:8081">
+The TEI server's `/rerank` endpoint. Confirmed constructor default — matches the note above about
+port 8081 being the value used in every working example.
+</ParamField>
+<ParamField path="batch_size" type="int" default="64">
+Candidates sent per request.
+</ParamField>
+<ParamField path="max_chars" type="int | None" default="8000">
+Passage text is trimmed to this many characters before sending — a character-count guard, not
+a tokenizer-aware one.
+</ParamField>
+<ParamField path="timeout" type="float" default="60.0">
+Seconds.
+</ParamField>
+<ParamField path="retries" type="int" default="2">
+Retried only for transient errors — timeouts, rate limits, 5xx.
+</ParamField>
+<ParamField path="transport" type="Callable | None" default="None">
+Replaces the network call entirely. Used below to run every example with no server and no key.
+</ParamField>
+
+You can drive `TEIReranker` with no server at all by supplying `transport`, a function that
+takes `(query, passages)` and returns `[(position, score), ...]`:
+
+```python
+def by_keyword(word):
+    def transport(query, passages):
+        return [(i, 1.0 if word in p.lower() else 0.0) for i, p in enumerate(passages)]
+    return transport
+
+# reuses `chunks` from the lexical example above:
+# doc:0 shipping, doc:1 refunds, doc:2 office hours, doc:3 digital goods refund
+tei = TEIReranker(model="bge-reranker-base", transport=by_keyword("refund"))
+top = tei.rerank("refund", chunks, k=2)
+[(scored.chunk_id, scored.score) for scored in top]
+```
+
+```
+[('doc:1', 1.0), ('doc:3', 1.0)]
+```
+
+### `litellm-rerank` — `LiteLLMReranker`
+
+```python
+from contextgrid.rerank import LiteLLMReranker
+```
+
+A hosted reranker through [litellm](https://docs.litellm.ai/): Cohere, Jina, Voyage, AWS, one
+name each. Needs `pip install "context-grid[llm]"`.
+
+```yaml
+grid:
+  reranker: ["litellm-rerank:cohere/rerank-english-v3.0"]
+```
+
+```python
+from contextgrid.rerank import get_reranker
+
+get_reranker("litellm-rerank:cohere/rerank-english-v3.0")
+```
+
+```
+LiteLLMReranker(model='cohere/rerank-english-v3.0', api_base=None, api_key_env=None, timeout=60.0, retries=2, batch_size=64, max_chars=8000, transport=None)
+```
+
+The key comes from the environment (`COHERE_API_KEY`, `JINA_API_KEY`, `VOYAGE_API_KEY`, ...),
+never from the config file. Set `api_key_env` to the *name* of the variable, not the key itself.
+
+<ParamField path="model" type="str" default="&quot;&quot;">
+Required, `provider/model`, e.g. `cohere/rerank-english-v3.0`.
+</ParamField>
+<ParamField path="api_base" type="str | None" default="None">
+Override the provider's default endpoint.
+</ParamField>
+<ParamField path="api_key_env" type="str | None" default="None">
+Name of the environment variable holding the key.
+</ParamField>
+<ParamField path="batch_size" type="int" default="64">
+Same meaning as `tei-rerank`.
+</ParamField>
+<ParamField path="max_chars" type="int | None" default="8000">
+Same meaning as `tei-rerank`.
+</ParamField>
+<ParamField path="timeout" type="float" default="60.0">
+Same meaning as `tei-rerank`.
+</ParamField>
+<ParamField path="retries" type="int" default="2">
+Same meaning as `tei-rerank`.
+</ParamField>
+
+```python no-run: hits the real Cohere API and needs a COHERE_API_KEY
+LiteLLMReranker(model="cohere/rerank-english-v3.0").rerank("refund policy", chunks, k=2)
+```
+
+## Every candidate must come back, or the run fails
+
+Both remote rerankers insist on one thing: the backend has to return a score for *every*
+candidate it was sent, or `contextgrid.rerank.RerankerError` is raised. A backend that quietly
+returns fewer results than it was given — a passage too long, a batch silently capped — has
+dropped documents from the ranking. On a leaderboard that looks exactly like the reranker judging
+those documents irrelevant, which is a completely different claim:
+
+```python
+from contextgrid.rerank import RerankerError
+
+def dropping_transport(query, passages):
+    return [(i, 1.0) for i, _ in enumerate(passages)][:-1]  # drops the last one
+
+bad = TEIReranker(model="bge-reranker-base", transport=dropping_transport)
+bad.rerank("refund", chunks, k=2)
+```
+
+```
+Traceback (most recent call last):
+    ...
+contextgrid.rerank.remote.RerankerError: tei-rerank scored 3 of 4 candidates in the batch starting at 0. Every candidate must come back, or the ones that did not look like the model rejected them.
+```
+
+Ties are broken by the incoming rank (`(-score, position)`), so two passages scored identically
+keep the retriever's order rather than an arbitrary one.
+
+## See also
+
+- [Retrieval Strategies](/axes/retrieval) — what builds the candidate list a reranker reorders.
+- [Query Transforms](/axes/transforms) — what rewrites the question before any of this runs.
+- [The Ten Axes](/axes/overview) — where `reranker` and `candidates` sit among the other eight.

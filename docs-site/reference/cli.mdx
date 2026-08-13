@@ -1,0 +1,225 @@
+---
+title: "CLI Reference"
+description: "Every contextgrid command, its flags, its exit code, and the real output it prints — run, init and check in full, the rest in brief."
+---
+
+Installing `context-grid` also installs a `contextgrid` command. It reads the same YAML
+experiment file `contextgrid.config.load` reads in Python, so a sweep you built as a script can
+be handed to a teammate, a `Makefile`, or CI without them needing to know any Python at all.
+
+```bash
+contextgrid --help
+```
+
+```text
+usage: contextgrid [-h] [--version]
+                   {run,init,check,profile,sweep,plugins,evalset,validate,diff} ...
+
+Sweep retrieval configurations on your own documents.
+
+positional arguments:
+  {run,init,check,profile,sweep,plugins,evalset,validate,diff}
+    run                 Run everything a config file describes.
+    init                Write a starter config for this installation.
+    check               Validate a config and say what it would run.
+    profile             Measure a corpus and flag settings its shape rules
+                        out.
+    sweep               Run a matrix and print the leaderboard.
+    plugins             List everything registered.
+    evalset             Inspect an eval set and what it can support.
+    validate            Check the scorer against a published benchmark.
+    diff                Say what changed between two run manifests.
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
+```
+
+Running `contextgrid` with no command prints this same help and exits `1`. `contextgrid
+--version` prints `context-grid <version>` (e.g. `context-grid 0.9.0`) and exits `0`.
+
+Every command catches its own exceptions and prints `error: <message>` to stderr rather than a
+Python traceback, then exits `1`. The three commands below are the ones most people reach for
+first — `init` to get a config file, `check` to catch mistakes in it for free, `run` to actually
+sweep.
+
+<Steps>
+<Step title="contextgrid init — write a starter config">
+
+```bash
+contextgrid init contextgrid.yaml --corpus ./documents --evalset ./questions.jsonl
+```
+
+```text
+wrote contextgrid.yaml
+edit it, then run:  contextgrid run contextgrid.yaml
+```
+
+<ParamField path="path" type="path" default="contextgrid.yaml">
+Positional, optional. Where to write the file.
+</ParamField>
+<ParamField path="--corpus" type="str" default="./documents">
+The `corpus:` value written into the file.
+</ParamField>
+<ParamField path="--evalset" type="str" default="./questions.jsonl">
+The `evalset:` value written into the file.
+</ParamField>
+<ParamField path="--force" type="bool" default="false">
+Overwrite an existing file at `path`.
+</ParamField>
+
+The file it writes lists every value each axis can take, as a comment next to the one or two
+values it actually sets — `grid: chunker: [recursive:512, sentence:3]` with `# also available:
+chonkie:code, chonkie:recursive, ...` underneath, one block like that per axis. Read it top to
+bottom once and you have the shape of the whole tool.
+
+Without `--force`, running `init` again over an existing file refuses rather than clobbering it:
+
+```text
+error: contextgrid.yaml already exists. Pass --force to overwrite.
+```
+
+Exit code `1` for that refusal (or a directory that can't be written to), `0` once the file is
+written.
+</Step>
+
+<Step title="contextgrid check — validate before spending anything">
+
+```bash
+contextgrid check contextgrid.yaml
+```
+
+```text
+contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
+  ingestion   ['plain']
+  parser      ['markdown']
+  chunker     ['recursive:512', 'sentence:3']
+  embedder    ['tfidf', None]
+  index       ['dense', 'bm25', 'hybrid']
+  transform   [None]
+  retrieval   ['simple']
+  reranker    [None, 'lexical']
+  candidates  [50]
+  generator   [None]
+
+config is valid.
+```
+
+<ParamField path="config" type="path" required>
+Positional. The YAML or JSON experiment file to check.
+</ParamField>
+
+`check` parses the file, then does everything `run` would do *except* read a document, embed a
+vector, build an index or call a model:
+
+- Confirms `corpus:` exists, and that it actually has files a registered parser can read (not
+  just that the path is present — an empty `./documents` from a clone without its data fails
+  here, not four stages into `run`).
+- Confirms `evalset:` exists, parses, and has at least one question in it. An eval set that
+  parses fine but is empty is not an error `run` itself raises — it would sweep the whole
+  matrix to score zero questions and report every metric as zero. `check` catches it first.
+- Builds one instance of every parser, chunker, embedder, index, transform, retrieval strategy,
+  reranker and generator the matrix actually names, so a typo'd spec string (`chunker:
+  banana:999`) or an out-of-range one (`chunker: recursive:-5`) is reported now, in the same
+  words `run` would use, rather than after the sweep has started spending time or money.
+- Checks each of those specs against its optional dependency, so a plugin that imports fine but
+  defers its real import to call time — `marker` is the one plugin in this package that does —
+  is still caught rather than silently passed.
+
+Every problem it finds is printed as `error: <message>` and the command exits `1`; a config
+with nothing wrong prints `config is valid.` and exits `0`.
+
+<Note>
+This is why `check` is worth running in CI even for a config you're confident in: it is the same
+cost as importing the package and building empty objects, not the cost of a sweep.
+</Note>
+</Step>
+
+<Step title="contextgrid run — run everything the config describes">
+
+```bash
+contextgrid run contextgrid.yaml
+```
+
+```text
+  [1/5] markdown · recursive:512 · tfidf · dense
+  [2/5] markdown · sentence:3 · tfidf · dense
+  [3/5] markdown · recursive:512 · bm25
+  [4/5] markdown · recursive:512 · tfidf · hybrid
+  [5/5] markdown · recursive:512 · tfidf · dense · lexical@50
+contextgrid: 1 × 1 × 2 × 2 × 3 × 1 × 1 × 2 × 1 × 1 = 24 on paper, 5 to run in ofat mode (1 impossible combination(s) skipped), scored on recall@5
+
+configuration                                         recall@5   p95 ms     $/1k
+--------------------------------------------------------------------------------
+markdown · recursive:512 · tfidf · dense                 1.000      0.2   0.0000
+markdown · sentence:3 · tfidf · dense                    1.000      0.0   0.0000
+markdown · recursive:512 · bm25                          1.000      0.0   0.0000
+markdown · recursive:512 · tfidf · hybrid                1.000      0.0   0.0000
+markdown · recursive:512 · tfidf · dense · lexical@50    1.000      0.1   0.0000
+
+markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 5 configurations, scored on 2 questions. ...
+
+cache: 17 of 24 lookups reused (71%), chunk 6/10, embed 3/4, parse 8/10
+
+wrote 6 files to /path/to/results
+```
+
+<ParamField path="config" type="path" required>
+Positional. The YAML or JSON experiment file to run.
+</ParamField>
+<ParamField path="--quiet" type="bool" default="false">
+Suppress the `[i/total] <config.label>` progress lines that print to stderr as each
+configuration finishes. The leaderboard, summary and cache line on stdout are unaffected.
+</ParamField>
+
+The `[i/total]` progress lines and every `warning:` line go to stderr; the leaderboard, the
+plain-English summary sentence, and the `cache:` line go to stdout — so `contextgrid run
+contextgrid.yaml > leaderboard.txt` captures just the results, and `2>` catches just the noise.
+
+If `report.out` is set in the config (the default starter config sets it to `./results`), `run`
+writes the formats named under `report.formats` there and prints `wrote N files to
+<report.out>` — see [Reports](/reference/reports) for what each format contains.
+
+**Exit codes:**
+
+| Exit | When |
+|---|---|
+| `0` | At least one configuration ran, whether or not any of them scored well. |
+| `1` | The config file itself is invalid (same errors `check` would catch), or the matrix ran zero configurations — every combination was impossible, or a budget was already spent before the first one started. |
+
+That second `1` case matters for CI: a matrix whose only cell can't be built, or a
+`run.budget_usd: 0.0` that leaves nothing to spend, both used to print "No configurations were
+run." and still exit `0` — a green build for a sweep that measured nothing. `run` treats
+*nothing measured* as a failure and prints why on stderr, once as `error: no configurations
+were run, so nothing was measured` and again for each specific reason:
+
+```text
+error: no configurations were run, so nothing was measured
+error: every combination of ingestion=hypothetical-questions, chunker=structural:32 was skipped as impossible: hypothetical-questions needs run.model set
+```
+
+A sweep that runs *some* of its configurations before a `run.budget_seconds` cutoff still exits
+`0` — the leaderboard it printed is real, just partial, and a `warning: budget_reached: ...`
+line says so.
+</Step>
+</Steps>
+
+## The other six commands, briefly
+
+Each of these has its own `--help`; this is the one-line summary from `contextgrid --help` plus
+what it's for.
+
+| Command | For |
+|---|---|
+| `contextgrid profile <corpus> [--parser markdown]` | Measure a corpus's shape (file count, size, structure) and print hints about which axis values it rules out, before you spend a sweep finding out. |
+| `contextgrid sweep <corpus> <evalset.jsonl> [--parser ...] [--chunker ...] ...` | A one-shot sweep from flags alone, no YAML file — the CLI equivalent of building a `cg.Lab` and calling `.grid()` in Python. See [The Lab](/lab/overview). |
+| `contextgrid plugins [--family parser]` | List every registered name on every axis, for this installation specifically — which extras are installed changes what shows up. |
+| `contextgrid evalset <path>` | Load a JSONL or CSV eval set and print its quality summary and question-type distribution, without running a sweep. See [Eval Set Quality](/evalsets/quality). |
+| `contextgrid diff <before.json> <after.json>` | Explain what changed between two `manifest.json` files from earlier bundled runs. |
+| `contextgrid validate <benchmark.json> <corpus> [--limit N] [--recall-at-10 N]` | Check this package's own scorer against a published benchmark (LegalBench-RAG format) — a sanity check on the tool, not on your pipeline. |
+
+<Warning>
+A config's `plugins:` key — used to load your own custom Chunker, Embedder, or other plugin
+before the CLI resolves any spec string against a registry — behaves differently from Python.
+See [Writing a Custom Plugin](/concepts/plugins) before relying on one from `contextgrid run`.
+</Warning>

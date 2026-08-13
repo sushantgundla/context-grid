@@ -1,0 +1,41 @@
+---
+title: "What context-grid is"
+description: "A one-paragraph orientation to context-grid: what it does, the one property everything rests on, and the three ways to start using it."
+---
+
+context-grid is a lab for grounding pipelines. It sweeps parser × chunker × embedder × index ×
+reranker over your own documents and scores every combination on quality, latency and cost.
+Point it at a folder of files and a handful of questions with known answers, and it tells you
+which combination actually retrieves the right passages, instead of which one merely sounds
+right.
+
+Everything in context-grid rests on one property: **a chunk always knows which characters of
+which source document it came from.** That is what makes comparing two chunkers, or two
+parsers, a fair thing to do at all — gold answers are stored as character spans, resolved
+against whichever chunks a given configuration happened to produce, not against any one
+chunker's opinion of where a passage starts and ends.
+
+It is for anyone building retrieval — RAG, semantic search, an agent that reads documents —
+who wants a number instead of a guess before picking a parser, a chunker, an embedder or an
+index. It runs entirely on your machine by default: the core install is just `numpy` and
+`pyyaml`, and hosted models or vector databases are opt-in extras, never requirements.
+
+## Three ways in
+
+<CardGroup cols={3}>
+  <Card title="The Lab" icon="flask" href="/lab/overview">
+    `cg.Lab(corpus)` sweeps a whole grid — parsers, chunkers, embedders, indexes, rerankers —
+    and hands back a leaderboard. The fastest way to a first answer.
+  </Card>
+  <Card title="build()" icon="code" href="/pipeline/build">
+    `cg.build(config, corpus)` builds and runs one exact configuration, wired into a bigger
+    application instead of a sweep.
+  </Card>
+  <Card title="The CLI" icon="terminal" href="/reference/cli">
+    `contextgrid run contextgrid.yaml` runs everything a config file describes, no Python
+    required.
+  </Card>
+</CardGroup>
+
+Start with the [Quickstart](/quickstart) for a working sweep in under five minutes, or
+[Concepts](/concepts/overview) for how the pieces fit together.

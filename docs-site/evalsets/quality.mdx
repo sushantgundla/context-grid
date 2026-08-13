@@ -1,0 +1,403 @@
+---
+title: "Eval Set Quality"
+description: "Measure how trustworthy an eval set is with assess(), throw out bad questions with FilterChain, and review what's left with ReviewQueue."
+---
+
+A leaderboard is only as good as the questions behind it. This page is about the tools that
+catch a bad eval set before it costs you a wrong conclusion: `assess()` to measure it,
+`default_filters()`/`FilterChain` to clean an auto-generated draft, `Classifier` to label
+question types, and `ReviewQueue` to put a human in the loop.
+
+## What a bad eval set does to a leaderboard
+
+Two failure modes matter most, and both are silent unless you check for them:
+
+- **Too few questions.** A small eval set can't tell noise from a real difference. Two
+  configs that score 0.62 and 0.68 on 8 questions might just as well be identical — you'd
+  need a much bigger set to say otherwise. `EvalSetQuality.detectable_difference` puts a
+  number on exactly how small a gap the set *can't* see.
+- **Questions that don't test retrieval.** A question answerable from general knowledge
+  ("What is the capital of France?") scores well for every configuration, because the
+  generator LLM already knew the answer without reading your corpus. It doesn't measure
+  retrieval at all — it just makes every arm of a sweep look equally good, or bad.
+
+## `assess()` — measuring a set
+
+```python no-run: signature shown for reference, not a runnable statement
+assess(evalset: EvalSet, *, baseline_scores: dict[str, float] | None = None, reviewed_key: str = "reviewed") -> EvalSetQuality
+```
+
+```python
+import contextgrid as cg
+
+def with_anchor(id, question, quote="Employees accrue 1.5 days of leave per month."):
+    return cg.EvalItem(
+        id=id, question=question,
+        anchors=(cg.GoldAnchor(source_id="handbook.pdf", quote=quote),),
+        qtype=cg.QuestionType.FACTOID,
+    )
+
+items = [
+    with_anchor("q1", "How much leave do employees accrue per month?"),
+    with_anchor("q2", "How much leave do employees accrue per month?"),  # near-duplicate
+    with_anchor("q3", "it"),  # too short, dangling pronoun
+]
+evalset = cg.EvalSet(id="handbook-quiz", items=tuple(items))
+
+quality = cg.assess(evalset)
+print(quality)
+print("reviewed_fraction:", quality.reviewed_fraction)
+print("detectable_difference:", quality.detectable_difference)
+print(quality.summary())
+for w in quality.warnings().entries:
+    print(str(w))
+```
+
+```text
+EvalSetQuality(size=3, answerable=3, reviewed=0, portable=3, types={'factoid': 3}, mean_discriminating_power=None, non_discriminating=0)
+reviewed_fraction: 0.0
+detectable_difference: 1.0
+3 questions (3 answerable), 0% reviewed, detects differences of 1.00 and above
+CAUTION [evalset]: 3 answerable questions can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
+CAUTION [evalset]: only 0% of this set is marked as checked by a human. Ground truth nobody has read is the weakest link in any retrieval comparison. If you wrote these questions yourself, say so with `"meta": {"reviewed": true}` on each one; otherwise the review queue is the cheapest place to fix it
+```
+
+`detectable_difference: 1.0` on 3 questions is the point made concrete: with this few
+questions, the set literally cannot distinguish two configs unless one scores 100 percentage
+points above the other. `reviewed` is read from `item.meta.get(reviewed_key)` — a
+hand-written set only counts as reviewed if you set `"meta": {"reviewed": true}` yourself
+(or run it through `ReviewQueue`, below).
+
+<Warning>
+`mean_discriminating_power` and `non_discriminating` stay `None`/`0` unless you pass
+`baseline_scores` — a `{item_id: score}` mapping from an actual run. Without it, `assess()`
+just silently skips that part of the picture rather than erroring:
+
+```python
+q = cg.assess(evalset, baseline_scores={"q1": 1.0, "q2": 0.2, "q3": 1.0})
+print(q.mean_discriminating_power, q.non_discriminating)
+```
+```text
+0.13333333333333333 2
+```
+
+`assess()` scores discriminating power as `1.0 - abs(baseline_score - 0.5) * 2` per question
+— highest in the middle, zero at either extreme — and counts a question in
+`non_discriminating` whenever its baseline score is exactly `1.0`. `q1` and `q3` both scored
+a perfect `1.0` here, so two out of three questions contributed nothing to telling configs
+apart on this particular baseline run. (This `1.0` check is fixed inside `assess()` itself —
+it isn't the same thing as `NonDiscriminatingFilter`'s configurable `threshold` below, even
+though the two exist for the same reason.)
+</Warning>
+
+### `EvalSetQuality`
+
+```python no-run: signature shown for reference, not a runnable statement
+EvalSetQuality(
+    size: int, answerable: int, reviewed: int, portable: int,
+    types: dict[str, int] = {},
+    mean_discriminating_power: float | None = None,
+    non_discriminating: int = 0,
+)
+```
+
+| Property | Means |
+|---|---|
+| `.reviewed_fraction` | `reviewed / size` |
+| `.unanswerable` | `size - answerable` |
+| `.detectable_difference` | `minimum_detectable_difference(self.answerable)` |
+| `.is_portable` | `portable == answerable` |
+| `.can_support(difference) -> bool` | can this set reliably see a gap of this size |
+| `.summary() -> str` | the one-line summary shown above |
+| `.warnings() -> WarningLog` | CAUTION/INFO messages: small size, low review coverage, non-discriminating questions, non-portable gold, one question type dominating (>70% of a set of 10+) |
+
+`minimum_detectable_difference(n, *, power=0.8, alpha=0.05)` is an approximate two-sided
+sample-size formula, worst-case variance. It uses two-value lookup tables for the
+significance constants, not a real inverse-normal computation — passing e.g. `alpha=0.10`
+doesn't smoothly move the answer, it just switches to the other bucket's constant. `n < 2`
+returns `1.0` rather than erroring. It isn't `cg.X`; import it as
+`contextgrid.evalset.minimum_detectable_difference` if you want to call it directly.
+
+## Filtering an auto-generated draft
+
+A draft from [Generating Questions](/evalsets/generating) is explicitly unreviewed. Filters
+throw out the questions that shouldn't be on a leaderboard at all.
+
+### `default_filters()`
+
+```python no-run: signature shown for reference, not a runnable statement
+default_filters(*, baseline_scores: dict[str, float] | None = None, answerer: Callable[[str], str] | None = None) -> FilterChain
+```
+
+Builds a `FilterChain`, in this order: `ShortQuestionFilter()` →
+`DanglingReferenceFilter()` → `UnresolvedEvidenceFilter()` → `DuplicateFilter()` →
+`NonDiscriminatingFilter(baseline_scores=baseline_scores or {})` →
+`GeneralKnowledgeFilter(answerer=answerer)`. Cheap regex filters run first, expensive
+ones (an LLM call per question) run last, on whatever survived.
+
+```python
+chain = cg.default_filters()
+result = chain.run(evalset)
+print("kept:", result.kept_count, "rejected:", result.rejected_count)
+print(result.by_filter())
+print(result.summary())
+for r in result.rejected:
+    print(r)
+for w in result.warnings.entries:
+    print(str(w))
+```
+
+```text
+kept: 1 rejected: 2
+{'too-short': 1, 'near-duplicate': 1}
+kept 1 of 3 questions (near-duplicate 1, too-short 1)
+[too-short] q3: only 1 words; too vague to retrieve on
+[near-duplicate] q2: nearly the same question as 'q1': 'How much leave do employees accrue per month?'
+CAUTION [evalset]: the general-knowledge filter had no model to ask, so it did not run. Questions answerable without reading the corpus will still be in this set, and they score well for every configuration
+CAUTION [evalset]: filtering removed 2 of 3 questions. That much rejection usually means the generator prompt needs work rather than the filters
+CAUTION [evalset]: 1 questions is a small eval set. Differences below about 0.1 will not be distinguishable from noise on it
+```
+
+<Warning>
+`NonDiscriminatingFilter` and `GeneralKnowledgeFilter` are **no-ops** unless you supply
+`baseline_scores`/`answerer` — running `default_filters()` bare, as above, silently skips
+half the filters. `FilterChain.run` does log the CAUTION you see above about the
+general-knowledge filter having no model, but nothing stops you from missing it.
+</Warning>
+
+Get `answerer` from `contextgrid.evalset.llm.answerer_from(llm)`. Here's the same set with a
+general-knowledge question, caught with a `RecordingLLM` standing in for a real model — no
+API key needed:
+
+```python
+from contextgrid.evalset.llm import answerer_from
+
+gk_items = [cg.EvalItem(
+    id="q1", question="What is the capital of France?", answer="Paris",
+    anchors=(cg.GoldAnchor(source_id="h.pdf", quote="Paris is the capital of France."),),
+)]
+gk_evalset = cg.EvalSet(id="e", items=tuple(gk_items))
+
+llm = cg.RecordingLLM(replies=["Paris"])
+chain = cg.default_filters(answerer=answerer_from(llm))
+result = chain.run(gk_evalset)
+print(result.kept_count, result.rejected_count, result.by_filter())
+for r in result.rejected:
+    print(r)
+```
+
+```text
+0 1 {'general-knowledge': 1}
+[general-knowledge] q1: answerable from general knowledge, so it measures the model rather than the retriever
+```
+
+That's the second failure mode from the top of this page, caught: the LLM answered "Paris"
+without reading the corpus, matched `item.answer`, and `GeneralKnowledgeFilter` threw the
+question out before it could quietly inflate every config's score.
+
+### `FilterChain` and `FilterResult`
+
+```python no-run: signature shown for reference, not a runnable statement
+FilterChain(filters: list[Filter] = [])
+.run(evalset: EvalSet) -> FilterResult
+
+FilterResult(kept: tuple[EvalItem, ...] = (), rejected: tuple[Rejection, ...] = (), warnings: WarningLog = WarningLog())
+```
+
+Filters run in list order, each one's survivors feeding the next — that's why
+`default_filters()` puts the cheap regex filters before the LLM-backed one. `.run()` also
+logs CAUTION when more than half the questions were rejected in total, and CAUTION when the
+kept count is below 30.
+
+`FilterResult` has `.kept_count`, `.rejected_count`, `.by_filter() -> dict[str, int]`,
+`.summary() -> str`, and `.as_evalset(original: EvalSet) -> EvalSet` — which **bumps
+`version` by 1** relative to `original`:
+
+```python
+new_evalset = result.as_evalset(evalset)
+print(evalset.version, new_evalset.version)
+```
+```text
+1 2
+```
+
+### The individual filters
+
+Each one is full-path-only (e.g. `contextgrid.evalset.filters.ShortQuestionFilter`) — none
+are `cg.X`.
+
+| Filter | Signature | Rejects | Worth knowing |
+|---|---|---|---|
+| `ShortQuestionFilter` | `(min_words=4, name="too-short")` | fewer than `min_words` words | a coarse first pass, not a writing-quality judge |
+| `DanglingReferenceFilter` | `(name="dangling-reference")` | a pronoun (it/its/they/this/that/he/she/...) with no earlier antecedent in the question | crude regex — "the/a/an \<noun\>" or a capitalized non-first word counts as an antecedent |
+| `DuplicateFilter` | `(threshold=0.8, name="near-duplicate")` | Jaccard word-overlap ≥ `threshold` with an already-**kept** question | order-dependent — compares against survivors seen so far, not the whole set |
+| `UnresolvedEvidenceFilter` | `(name="unresolved-evidence")` | items whose anchors failed to resolve to a span | stands down (no-op) if nothing in the batch is resolved yet — only meaningful after `AnchorResolver.resolve()` has run |
+| `NonDiscriminatingFilter` | `(baseline_scores={}, threshold=1.0, name="non-discriminating")` | items where `baseline_scores[item.id] >= threshold` | no-op if `baseline_scores` is empty |
+| `GeneralKnowledgeFilter` | `(answerer=None, name="general-knowledge")` | items whose closed-book answer Jaccard-matches (≥0.6) `item.answer` | no-op if `answerer is None`; also a no-op per-item when `item.answer is None` |
+
+## `Classifier` — labeling question types
+
+```python no-run: signature shown for reference, not a runnable statement
+Classifier(model: Callable[[str], str] | None = None, overwrite: bool = False)
+.label(item: EvalItem) -> EvalItem
+.label_all(items: Sequence[EvalItem]) -> list[EvalItem]
+.label_set(evalset: EvalSet) -> EvalSet
+```
+
+Without a `model`, `Classifier` falls back to a regex heuristic
+(`contextgrid.evalset.classify_question`, most-specific-first: summarisation → comparative →
+tabular → numeric → multi-hop → else factoid):
+
+```python
+def with_anchor(id, q):
+    return cg.EvalItem(id=id, question=q, anchors=(cg.GoldAnchor(source_id="handbook.pdf", quote="Employees accrue 1.5 days of leave per month."),))
+
+items = [
+    with_anchor("q1", "How much leave do employees accrue per month?"),
+    with_anchor("q2", "Compare the leave policy in the US office and the UK office."),
+    with_anchor("q3", "How many paid sick days does an employee get per year?"),
+]
+labeled = cg.Classifier().label_all(items)
+for it in labeled:
+    print(it.id, it.qtype)
+```
+
+```text
+q1 tabular
+q2 comparative
+q3 numeric
+```
+
+<Note>
+`q1` lands on `tabular`, not `factoid` — "per month" matches the tabular pattern before
+anything gets a chance to fall through to factoid. This is a plain regex heuristic, not a
+model reading the question for meaning; skim its output rather than trusting it blindly.
+</Note>
+
+With a `model`, `Classifier` calls `model(item.question)`, lowercases and strips the reply,
+and **only accepts it if it's in `QuestionType.ALL`** — an out-of-vocabulary reply is
+discarded and the item falls through to the same heuristic:
+
+```python
+item = cg.EvalItem(id="q1", question="How much leave do employees accrue per month?",
+                    anchors=(cg.GoldAnchor(source_id="h.pdf", quote="Employees accrue 1.5 days of leave per month."),))
+clf = cg.Classifier(model=lambda q: "not-a-real-type")
+print(clf.label(item).qtype)  # falls back to the heuristic
+```
+
+```text
+tabular
+```
+
+<Warning>
+By default (`overwrite=False`), a `qtype` a human already set — from `ReviewQueue.edit`, for
+instance — is never touched, even with a `model` supplied. Pass `overwrite=True` to force
+relabeling everything.
+</Warning>
+
+`contextgrid.evalset.type_distribution(evalset) -> dict[str, int]` counts items per `qtype`,
+with items where `qtype is None` counted under the literal key `"unlabelled"`. It isn't
+`cg.X` either.
+
+## `ReviewQueue` — putting a human in the loop
+
+Filters catch mechanical problems. A human still has to read the good-looking questions
+that are left.
+
+```python no-run: signature shown for reference, not a runnable statement
+ReviewQueue(items: list[EvalItem], position: int = 0, decisions: dict = {}, history: list = [])
+```
+
+```python no-run: signature shown for reference, not a runnable statement
+ReviewQueue.from_evalset(evalset: EvalSet, *, skip_reviewed: bool = True) -> ReviewQueue
+```
+
+By default, `from_evalset` excludes items already marked `meta["reviewed"]`, so re-running
+review only shows you what's new.
+
+```python
+items = [
+    cg.EvalItem(id="q1", question="How much leave do employees accrue per month?",
+                anchors=(cg.GoldAnchor(source_id="handbook.pdf", quote="Employees accrue 1.5 days of leave per month."),)),
+    cg.EvalItem(id="q2", question="What is the capital of France?",
+                anchors=(cg.GoldAnchor(source_id="handbook.pdf", quote="Paris is the capital of France."),)),
+    cg.EvalItem(id="q3", question="it",
+                anchors=(cg.GoldAnchor(source_id="handbook.pdf", quote="Employees accrue 1.5 days of leave per month."),)),
+]
+evalset = cg.EvalSet(id="handbook-quiz", items=tuple(items))
+
+queue = cg.ReviewQueue.from_evalset(evalset)
+print(queue.progress())
+
+print(queue.current.id)
+queue.accept(note="good, on-topic")
+
+print(queue.current.id)
+queue.reject(note="general knowledge, not about the handbook")
+
+print(queue.current.id)
+edited = queue.edit(question="What does the pronoun refer to in section 3?", note="fixed dangling reference")
+print("edited question:", edited.question)
+
+print("is_done:", queue.is_done)
+print("counts:", queue.counts())
+
+final = queue.result(evalset)
+print("kept ids:", [it.id for it in final])
+print("version:", evalset.version, "->", final.version)
+for it in final:
+    print(it.id, it.meta.get("reviewed"), it.meta.get("verdict"))
+```
+
+```text
+0 of 3 · 3 left
+q1
+q2
+q3
+edited question: What does the pronoun refer to in section 3?
+is_done: True
+counts: {'accepted': 1, 'rejected': 1, 'edited': 1, 'skipped': 0}
+kept ids: ['q1', 'q3']
+version: 1 -> 2
+q1 True accepted
+q3 True edited
+```
+
+One-keystroke methods, each needing `.current is not None` (otherwise `EvalSetError`: "the
+review queue is finished; there is nothing to decide on"): `.accept(note="")`,
+`.reject(note="")`, `.skip(note="")`, `.edit(*, question=None, quote=None, qtype=None,
+grade=None, note="") -> EvalItem`, `.mark(qtype, note="")` (shorthand for
+`edit(qtype=...)`), `.undo() -> EvalItem | None`.
+
+`.result(original: EvalSet) -> EvalSet` drops rejected and skipped items, passes undecided
+items through unchanged, and stamps `meta["reviewed"]=True` plus `meta["verdict"]` on
+accepted/edited ones. It **bumps `version` by 1**, same as `FilterResult.as_evalset`.
+`.rejections() -> list[Decision]` gives you just the `REJECTED` ones — worth reading before
+regenerating a batch, since it's the fastest way to see what your generator keeps getting
+wrong.
+
+<Warning>
+`.edit(quote=..., grade=...)` mutates only `item.anchors[0]`, the first anchor. It raises
+`EvalSetError` if the item has no anchors at all:
+
+```python
+no_anchor_item = cg.EvalItem(id="q2", question="Q2?")
+q = cg.ReviewQueue.from_evalset(cg.EvalSet(id="e2", items=(no_anchor_item,)))
+try:
+    q.edit(quote="new quote")
+except cg.EvalSetError as e:
+    print("EvalSetError:", e)
+```
+```text
+EvalSetError: item 'q2' has no evidence to edit. Reject it, or add an anchor first.
+```
+
+An item with more than one anchor can't have its second-or-later anchor edited through this
+API.
+</Warning>
+
+`Verdict` is a `str` `Enum`: `PENDING = "pending"`, `ACCEPTED = "accepted"`,
+`REJECTED = "rejected"`, `EDITED = "edited"`, `SKIPPED = "skipped"`.
+`contextgrid.evalset.review.pending(evalset) -> Sequence[EvalItem]` is a simpler,
+queue-unaware filter for `not item.meta.get("reviewed")`; neither it nor
+`contextgrid.evalset.review.review_summary(queue, elapsed_seconds=None) -> str` is `cg.X`.

@@ -1,0 +1,193 @@
+---
+title: "Eval Sets"
+description: "What an eval set is made of, and why context-grid grades retrieval against quoted evidence instead of chunk ids."
+---
+
+An eval set is a list of questions with an answer key. context-grid runs a pipeline
+against it, checks which chunks came back, and scores how well they cover the answer key.
+Everything else in [Loading Eval Sets](/evalsets/loading), [Generating Questions](/evalsets/generating),
+and [Eval Set Quality](/evalsets/quality) builds on the four types on this page.
+
+## `EvalItem` — one question
+
+```python
+import contextgrid as cg
+
+anchor = cg.GoldAnchor(
+    source_id="handbook.pdf",
+    quote="Employees accrue 1.5 days of leave per month.",
+)
+item = cg.EvalItem(
+    id="q1",
+    question="How much leave do employees accrue per month?",
+    anchors=(anchor,),
+    qtype=cg.QuestionType.FACTOID,
+)
+```
+
+`EvalItem(id, question, gold=(), anchors=(), qtype=None, answer=None, meta={})` is one
+question plus its evidence. Evidence can show up in either or both of two forms:
+
+- `gold`: a tuple of `GoldSpan` — character offsets into one already-parsed document.
+- `anchors`: a tuple of `GoldAnchor` — a quoted passage, independent of any particular parse.
+
+Construction checks for you: an `EvalItem` with a blank `question` raises `EvalSetError`
+("eval item '\<id\>' has an empty question"), so a typo in a generator or a CSV loader fails
+loudly instead of scoring a blank question as answerable.
+
+A few properties tell you what an item actually has:
+
+| Property | Means |
+|---|---|
+| `.is_answerable` | has `gold` OR `anchors` — some form of evidence exists |
+| `.has_evidence` | same property object as `.is_answerable`, kept as an older alias — the two can never disagree |
+| `.is_resolved` | has `gold` specifically — stricter, used by ranking metrics |
+| `.is_portable` | has `anchors` |
+| `.gold_spans`, `.gold_length` | the resolved evidence and its total character length |
+| `.gold_documents()` | the set of document ids the gold spans point into |
+
+Run the item above through `.is_answerable`/`.is_resolved`/`.is_portable`:
+
+```python
+print(item.is_answerable, item.has_evidence, item.is_resolved, item.is_portable)
+# True True False True
+```
+
+It is answerable and portable (it has a quote) but not yet resolved — nothing has turned
+that quote into character offsets. That is what `AnchorResolver` does; see below.
+
+<Warning>
+`is_answerable` only asks "is there evidence a scorer could resolve," not "is the evidence
+good." A `GoldAnchor` or `GoldSpan` with `grade=0` (irrelevant) still counts as answerable.
+Don't read "answerable" as "has a correct answer."
+</Warning>
+
+`EvalItem` also has `.resolved_with(gold)`, which returns a copy of the item with `gold`
+replaced — this is how a resolver turns a portable, anchor-only item into a resolved one
+without mutating the original:
+
+```python
+from contextgrid.core.types import Span
+
+span = Span(doc_id="handbook.pdf", start=120, end=167)
+gold = cg.GoldSpan(span=span, grade=2)
+resolved_item = item.resolved_with((gold,))
+print(resolved_item.is_resolved, resolved_item.is_portable, resolved_item.gold_documents())
+# True True {'handbook.pdf'}
+```
+
+## `GoldAnchor` — a quote
+
+```python no-run: signature shown for reference, not a runnable statement
+GoldAnchor(source_id: str, quote: str, grade: int = 2, page_hint: int | None = None, occurrence: int = 0)
+```
+
+`grade` follows IR convention: `2` fully answers the question, `1` partially answers it,
+`0` is irrelevant. `occurrence` is 0-indexed and picks which repetition of `quote` is meant
+when the same sentence appears more than once in the source document. `page_hint` narrows
+the search to one page when a resolver has page information to work with.
+
+Construction is not silent about a bad quote — a blank one raises immediately:
+
+```python
+try:
+    cg.GoldAnchor(source_id="h.pdf", quote="   ")
+except cg.EvalSetError as e:
+    print("EvalSetError:", e)
+# EvalSetError: a gold anchor must quote some text
+```
+
+It also raises `EvalSetError` if `grade < 0` or `occurrence < 0`.
+
+## `GoldSpan` — resolved evidence
+
+```python no-run: signature shown for reference, not a runnable statement
+GoldSpan(span: Span, grade: int = 2)
+```
+
+Where `GoldAnchor` is a quote, `GoldSpan` is that quote already turned into character
+offsets (`Span(doc_id, start, end)`) inside one specific parse of one specific document.
+`grade` means the same thing as on `GoldAnchor`. An empty span also raises `EvalSetError`.
+
+## Why anchors are quotes, not chunk ids
+
+You could imagine ground truth written the other way round: "the answer to q1 is in chunk
+`handbook.pdf::chunk-3`." context-grid deliberately does not do that as the default,
+because a chunk id is only meaningful for the exact parser + chunker combination that
+produced it. The whole point of the Lab is to run the same eval set through many different
+chunkers, and a chunk boundary from a 512-token chunker has nothing to do with the chunk
+boundaries a sentence-window chunker produces from the same document.
+
+A `GoldAnchor` quote survives that. "Employees accrue 1.5 days of leave per month." is true
+regardless of how the document gets cut up — a resolver just has to find that text again
+inside whatever parse is in front of it, and land it on the chunk(s) that happen to contain
+it this time. That's what makes an anchor-based eval set **portable**: `EvalSet.is_portable`
+is `True` iff every answerable item has anchors, meaning the whole set can be re-run,
+unmodified, against a different parser or chunker and still get a fair score.
+
+`GoldSpan` still exists and matters — it's what the scorer actually needs at query time,
+and it's what you get for formats (like BEIR or LegalBench-RAG) that ship offsets rather
+than quotes. But those offset-based sets are pinned to one parse; see the granularity
+warnings in [Loading Eval Sets](/evalsets/loading) for what that costs you.
+
+## `EvalSet` — the whole question list
+
+```python no-run: signature shown for reference, not a runnable statement
+EvalSet(id: str, items: tuple[EvalItem, ...], version: int = 1, source: str = "manual", meta: dict = {})
+```
+
+```python
+evalset = cg.EvalSet(id="handbook-quiz", items=(item,))
+print(len(evalset), evalset.is_portable)
+# 1 True
+```
+
+`EvalSet` is iterable and has a `len()`. A duplicate `item.id` inside the same set raises
+at construction:
+
+```python
+a1 = cg.EvalItem(id="q1", question="Q1?", qtype="factoid")
+a2 = cg.EvalItem(id="q1", question="Q2?", qtype="numeric")
+try:
+    cg.EvalSet(id="dup", items=(a1, a2))
+except cg.EvalSetError as e:
+    print("EvalSetError:", e)
+# EvalSetError: duplicate eval item id 'q1' in eval set 'dup'
+```
+
+Useful properties and methods: `.answerable` (tuple of answerable items), `.with_evidence`
+(same alias as `EvalItem.has_evidence`), `.resolved` (items with `gold` set), `.is_portable`,
+`.by_type(qtype)`, `.types()`, `.get(item_id) -> EvalItem | None`, and
+`.with_items(items) -> EvalSet` — a copy with new items but the same `id`/`version`/`source`.
+Note that `.with_items` does **not** bump `version`; the filter and review tools in
+[Eval Set Quality](/evalsets/quality) do bump it, because they change what's in the set.
+
+## `QuestionType` — not an enum
+
+```python
+class QuestionType:
+    FACTOID = "factoid"
+    MULTI_HOP = "multi_hop"
+    COMPARATIVE = "comparative"
+    NUMERIC = "numeric"
+    TABULAR = "tabular"
+    SUMMARISATION = "summarisation"
+    UNANSWERABLE = "unanswerable"
+    ALL = (FACTOID, MULTI_HOP, COMPARATIVE, NUMERIC, TABULAR, SUMMARISATION, UNANSWERABLE)
+```
+
+`QuestionType` is plain string constants plus a tuple, not a Python `Enum`. `item.qtype` can
+be any string you like — `QuestionType.ALL` is just what the built-in classifier (see
+[Eval Set Quality](/evalsets/quality)) and report ordering use to make sense of it.
+
+## `RelevanceLabel` — a resolved judgement
+
+```python no-run: signature shown for reference, not a runnable statement
+RelevanceLabel(item_id: str, chunk_id: str, grade: int)
+```
+
+A `RelevanceLabel` says: this chunk is relevant to this question, at this grade. You don't
+normally build these by hand — they're what `SpanResolver` produces once gold spans have
+been matched up against a real set of chunks, turning "the answer is at these character
+offsets" into "these chunk ids are relevant, at grade N" for one specific chunking of the
+corpus. That resolution step is covered in [Scoring Diagnostics](/scoring/diagnostics).

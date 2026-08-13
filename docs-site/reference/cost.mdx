@@ -1,0 +1,224 @@
+---
+title: "Cost"
+description: "How context-grid turns tokens and seconds into the dollar figure on a leaderboard, and which parts of that figure are measured versus guessed."
+---
+
+Every leaderboard row context-grid prints carries a `$/1k queries` column next to the quality
+metric. That number does not come from a live price lookup — it comes from a small, offline
+model: `CostModel`. This page is what that column actually means.
+
+<Note>
+Quality alone is a misleading axis. A reranker that gains two points of recall for six times
+the latency and forty times the cost is a different decision from one that gains two points
+for free — a leaderboard sorted on quality alone makes them look identical.
+</Note>
+
+## Two kinds of cost
+
+**Token cost** applies to hosted models: dollars per million tokens, charged once at index
+time and again on every query.
+
+**Compute cost** applies to local models: they cost nothing per token, and something per
+second. Pricing a machine by the hour turns wall-clock time into money, which is what makes a
+local CPU model comparable to a hosted API on the same chart.
+
+## `PRICES`: the published list
+
+`PRICES` is a plain dict of model name to `Pricing`, hand-written rather than fetched live:
+
+```python
+from contextgrid import PRICES
+
+print(PRICES["text-embedding-3-small"])
+print(PRICES["bge-base-en-v1.5"].metered)
+```
+
+```
+Pricing(embed_per_million=0.02, rerank_per_million=0.0, generate_input_per_million=0.0, generate_output_per_million=0.0, metered=True)
+False
+```
+
+A cost comparison has to be reproducible, and a number that changes under you between runs is
+worse than one that is three months stale and labelled as such. The table is deliberately
+small — local models are priced at zero per token by definition, and the rest is filled in by
+`litellm`'s price table when it is installed (`pip install "context-grid[llm]"`), which covers
+close to three thousand hosted models. A model in neither table is costed at zero and a
+warning is logged — see [Where zero means "unknown"](#where-zero-means-unknown) below.
+
+<ParamField path="embed_per_million" type="float" default="0.0">
+  Dollars per million tokens embedded.
+</ParamField>
+<ParamField path="rerank_per_million" type="float" default="0.0">
+  Dollars per million tokens reranked.
+</ParamField>
+<ParamField path="generate_input_per_million" type="float" default="0.0">
+  Dollars per million input (prompt) tokens for a generator or judge.
+</ParamField>
+<ParamField path="generate_output_per_million" type="float" default="0.0">
+  Dollars per million output (completion) tokens.
+</ParamField>
+<ParamField path="metered" type="bool" default="true">
+  `false` for models that run on your own machine, where the cost is time rather than tokens.
+</ParamField>
+
+## `CostModel`
+
+`CostModel` turns tokens and seconds into a `CostBreakdown`. It is what every sweep uses
+internally, and you can call it directly to price a configuration by hand:
+
+```python
+from contextgrid.cost import CostModel
+
+model = CostModel(machine_usd_per_hour=0.10)
+breakdown = model.estimate(
+    embedder="text-embedding-3-small",
+    index_tokens=500_000,
+    query_tokens_per_query=12,
+    compute_seconds=45,
+)
+print(breakdown)
+print("total for 1,000 queries:", breakdown.total_at(1000))
+print("spent so far, 500 queries in:", breakdown.spent_now(500))
+```
+
+```
+CostBreakdown(index_usd=0.01125, query_usd_per_1k=0.00024, index_tokens=500000, query_tokens_per_query=12, compute_seconds=45, metered=True, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
+total for 1,000 queries: 0.01149
+spent so far, 500 queries in: 0.01137
+```
+
+<ParamField path="machine_usd_per_hour" type="float" default="0.0">
+  What makes local and hosted models comparable. Left at zero, a local model looks free, which
+  is true per token and false in every other sense. A commodity 4-core cloud box runs roughly
+  $0.10/hour; set it and the chart starts telling the truth about self-hosting.
+</ParamField>
+<ParamField path="prices" type="dict[str, Pricing]" default="dict(PRICES)">
+  Your own price table, seeded from `PRICES`. Override or add entries here to price a model
+  the built-in table and litellm both miss.
+</ParamField>
+
+The same corpus and query load, priced against a fully local embedder, costs nothing in
+dollars but still costs machine time:
+
+```python
+local = CostModel(machine_usd_per_hour=0.10).estimate(
+    embedder="bge-base-en-v1.5",
+    index_tokens=500_000,
+    query_tokens_per_query=12,
+    compute_seconds=45,
+)
+print(local)
+```
+
+```
+CostBreakdown(index_usd=0.00125, query_usd_per_1k=0.0, index_tokens=500000, query_tokens_per_query=12, compute_seconds=45, metered=False, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
+```
+
+`index_usd` here is pure machine time (`45 seconds × $0.10/hour`); `query_usd_per_1k` is
+zero, because a local model has no per-token charge to pass on to a query.
+
+### Where zero means "unknown"
+
+Ask for a model with no entry in `PRICES` and no entry in litellm's table, and `estimate()`
+returns a `CostBreakdown` priced at zero — but it also logs a warning on `model.warnings`,
+because a silent zero reads as "free" when it actually means "unpriced":
+
+```python
+model = CostModel()
+breakdown = model.estimate(
+    embedder="some-unknown-hosted-model", index_tokens=1000, query_tokens_per_query=12,
+)
+print(model.warnings.to_list())
+```
+
+```
+[{'code': 'budget_reached', 'message': "no published price for 'some-unknown-hosted-model', so it is costed at zero. Any cost comparison involving it understates what it charges", 'severity': 'caution', 'stage': 'cost', 'subject': 'some-unknown-hosted-model', 'detail': {}}]
+```
+
+Read that warning before trusting a `$0.0000` column on a leaderboard for a model you do not
+recognise as local.
+
+## `CostBreakdown`
+
+What one configuration costs, itemised — indexing is a one-off, querying recurs, and
+reporting them as a single number is how a configuration that is cheap to build and ruinous to
+serve gets chosen anyway.
+
+<ResponseField name="index_usd" type="float">One-time cost of building the index: token cost plus machine time.</ResponseField>
+<ResponseField name="query_usd_per_1k" type="float">What retrieval alone costs per 1,000 queries — token cost only, no generation.</ResponseField>
+<ResponseField name="index_tokens" type="int">Tokens embedded when the index was built.</ResponseField>
+<ResponseField name="query_tokens_per_query" type="float">Mean tokens per query at retrieval time.</ResponseField>
+<ResponseField name="compute_seconds" type="float">Wall-clock time the run measured, priced through `machine_usd_per_hour`.</ResponseField>
+<ResponseField name="metered" type="bool">Whether the dollar figure came from an exact token count. `false` means it is a guess.</ResponseField>
+<ResponseField name="generation_usd_per_1k" type="float">What the generator costs to serve, per 1,000 queries — kept apart from `query_usd_per_1k` because a generator is typically a different model at a different price than the embedder.</ResponseField>
+<ResponseField name="evaluation_usd" type="float">What this configuration actually spent, right now, to produce these numbers — generation plus judge calls during evaluation. Not part of `total_at()`, because a judge runs once during evaluation and never again in production.</ResponseField>
+<ResponseField name="generation_tokens" type="int">Total tokens the generator consumed across the eval run.</ResponseField>
+<ResponseField name="judge_tokens" type="int">Total tokens the judge consumed scoring the answers.</ResponseField>
+
+Two methods read those fields into a single figure, and they answer different questions:
+
+```python no-run: the formula, with `queries` standing in for a number you choose
+breakdown.total_at(queries)   # index_usd + (query_usd_per_1k + generation_usd_per_1k) * queries / 1000
+breakdown.spent_now(queries)  # index_usd + query_usd_per_1k * queries / 1000 + evaluation_usd
+```
+
+`total_at` is a **forecast**: what building the index and serving `queries` more questions
+would cost going forward, at the generator's serving rate. `spent_now` is a **bill**: money
+already spent right now, including the one-off judge calls that `total_at` deliberately
+excludes since they never recur once the pipeline is in production.
+
+## `estimate_cost`: pricing a sweep before it runs
+
+`estimate_cost` gives a rough dollar figure for an entire matrix, before running anything —
+crude on purpose, so it can catch "this will cost forty dollars" before a sweep starts rather
+than being exact about it. This needs a corpus on disk, so create a small two-file one first:
+
+```python
+from pathlib import Path
+
+Path("my-docs").mkdir(exist_ok=True)
+Path("my-docs/a.md").write_text("# A\n\nSome text about apples and refunds.\n")
+Path("my-docs/b.md").write_text("# B\n\nMore text about shipping and returns.\n")
+```
+
+```python
+from contextgrid import estimate_cost, matrix, Corpus
+
+corpus = Corpus.from_dir("./my-docs")
+grid = matrix(chunker=["recursive:256", "recursive:512"], embedder="text-embedding-3-small")
+print(estimate_cost(grid, corpus))
+```
+
+```
+{'configurations': 2, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 2', 'approximate_index_tokens': 21, 'estimated_usd': 0.0}
+```
+
+<Warning>
+`approximate_index_tokens` comes from a word count (`characters / 4`), not a real tokenizer
+pass — the point is speed, not precision. On a tiny two-file fixture like the one above it
+rounds `estimated_usd` down to `0.0`; on a real corpus expect it to be in the right order of
+magnitude and no more.
+</Warning>
+
+## What is measured, what is estimated
+
+<AccordionGroup>
+<Accordion title="Measured exactly">
+- `compute_seconds`, from a wall-clock timer around the actual work.
+- Prompt and completion tokens, when `tiktoken` is installed (the `embed` extra) — see
+  [Caching](/reference/caching) for how a warm cache changes what `compute_seconds` means.
+- `index_tokens` inside a real sweep, counted off the chunks actually embedded.
+</Accordion>
+<Accordion title="Estimated, and marked as such">
+- `query_tokens_per_query` inside `estimate_cost`, and `approximate_index_tokens`: both a
+  crude `characters / 4` count.
+- Token counts when no exact tokenizer is available fall back to a rough
+  characters-over-four rule. `CostBreakdown.metered` is `false` whenever any number that fed
+  the dollar figure was approximate rather than counted — check it before trusting a cost
+  figure at face value.
+</Accordion>
+</AccordionGroup>
+
+See [Exporting Runs](/reference/reports) for how `CostBreakdown` reaches the leaderboard row
+in a report, and [Errors](/reference/errors) for what happens when a model name cannot be
+priced at all.

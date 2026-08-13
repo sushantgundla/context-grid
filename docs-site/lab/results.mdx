@@ -1,0 +1,448 @@
+---
+title: "Reading Results"
+description: "Every method on Results, with real output — and why is_the_winner_real matters more than the leaderboard order."
+---
+
+`lab.run(evalset)` returns a `Results` — a list-like container of one `RunResult` per
+configuration, plus the views that make it readable. Every example below runs against the same
+eight-document corpus and thirteen-question eval set from [Running a Sweep](/lab/running):
+
+```python
+import contextgrid as cg
+
+DOCS = {
+    "billing.md": (
+        "# Billing\n\n"
+        "Invoices are generated on the first day of each calendar month and emailed to the "
+        "account owner as a PDF. A failed card payment is retried automatically three times "
+        "over six days before the subscription is marked past due. Once an account is thirty "
+        "days past due, API access is suspended until the balance is paid, though the "
+        "dashboard itself stays reachable so an admin can update the card on file.\n\n"
+        "Storage overage is billed monthly and measured as the average of hourly samples "
+        "across the billing period rather than the peak usage seen at any single moment. "
+        "Customers on the annual plan are billed once a year and get a ten percent discount "
+        "against the monthly price.\n"
+    ),
+    "pricing.md": (
+        "# Pricing\n\n"
+        "The starter plan includes 10,000 API calls per month and 5 GB of storage for 29 "
+        "dollars. The growth plan raises the call limit to 250,000 per month and storage to "
+        "100 GB for 199 dollars. Overage on API calls is billed at 0.002 dollars per call "
+        "above the plan limit, rounded up to the nearest thousand calls.\n\n"
+        "Every plan includes a fourteen day free trial that does not require a credit card up "
+        "front. A card is only requested when the trial converts to a paid plan or when a "
+        "customer explicitly upgrades before the trial ends.\n"
+    ),
+    "sso-setup.md": (
+        "# SSO Setup\n\n"
+        "Single sign-on is configured from the security tab in workspace settings, and is "
+        "available on the growth plan and above. The workspace admin uploads an identity "
+        "provider metadata file, and the system generates a service provider metadata file in "
+        "return that the identity provider needs.\n\n"
+        "Once SSO is enabled, members can still sign in with a password for thirty days as a "
+        "fallback, after which password login is disabled for that workspace entirely, with "
+        "one deliberate exception: it does not apply to the account Owner, who can always sign "
+        "in with a password even after the fallback window closes.\n"
+    ),
+    "api-authentication.md": (
+        "# API Authentication\n\n"
+        "Requests are authenticated with a personal access token, sent in the Authorization "
+        "header as a bearer token. Tokens do not expire by default, but a workspace admin can "
+        "set a maximum token age in the security settings, after which every token older than "
+        "that age stops working on its next use.\n\n"
+        "The API allows 100 requests per minute per token. Exceeding this limit returns a 429 "
+        "status code along with a Retry-After header naming the number of seconds to wait "
+        "before trying again.\n"
+    ),
+    "data-export.md": (
+        "# Data Export\n\n"
+        "A full data export can be requested from the settings page and is delivered as a "
+        "download link sent by email once it finishes building. Exports over 1 GB are split "
+        "into multiple files rather than one large archive, because a single file above that "
+        "size fails to download reliably in some browsers.\n\n"
+        "Export links expire after seven days, after which the export must be requested again "
+        "from scratch. There is no limit on how many exports a workspace can request in a "
+        "month.\n"
+    ),
+    "uptime-and-status.md": (
+        "# Uptime and Status\n\n"
+        "The service targets 99.9 percent uptime measured over each calendar month, and actual "
+        "uptime is published on the public status page along with a rolling twelve month "
+        "history. A incident is only logged on the status page once it has affected more than "
+        "one percent of workspaces for longer than five minutes.\n\n"
+        "Scheduled maintenance windows are announced on the status page at least 72 hours in "
+        "advance and are excluded from the uptime calculation entirely, whether or not they "
+        "run over their announced length.\n"
+    ),
+    "closing-your-account.md": (
+        "# Closing Your Account\n\n"
+        "An account can be closed from the account settings page by the account owner only. "
+        "Closing an account cancels any active subscription immediately rather than at the end "
+        "of the current billing period, and no partial refund is issued for unused days.\n\n"
+        "All data is retained for thirty days after closure in case the decision is reversed, "
+        "and is permanently deleted on the thirty first day with no further recovery window "
+        "after that point.\n"
+    ),
+    "deleting-a-workspace.md": (
+        "# Deleting a Workspace\n\n"
+        "Deleting a workspace is separate from closing an account, since one account can hold "
+        "several workspaces. A workspace can be deleted by any admin, not only the owner, once "
+        "every other member has been removed from it first.\n\n"
+        "A deleted workspace's name is held in reserve for ninety days before it can be reused "
+        "by a new workspace, to avoid a stale integration accidentally pointing at the wrong "
+        "place during that window.\n"
+    ),
+}
+
+QUESTIONS = [
+    ("q1", "How many times is a failed card payment retried?", "billing.md",
+     "retried automatically three times over six days", "billing"),
+    ("q2", "How is storage overage measured for billing?", "billing.md",
+     "measured as the average of hourly samples across the billing period rather than the peak usage", "billing"),
+    ("q3", "What discount does the annual plan get?", "billing.md",
+     "get a ten percent discount against the monthly price", "billing"),
+    ("q4", "How much does API overage cost per call on the growth plan?", "pricing.md",
+     "billed at 0.002 dollars per call above the plan limit", "billing"),
+    ("q5", "Does the free trial require a credit card up front?", "pricing.md",
+     "does not require a credit card up front", "billing"),
+    ("q6", "Who can still sign in with a password after SSO's fallback window closes?", "sso-setup.md",
+     "it does not apply to the account Owner, who can always sign in with a password", "sso"),
+    ("q7", "What happens to API tokens older than the configured maximum age?", "api-authentication.md",
+     "every token older than that age stops working on its next use", "api"),
+    ("q8", "What status code does the API return when the rate limit is exceeded?", "api-authentication.md",
+     "Exceeding this limit returns a 429 status code", "api"),
+    ("q9", "Why are exports over 1 GB split into multiple files?", "data-export.md",
+     "a single file above that size fails to download reliably in some browsers", "export"),
+    ("q10", "How long until a data export link expires?", "data-export.md",
+     "Export links expire after seven days", "export"),
+    ("q11", "How far in advance is scheduled maintenance announced?", "uptime-and-status.md",
+     "announced on the status page at least 72 hours in advance", "reliability"),
+    ("q12", "Who can close an account?", "closing-your-account.md",
+     "can be closed from the account settings page by the account owner only", "account"),
+    ("q13", "How long is a deleted workspace's name held in reserve?", "deleting-a-workspace.md",
+     "held in reserve for ninety days before it can be reused", "account"),
+]
+
+corpus = cg.Corpus.from_texts(DOCS, media_type=cg.MediaType.MARKDOWN)
+evalset = cg.EvalSet(
+    id="support-kb",
+    items=tuple(
+        cg.EvalItem(
+            id=qid, question=question,
+            anchors=(cg.GoldAnchor(source_id=source, quote=quote),),
+            qtype=qtype,
+        )
+        for qid, question, source, quote, qtype in QUESTIONS
+    ),
+)
+
+lab = cg.Lab(corpus=corpus)
+lab.grid(
+    chunker=["recursive:512", "recursive:16"],
+    index=["dense", "bm25"],
+    reranker=[None, "lexical"],
+)
+results = lab.run(evalset, mode="factorial")
+```
+
+<Note>
+This is the same corpus, eval set and grid used on [Running a Sweep](/lab/running) — copied
+here in full so every example below runs on its own.
+</Note>
+
+## `is_the_winner_real()` first, because it is the one that matters most
+
+```python no-run: signature shown for reference, not a runnable statement
+is_the_winner_real(metric: str = "recall@5", *, alpha: float = 0.05, seed: int | None = None) -> Comparison | None
+```
+
+A leaderboard puts one configuration on top and implies it won. `is_the_winner_real()` is the
+method that actually checks that implication, by testing the top row against the runner-up.
+It is worth calling before you act on rank #1 for the same reason `lab.estimate()` is worth
+calling before you run anything: it is the check that stops you shipping a difference that
+was never really there.
+
+```python
+verdict = results.is_the_winner_real()
+print(verdict.verdict())
+```
+
+```text
+markdown · recursive:512 · tfidf · dense and markdown · recursive:512 · tfidf · dense ·
+lexical@50 are not distinguishable on this eval set (n=13). The gap of +0.000 on recall@5 sits
+inside the confidence interval +0.000 to +0.000, so it is consistent with no difference at
+all. They scored identically on every single question, so this is not a close call between two
+different configurations -- they are behaving the same way.
+```
+
+On this sweep the top two leaderboard rows are `recursive:512 · dense` with and without a
+lexical reranker — and they scored identically on every question, because the reranker never
+got the chance to change anything against a corpus this small. `is_the_winner_real()` compares
+exactly those top two rows, so here it reports a tie, honestly, rather than crediting the
+reranker with a win it didn't earn.
+
+That is a legitimate answer, but it is not the interesting comparison on this sweep — the
+interesting one is chunk size, `recursive:512` against `recursive:16`, which is what
+`results.significance()` (below) is for when you want to name the two rows yourself instead of
+letting rank order pick them.
+
+<Warning>
+`is_the_winner_real()` returns `None`, not a `Comparison`, when there are fewer than two runs
+to compare — check for that before calling `.verdict()` on it.
+</Warning>
+
+## The obvious view
+
+### `leaderboard(metric="recall@5", extra=())`
+
+Every configuration, ranked, with latency and cost beside the score — never optional, on
+purpose, so a leaderboard here can't hide the fact that the fastest and cheapest row won by the
+same margin as a slower one would have:
+
+```python
+for row in results.leaderboard():
+    row["p95_ms"] = round(row["p95_ms"], 3)  # latency is real-measured; round it for reading
+    print(row)
+```
+
+```text
+{'config': 'markdown · recursive:512 · tfidf · dense', 'recall@5': 1.0, 'p95_ms': 0.066, 'cost_per_1k': 0.0, 'chunks': 8, 'ci_low': 1.0, 'ci_high': 1.0}
+{'config': 'markdown · recursive:512 · tfidf · dense · lexical@50', 'recall@5': 1.0, 'p95_ms': 0.199, 'cost_per_1k': 0.0, 'chunks': 8, 'ci_low': 1.0, 'ci_high': 1.0}
+{'config': 'markdown · recursive:512 · bm25', 'recall@5': 1.0, 'p95_ms': 0.035, 'cost_per_1k': 0.0, 'chunks': 8, 'ci_low': 1.0, 'ci_high': 1.0}
+{'config': 'markdown · recursive:512 · bm25 · lexical@50', 'recall@5': 1.0, 'p95_ms': 0.22, 'cost_per_1k': 0.0, 'chunks': 8, 'ci_low': 1.0, 'ci_high': 1.0}
+{'config': 'markdown · recursive:16 · tfidf · dense', 'recall@5': 0.8076923076923077, 'p95_ms': 0.072, 'cost_per_1k': 0.0, 'chunks': 63, 'ci_low': 0.5769230769230769, 'ci_high': 1.0}
+{'config': 'markdown · recursive:16 · bm25', 'recall@5': 0.8076923076923077, 'p95_ms': 0.045, 'cost_per_1k': 0.0, 'chunks': 63, 'ci_low': 0.5769230769230769, 'ci_high': 1.0}
+{'config': 'markdown · recursive:16 · tfidf · dense · lexical@50', 'recall@5': 0.7307692307692307, 'p95_ms': 0.245, 'cost_per_1k': 0.0, 'chunks': 63, 'ci_low': 0.5, 'ci_high': 0.9230769230769231}
+{'config': 'markdown · recursive:16 · bm25 · lexical@50', 'recall@5': 0.7307692307692307, 'p95_ms': 0.174, 'cost_per_1k': 0.0, 'chunks': 63, 'ci_low': 0.5, 'ci_high': 0.9230769230769231}
+```
+
+<Note>
+`p95_ms` is a real latency measurement, rounded above for reading — it will come out a little
+different on your own machine and even between two runs on this one. The scores (`recall@5`,
+`ci_low`, `ci_high`) will not, since this sweep is entirely local and deterministic.
+</Note>
+
+Each row is `run.row(["recall@5"])` under the hood: the metric you asked for, `p95_ms`,
+`cost_per_1k`, `chunks`, and a confidence interval when one is computable. Pass `extra=(...)`
+for more columns — a metric no run actually computed is left out of every row rather than
+filled with a misleading `0.0`.
+
+### `best(metric="recall@5")`
+
+The single top `RunResult`, or `None` on an empty `Results`:
+
+```python
+winner = results.best()
+print(winner.label, winner.metric("recall@5"))
+```
+
+```text
+markdown · recursive:512 · tfidf · dense 1.0
+```
+
+### `get(label)`
+
+One run by its exact label — `None` if nothing matches:
+
+```python
+print(results.get("markdown · recursive:512 · tfidf · dense").label)
+print(results.get("no such configuration"))
+```
+
+```text
+markdown · recursive:512 · tfidf · dense
+None
+```
+
+## `compare(left, right, metric="recall@5")`
+
+Two configurations, their gap, and — the useful part — exactly which questions they disagreed
+on. Two configs can share a mean and still succeed on completely different questions, which
+`leaderboard()` alone can never show:
+
+```python
+diff = results.compare(
+    "markdown · recursive:512 · tfidf · dense",
+    "markdown · recursive:16 · tfidf · dense",
+)
+print(diff)
+```
+
+```text
+{'left': 'markdown · recursive:512 · tfidf · dense', 'right': 'markdown · recursive:16 · tfidf · dense', 'metric': 'recall@5', 'left_score': 1.0, 'right_score': 0.8076923076923077, 'difference': 0.1923076923076923, 'queries_compared': 13, 'queries_disagreed': 3, 'left_wins': 3, 'right_wins': 0, 'differences': {'q6': 0.5, 'q8': 1.0, 'q9': 1.0}}
+```
+
+`differences` names only the questions that actually disagreed (`q6`, `q8`, `q9`) — ten of the
+thirteen questions were answered identically by both, which `left_score - right_score` alone
+would never tell you. `compare()` raises `KeyError` if either label doesn't match a run.
+
+## `significance(left, right, metric="recall@5", *, alpha=0.05, seed=None)`
+
+The named version of the test `is_the_winner_real()` runs automatically on the top two rows —
+call this one directly to test the comparison you actually care about, whatever its rank:
+
+```python
+sig = results.significance(
+    "markdown · recursive:512 · tfidf · dense",
+    "markdown · recursive:16 · tfidf · dense",
+)
+print(sig.verdict())
+```
+
+```text
+markdown · recursive:512 · tfidf · dense and markdown · recursive:16 · tfidf · dense are not
+distinguishable on this eval set (n=13). The gap of +0.192 on recall@5 sits inside the
+confidence interval +0.000 to +0.423, so it is consistent with no difference at all. Settling
+a gap this size would take roughly 110 questions -- on a two-sided test at alpha 0.05 with 80%
+power, assuming per-question scores vary as much as a 0-1 score possibly can. It is an order of
+magnitude, not a count.
+```
+
+A 0.192 gap (1.000 against 0.808) looks decisive on a leaderboard. Tested question by question
+on only 13 questions, it is not distinguishable from noise — and the verdict says what it would
+actually take to settle it: roughly 110 questions, an order of magnitude more than this eval
+set has. `sig.as_dict()` gets the same numbers back as plain values (`p_value`,
+`ci_low`/`ci_high`, `distinguishable`, `winner`, `wins`/`losses`/`ties`) for anything that needs
+them programmatically rather than as a sentence. `significance()` returns a `Comparison` — see
+[Is the Winner Real?](/scoring/significance) for `Comparison`'s full shape and the lower-level
+`bootstrap_interval` / `paired_bootstrap` / `randomisation_test` functions it's built from.
+
+## `summary(metric="recall@5")`
+
+The whole result as one paragraph — the part a reader without an IR background actually reads:
+
+```python
+print(results.summary())
+```
+
+```text
+markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 8
+configurations, scored on 13 questions. markdown · recursive:512 · tfidf · dense and markdown ·
+recursive:512 · tfidf · dense · lexical@50 are not distinguishable on this eval set (n=13). The
+gap of +0.000 on recall@5 sits inside the confidence interval +0.000 to +0.000, so it is
+consistent with no difference at all. They scored identically on every single question, so
+this is not a close call between two different configurations -- they are behaving the same
+way. It runs locally at no cost per query, answering at under 1 ms p95.
+```
+
+`summary()` calls `is_the_winner_real()` internally to write that second sentence — it is
+reading the winner against the runner-up, the same pair discussed above, not against every
+other row.
+
+## `composite(metric="recall@5", *, k=None)`
+
+The leading configuration's score, collapsed to one 0-100 number over whatever dimensions it
+actually measured:
+
+```python
+best_composite = results.composite()
+print("score:", round(best_composite.score, 1))
+print("parts:", {k: round(v, 3) for k, v in best_composite.parts.items()})
+print("missing:", best_composite.missing)
+```
+
+```text
+score: 87.5
+parts: {'parse': 1.0, 'chunk': 1.0, 'embed': 0.643, 'retrieval': 0.986}
+missing: {'generation': 'no value for faithfulness or answer_relevancy'}
+```
+
+`parts` is the 0-1 value that went into each dimension; `missing` names dimensions that produced
+no number at all — this sweep has no `generator`, so `generation` is absent rather than scored
+zero. The mean across `parts` is harmonic, not arithmetic: a chain is only as strong as its
+weakest link, and an arithmetic mean would let a good `retrieval` score quietly hide a bad
+`embed` score.
+
+<Note>
+`Results.composite()` always scores the *leading* run (`best(metric)`). Call
+`run.composite(k=...)` directly on any other `RunResult` — from `results.get(label)` or by
+iterating `results.runs` — to score a configuration that isn't in first place.
+</Note>
+
+## `pareto(quality="recall@5", cost="cost_per_1k")`
+
+Configurations nothing else beats on both quality and cost — the honest answer to "which
+should I use," because everything off the frontier is beaten outright by something cheaper
+*and* better:
+
+```python
+for run in results.pareto():
+    print(run.label, run.metric("recall@5"), run.cost.query_usd_per_1k)
+```
+
+```text
+markdown · recursive:512 · tfidf · dense 1.0 0.0
+```
+
+Every configuration in this sweep costs the same $0.00 per 1,000 queries (everything here is
+local), so the frontier collapses to a single point: whichever of the free configurations
+scores highest. `pareto()` returns `RunResult` objects, not dicts, so anything on `RunResult`
+— `.metric()`, `.cost`, `.timings` — is available on each one directly.
+
+## `axis_effect(axis, metric="recall@5")`
+
+The mean score for each value on one axis, across every run that used it — the sentence a
+48-row leaderboard can't say on its own:
+
+```python
+print(results.axis_effect("chunker"))
+print(results.axis_effect("reranker"))
+```
+
+```text
+{'recursive:16': 0.7692307692307692, 'recursive:512': 1.0}
+{'None': 0.9038461538461539, 'lexical': 0.8653846153846154}
+```
+
+`chunker` genuinely matters here — a 0.23 gap averaged across every other axis. `reranker`
+barely does on average (0.904 against 0.865) — which looks like a mild, uniform cost. `by_type`
+(next) shows that average is hiding something worse.
+
+## `by_type(metric="recall@5")`
+
+Each configuration's score, split by `qtype` — where a chunker or reranker that wins overall
+and loses badly on one kind of question actually shows up:
+
+```python
+by_type = results.by_type()
+print(by_type["markdown · recursive:16 · tfidf · dense"])
+print(by_type["markdown · recursive:16 · tfidf · dense · lexical@50"])
+```
+
+```text
+{'account': 1.0, 'api': 0.5, 'billing': 1.0, 'export': 0.5, 'reliability': 1.0, 'sso': 0.5}
+{'account': 1.0, 'api': 1.0, 'billing': 1.0, 'export': 0.0, 'reliability': 0.0, 'sso': 0.5}
+```
+
+The `axis_effect` average said the lexical reranker cost about 0.04 on `recursive:16`. Split by
+question type, it actually helped `api` questions (0.5 to 1.0) while dropping `export` and
+`reliability` to 0.0 — two real, opposite effects that cancel out in the average and vanish
+completely from `axis_effect` or the leaderboard. This is the reason `by_type` exists: a mean is
+not a summary of this, it is a way of not seeing it.
+
+## Iterating the runs directly
+
+`Results` is iterable and sized, over its `RunResult`s, for anything not covered above:
+
+```python
+print(len(results), "runs")
+for run in results:
+    print(run.label, "-", run.metric("recall@5"), "-", run.scored_queries, "scored")
+```
+
+```text
+8 runs
+markdown · recursive:512 · tfidf · dense - 1.0 - 13 scored
+markdown · recursive:512 · tfidf · dense · lexical@50 - 1.0 - 13 scored
+markdown · recursive:512 · bm25 - 1.0 - 13 scored
+markdown · recursive:512 · bm25 · lexical@50 - 1.0 - 13 scored
+markdown · recursive:16 · tfidf · dense - 0.8076923076923077 - 13 scored
+markdown · recursive:16 · tfidf · dense · lexical@50 - 0.7307692307692307 - 13 scored
+markdown · recursive:16 · bm25 - 0.8076923076923077 - 13 scored
+markdown · recursive:16 · bm25 · lexical@50 - 0.7307692307692307 - 13 scored
+```
+
+`results.warnings` (a `WarningLog`) and `results.cache_summary` (a string) carry everything the
+sweep noticed along the way that isn't a per-configuration score — the impossible-combination
+count from [Defining a Sweep](/lab/grid), the budget warning and cache hit-rate from
+[Running a Sweep](/lab/running), and anything else a `RunResult` logged.

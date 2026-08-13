@@ -1,0 +1,625 @@
+---
+title: "Indexes"
+description: "The seven indexes context-grid ships, the is_exact property that makes their recall numbers mean something, and how to measure what an approximate index actually costs."
+---
+
+An index is a store: where the vectors (or the text, for BM25) live, and how one search runs
+against them. That's a different question from *how many* searches happen and *who* decides
+what to search for — that's the [retrieval](/axes/retrieval) axis, which sits on top of
+whatever index you pick here.
+
+`cg.INDEXES.names()` returns `['bm25', 'dense', 'faiss', 'hybrid', 'pgvector', 'quantized',
+'usearch']`. Build one from a spec string with `get_index`:
+
+```python
+from contextgrid import get_index
+
+index = get_index("dense:cosine")
+```
+
+A spec string is `name` or `name:shorthand,key=value,key2=value2` — the part after `:` fills
+the index's one shorthand parameter first, then any `key=value` pairs override named
+parameters. This grammar is shared across every axis in context-grid, not just indexes — the
+same rule that lets an embedder spec write `hash:512,seed=3` also means
+`quantized:scheme=binary,rescore=50` and `quantized:binary,rescore=50` build the identical
+index here. Pass an already-built `Index` instance instead of a string and `get_index` returns
+it unchanged.
+
+<Note>
+  In a real run, chunks come from your corpus through `build()` (see [Build](/pipeline/build))
+  and vectors come from an embedder (see [Embedders](/axes/embedders)). The examples on this
+  page build both by hand — a `hash` embedder or a few lines of `numpy` — so each one runs on
+  its own.
+</Note>
+
+None of these classes except `QuantizedDenseIndex` are top-level (`cg.BM25Index`,
+`cg.FaissIndex` and so on do not exist) — reach them through `get_index("<spec>")`, or import
+the class directly when you need to (`from contextgrid.index import BM25Index, HybridIndex,
+ExactDenseIndex`; `from contextgrid.index.ann import FaissIndex, USearchIndex`; `from
+contextgrid.index.pgvector import PgVectorIndex`).
+
+## `is_exact`: the property that makes the other numbers mean something
+
+```python
+@property
+def is_exact(self) -> bool: ...
+```
+
+An approximate index trades recall for speed or memory. Its numbers mean nothing on their own —
+tuning `ef_search` until a query feels fast, with no idea what recall that cost, is guessing,
+and guessing in the direction that looks good. `is_exact` is what tells you which indexes need
+that comparison and which don't:
+
+```python
+from contextgrid import get_index
+
+for spec in ["dense", "bm25", "hybrid", "quantized",
+             "faiss:flat", "faiss:hnsw", "usearch",
+             "pgvector:exact", "pgvector:hnsw"]:
+    print(f"{spec:15s} is_exact={get_index(spec).is_exact}")
+```
+
+Output:
+
+```
+dense           is_exact=True
+bm25            is_exact=True
+hybrid          is_exact=True
+quantized       is_exact=False
+faiss:flat      is_exact=True
+faiss:hnsw      is_exact=False
+usearch         is_exact=False
+pgvector:exact  is_exact=True
+pgvector:hnsw   is_exact=False
+```
+
+`dense`, `bm25`, `hybrid` and `pgvector:exact` are exact — every candidate is actually scored.
+`faiss` (except `kind="flat"`), `usearch`, `quantized`, and the ANN `pgvector` kinds are
+approximate.
+
+### `quantized` reports `is_exact=False` for every scheme, including `none`
+
+```python
+from contextgrid import get_index
+
+for scheme in ("none", "scalar", "product", "binary"):
+    idx = get_index(f"quantized:scheme={scheme}")
+    print(scheme, "-> is_exact:", idx.is_exact)
+```
+
+Output:
+
+```
+none -> is_exact: False
+scalar -> is_exact: False
+product -> is_exact: False
+binary -> is_exact: False
+```
+
+That includes `scheme="none"`, which applies no compression at all and does exact float32
+search internally — its recall against `dense` really is 1.0. It still reports `is_exact=False`,
+and that's deliberate, not a bug: `is_exact` is fixed on the **class**, describing what the
+`quantized` family is for, not what one particular setting happens to do. A family whose whole
+purpose is to throw information away shouldn't be able to claim exactness because one of its
+settings doesn't. `quantized:none` is the row you *measure the other schemes against* — use
+`dense` as the actual exact reference in `recall_against_exact()`, not `quantized:none`,
+because comparing the family to itself proves nothing about compression.
+
+<Warning>
+  `scheme=None` (Python `None`) is also accepted, and means the same as the string `"none"` —
+  `__post_init__` coerces it. This exists because the spec-string parser turns the bare word
+  `none` inside a spec into Python `None` before it reaches the constructor, so
+  `get_index("quantized:none")` really does call `QuantizedDenseIndex(scheme=None)` under the
+  hood:
+
+```python
+from contextgrid import get_index
+
+print(get_index("quantized:none"))
+```
+
+```
+QuantizedDenseIndex(scheme='none', subspaces=8, rescore=0, metric='cosine')
+```
+</Warning>
+
+## The exact stores: `dense`, `bm25`, `hybrid`
+
+### `dense` — cosine or dot, no approximation
+
+```python
+from contextgrid import Chunk, Span, get_embedder, get_index
+
+chunks = [
+    Chunk("c1", Span("d1", 0, 51), "Refunds are issued within thirty days of purchase."),
+    Chunk("c2", Span("d1", 0, 51), "The X-Api-Key header must be set on every request."),
+    Chunk("c3", Span("d2", 0, 60), "Shipping takes five to seven business days for standard orders."),
+]
+embedder = get_embedder("hash:64")
+vectors = embedder.embed_documents([c.text for c in chunks]).vectors
+
+dense = get_index("dense:cosine")  # metric="cosine" (shorthand) -- or "dot"
+dense.build(chunks, vectors)
+
+query = "which header carries the api key?"
+query_vector = embedder.embed_queries([query]).vectors[0]
+print(dense.search(query, query_vector, k=2))
+```
+
+Output:
+
+```
+[Scored(chunk_id='c2', score=0.5883484482765198), Scored(chunk_id='c1', score=0.0)]
+```
+
+<ParamField path="metric" type="str" default="cosine">
+  `"cosine"` or `"dot"` — anything else raises `IndexBuildError` at construction. `cosine`
+  normalises both sides, so vector magnitude doesn't matter; `dot` doesn't, which is correct for
+  models trained that way and wrong for models that weren't.
+</ParamField>
+
+`.search(text, vector=None, k=10)` **ignores `text` entirely** — it needs `vector`. This is the
+reference every approximate index on this page gets measured against.
+
+### `bm25` — no vectors, no model
+
+```python
+from contextgrid import Chunk, Span, get_index
+
+chunks = [
+    Chunk("c1", Span("d1", 0, 51), "Refunds are issued within thirty days of purchase."),
+    Chunk("c2", Span("d1", 0, 51), "The X-Api-Key header must be set on every request."),
+    Chunk("c3", Span("d2", 0, 60), "Shipping takes five to seven business days for standard orders."),
+]
+bm25 = get_index("bm25:1.5")  # k1=1.5 (shorthand)
+bm25.build(chunks)  # no vectors, no embedder needed
+print(bm25.search("X-Api-Key header", None, k=2))
+```
+
+Output:
+
+```
+[Scored(chunk_id='c2', score=3.694032251602606)]
+```
+
+<ParamField path="k1" type="float" default="1.5" />
+<ParamField path="b" type="float" default="0.75" />
+
+`needs_vectors=False`; `.build()` silently ignores any `vectors` you pass it. On keyword-heavy
+corpora — error codes, product names, statute numbers — `bm25` regularly beats a dense model
+that costs real money to run. `k1`/`b` default to the standard TREC-news values, tuned for long
+news articles rather than short chunks — worth sweeping rather than trusting as-is.
+
+### `hybrid` — dense and sparse, fused
+
+```python
+from contextgrid import Chunk, Span, get_embedder, get_index
+
+chunks = [
+    Chunk("c1", Span("d1", 0, 51), "Refunds are issued within thirty days of purchase."),
+    Chunk("c2", Span("d1", 0, 51), "The X-Api-Key header must be set on every request."),
+    Chunk("c3", Span("d2", 0, 60), "Shipping takes five to seven business days for standard orders."),
+]
+embedder = get_embedder("hash:64")
+vectors = embedder.embed_documents([c.text for c in chunks]).vectors
+
+hybrid = get_index("hybrid:rrf")  # fusion="rrf" (shorthand) -- or "weighted"
+hybrid.build(chunks, vectors)  # builds a dense and a bm25 index internally
+
+query = "api key header"
+query_vector = embedder.embed_queries([query]).vectors[0]
+print(hybrid.search(query, query_vector, k=2))
+```
+
+Output:
+
+```
+[Scored(chunk_id='c2', score=0.03278688524590164), Scored(chunk_id='c1', score=0.016129032258064516)]
+```
+
+<ParamField path="fusion" type="str" default="rrf">`"rrf"` or `"weighted"`, else `FusionError`.</ParamField>
+<ParamField path="rrf_k" type="int" default="60" />
+<ParamField path="alpha" type="float" default="0.5">Weighted-fusion weight on the dense side, must be in `[0, 1]`.</ParamField>
+<ParamField path="candidates" type="int" default="100">How deep each side is read before fusing, must be `>= 1`.</ParamField>
+
+`rrf` (reciprocal rank fusion) uses only rank, `1 / (k + rank)` per side — robust, because a
+cosine of 0.31 and a BM25 score of 14.2 aren't on the same scale. `weighted` min-max normalises
+each side to `[0, 1]` then blends by `alpha`; it can express "the dense side is usually right,"
+which `rrf` can't, at the cost of being more sensitive to one side producing an outlier.
+
+The spec-string route always builds `HybridIndex(dense=ExactDenseIndex(...),
+sparse=BM25Index(...), ...)` — a spec like `hybrid:weighted,alpha=0.7` can't swap in `faiss` as
+the dense side. Construct `HybridIndex(dense=..., sparse=..., ...)` directly if you need a
+different backend on either side; `dense` and `sparse` have no defaults there.
+
+## `quantized` — trading recall for memory, and measuring the trade
+
+```python
+from contextgrid import get_index
+
+quantized = get_index("quantized")  # scheme="scalar" (shorthand default)
+```
+
+<ParamField path="scheme" type="str | None" default="scalar">`"none"`, `"scalar"`, `"product"`, or `"binary"`.</ParamField>
+<ParamField path="subspaces" type="int" default="8">Used by `"product"`.</ParamField>
+<ParamField path="rescore" type="int" default="0">Candidates pulled from the compressed shortlist and re-ranked against the kept originals.</ParamField>
+<ParamField path="metric" type="str" default="cosine" />
+
+Measured on 400 vectors, 64 dimensions, against `dense:cosine`:
+
+```python
+import numpy as np
+from contextgrid import Chunk, Span, get_index, recall_against_exact
+
+rng = np.random.default_rng(0)
+vectors = rng.normal(size=(400, 64)).astype("float32")
+vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+chunks = [Chunk(f"c{i}", Span(f"d{i}", 0, 1), f"chunk {i}") for i in range(400)]
+query_vector = vectors[7]
+
+exact = get_index("dense:cosine")
+exact.build(chunks, vectors)
+exact_hits = exact.search("", query_vector, k=10)
+
+for spec in ["quantized:none", "quantized:scalar", "quantized:product",
+             "quantized:binary,rescore=0", "quantized:binary,rescore=100"]:
+    idx = get_index(spec)
+    idx.build(chunks, vectors)
+    hits = idx.search("", query_vector, k=10)
+    recall = recall_against_exact(hits, exact_hits, k=10)
+    print(f"{spec:30s} is_exact={idx.is_exact!s:5s} recall@10={recall:.3f} size={idx.size_bytes()}")
+```
+
+Output:
+
+```
+quantized:none                 is_exact=False recall@10=1.000 size=102400
+quantized:scalar               is_exact=False recall@10=1.000 size=25600
+quantized:product              is_exact=False recall@10=0.800 size=3200
+quantized:binary,rescore=0     is_exact=False recall@10=0.500 size=3200
+quantized:binary,rescore=100   is_exact=False recall@10=0.700 size=105600
+```
+
+`scalar` maps each dimension linearly to one byte; on normalised embeddings this rarely costs
+recall. `product` replaces subspaces of the vector with the nearest of 256 k-means centroids
+learned from the corpus. `binary` keeps one bit per dimension — above or below the corpus mean —
+and ranks on Hamming distance, which is crude on its own, as the table shows.
+
+<Warning>
+  `scheme="binary"` with the default `rescore=0` doesn't raise anything — it logs a warning and
+  quietly under-performs:
+
+```python
+from contextgrid import Chunk, Span, QuantizedDenseIndex
+import numpy as np
+
+rng = np.random.default_rng(0)
+vectors = rng.normal(size=(20, 8)).astype("float32")
+chunks = [Chunk(f"c{i}", Span(f"d{i}", 0, 1), f"chunk {i}") for i in range(20)]
+
+idx = QuantizedDenseIndex(scheme="binary", rescore=0)
+idx.build(chunks, vectors)
+for w in idx.warnings.entries:
+    print(w.severity.value, "-", w.message)
+```
+
+```
+caution - binary quantization without a rescoring pass keeps one bit per dimension and ranks on Hamming distance alone. It will score far below its potential, and concluding from that that binary quantization does not work is the most common mistake made with it. Set rescore to 50 or more
+```
+
+Set `rescore=50` or higher to get binary quantization's real recall.
+</Warning>
+
+`.compression()` reports the compressed size alone; `.size_bytes()` includes the kept originals
+when `rescore > 0` — reporting only the compressed figure would flatter every rescored
+configuration, which is most of the good ones:
+
+```python
+from contextgrid import Chunk, Span, QuantizedDenseIndex
+import numpy as np
+
+rng = np.random.default_rng(0)
+vectors = rng.normal(size=(20, 8)).astype("float32")
+chunks = [Chunk(f"c{i}", Span(f"d{i}", 0, 1), f"chunk {i}") for i in range(20)]
+
+idx = QuantizedDenseIndex(scheme="binary", rescore=50)
+idx.build(chunks, vectors)
+report = idx.compression()
+print(report.summary())
+print("compression().compressed_bytes:", report.compressed_bytes)
+print("size_bytes() (includes kept originals):", idx.size_bytes())
+```
+
+Output:
+
+```
+binary: 1 KB to 0 KB (32.0x smaller)
+compression().compressed_bytes: 20
+size_bytes() (includes kept originals): 660
+```
+
+## `faiss` — flat, HNSW, IVF, IVFPQ
+
+Needs `pip install 'context-grid[index]'`. `kind` is the shorthand parameter.
+
+<ParamField path="kind" type="str" default="hnsw">`"flat"`, `"hnsw"`, `"ivf"`, or `"ivfpq"`.</ParamField>
+<ParamField path="metric" type="str" default="cosine">`"cosine"`, `"dot"`, or `"l2"`.</ParamField>
+<ParamField path="m" type="int" default="32" />
+<ParamField path="ef_construction" type="int" default="200" />
+<ParamField path="ef_search" type="int" default="64" />
+<ParamField path="nlist" type="int" default="100" />
+<ParamField path="nprobe" type="int" default="8">The recall/latency knob for `ivf` — how many clusters get searched.</ParamField>
+<ParamField path="pq_subquantizers" type="int" default="8" />
+<ParamField path="pq_bits" type="int" default="8" />
+
+`is_exact` is a `@property`, `True` only when `kind == "flat"`. Measured on 2,000 vectors, 64
+dimensions, against `dense:cosine`:
+
+```python
+import numpy as np
+from contextgrid import Chunk, Span, get_index, recall_against_exact
+
+rng = np.random.default_rng(1)
+vectors = rng.normal(size=(2000, 64)).astype("float32")
+vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+chunks = [Chunk(f"c{i}", Span(f"d{i}", 0, 1), f"chunk {i}") for i in range(2000)]
+query_vector = vectors[42]
+
+exact = get_index("dense:cosine")
+exact.build(chunks, vectors)
+exact_hits = exact.search("", query_vector, k=10)
+
+for spec in ["faiss:kind=flat", "faiss:kind=hnsw", "faiss:kind=ivf,nprobe=1",
+             "faiss:kind=ivf,nprobe=10", "faiss:kind=ivfpq"]:
+    idx = get_index(spec)
+    idx.build(chunks, vectors)
+    hits = idx.search("", query_vector, k=10)
+    recall = recall_against_exact(hits, exact_hits, k=10)
+    print(f"{spec:26s} is_exact={idx.is_exact!s:5s} recall@10={recall:.3f} size={idx.size_bytes():>8d}  fitted_to_corpus={idx.fitted_to_corpus}")
+```
+
+Output:
+
+```
+faiss:kind=flat            is_exact=True  recall@10=1.000 size=  512000  fitted_to_corpus={}
+faiss:kind=hnsw            is_exact=False recall@10=1.000 size= 1024000  fitted_to_corpus={}
+faiss:kind=ivf,nprobe=1    is_exact=False recall@10=0.100 size=  528000  fitted_to_corpus={'nlist': (100, 51)}
+faiss:kind=ivf,nprobe=10   is_exact=False recall@10=0.600 size=  528000  fitted_to_corpus={'nlist': (100, 51)}
+faiss:kind=ivfpq           is_exact=False recall@10=0.200 size=   26000  fitted_to_corpus={'nlist': (100, 51), 'pq_bits': (8, 5)}
+```
+
+<Warning>
+  **A small corpus trains a bad codebook silently.** faiss wants roughly 39 training points per
+  cluster for `ivf`, and per codebook entry for `ivfpq` — at the default `pq_bits=8` that's 256
+  entries, around 10,000 vectors, before `ivfpq` trains at full width. Below that, faiss prints
+  a warning on stderr and trains anyway, returning plausible but wrong neighbours.
+
+  `FaissIndex` avoids that by reducing `nlist` and `pq_bits` to fit the corpus and recording
+  what actually ran on `fitted_to_corpus: dict[str, tuple[int, int]]` — `{'nlist': (100, 51)}`
+  reads as "asked for 100, used 51." This attribute isn't part of the `Index` interface every
+  index shares; check it specifically when a `faiss:ivf` or `faiss:ivfpq` result looks off.
+
+  `pq_subquantizers` is also silently reduced — to the largest divisor of the embedding width no
+  larger than what you asked for, since product quantization needs the subquantizer count to
+  divide the vector width exactly. That reduction is *not* recorded on `fitted_to_corpus`, only
+  `nlist` and `pq_bits` are — a `pq_subquantizers` mismatch has no attribute to check, only the
+  recall number to notice.
+</Warning>
+
+Requires the `index` extra, but the pip package is `faiss-cpu` — `pip install faiss` installs
+the wrong thing. The error names the right one:
+
+```python
+from contextgrid import get_index
+
+try:
+    get_index("faiss:kind=bogus")
+except Exception as e:
+    print(type(e).__name__, "-", e)
+```
+
+Output:
+
+```
+IndexBuildError - unknown faiss index 'bogus'. Choose one of: flat, hnsw, ivf, ivfpq
+```
+
+`size_bytes()` here is estimated from documented per-vector costs, not measured from faiss —
+faiss doesn't expose memory usage without serialising the whole index.
+
+## `usearch` — a second implementation of HNSW
+
+Needs `pip install 'context-grid[index]'`. `dtype` is the shorthand parameter.
+
+<ParamField path="connectivity" type="int" default="16" />
+<ParamField path="expansion_add" type="int" default="128" />
+<ParamField path="expansion_search" type="int" default="64" />
+<ParamField path="dtype" type="str" default="f32">`"f32"`, `"f16"`, or `"i8"`.</ParamField>
+
+`is_exact = False` always (`_ANNIndex` base, no `"flat"` equivalent here). Measured on the same
+2,000×64 corpus:
+
+```python
+import numpy as np
+from contextgrid import Chunk, Span, get_index, recall_against_exact
+
+rng = np.random.default_rng(1)
+vectors = rng.normal(size=(2000, 64)).astype("float32")
+vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+chunks = [Chunk(f"c{i}", Span(f"d{i}", 0, 1), f"chunk {i}") for i in range(2000)]
+query_vector = vectors[42]
+
+exact = get_index("dense:cosine")
+exact.build(chunks, vectors)
+exact_hits = exact.search("", query_vector, k=10)
+
+for dtype in ["f32", "f16", "i8"]:
+    idx = get_index(f"usearch:{dtype}")
+    idx.build(chunks, vectors)
+    hits = idx.search("", query_vector, k=10)
+    recall = recall_against_exact(hits, exact_hits, k=10)
+    print(f"usearch:{dtype:4s} is_exact={idx.is_exact!s:5s} recall@10={recall:.3f} size={idx.size_bytes()}")
+```
+
+Output:
+
+```
+usearch:f32  is_exact=False recall@10=1.000 size=768000
+usearch:f16  is_exact=False recall@10=1.000 size=512000
+usearch:i8   is_exact=False recall@10=0.900 size=384000
+```
+
+<Note>
+  usearch builds its graph with more than one thread, so recall@10 for this exact code moved
+  between 0.900 and 1.000 across repeated runs while writing this page — `f32` and `f16` stayed
+  at 1.000 every time, `i8` was the one that varied. Don't read a single run's number as exact;
+  run it more than once before trusting a specific figure.
+</Note>
+
+`size_bytes()` is computed from `dtype` width (4/2/1 bytes) plus a graph-neighbour estimate,
+not read from usearch's own `Index.memory_usage` — that call reports the arena usearch
+allocated, which barely moves between `f32` and `i8` on a small index, and would make
+quantization look like it saves nothing.
+
+`"b1"` (binary) is not offered, even though it's a valid `dtype` name in usearch itself — it
+wants bit-packed input and a Hamming metric, not the plain `float32` matrix every other arm on
+this axis takes:
+
+```python
+from contextgrid import get_index
+
+try:
+    get_index("usearch:dtype=b1")
+except Exception as e:
+    print(type(e).__name__, "-", e)
+```
+
+Output:
+
+```
+IndexBuildError - unknown usearch dtype 'b1'. Choose one of: f32, f16, i8
+```
+
+Use `quantized:binary` (above) for binary vectors — it does the rescoring pass that recovers
+the recall Hamming-only ranking costs.
+
+## `pgvector` — what most people actually deploy on
+
+Needs `pip install 'context-grid[pgvector]'` (installs `psycopg`) and a running Postgres with
+the `vector` extension. There is no in-process fallback:
+
+```bash no-run: needs a running Docker daemon and pulls an image from Docker Hub
+docker run -p 5432:5432 -e POSTGRES_PASSWORD=pg pgvector/pgvector:pg17
+```
+
+<ParamField path="kind" type="str" default="hnsw">`"exact"`, `"hnsw"`, or `"ivfflat"`.</ParamField>
+<ParamField path="metric" type="str" default="cosine" />
+<ParamField path="dsn" type="str | None" default="None">Or set `PGVECTOR_DSN` / `DATABASE_URL` in the environment.</ParamField>
+<ParamField path="m" type="int" default="16" />
+<ParamField path="ef_construction" type="int" default="64" />
+<ParamField path="ef_search" type="int" default="40" />
+<ParamField path="lists" type="int" default="100" />
+<ParamField path="probes" type="int" default="8" />
+<ParamField path="table_prefix" type="str" default="contextgrid" />
+
+`is_exact` is a property, `True` only when `kind == "exact"`. Every `.build()` call creates a
+real table named `f"{table_prefix}_{uuid4().hex[:12]}"`; `.close()` drops it. Call `.close()`
+yourself — `__del__` also calls it as a safety net, but interpreter shutdown ordering can skip
+that, so don't rely on garbage collection to clean up a database table.
+
+```python no-run: needs a running Postgres with the vector extension
+from contextgrid import get_index, Chunk, Span
+import numpy as np
+
+idx = get_index("pgvector:hnsw")
+chunks = [Chunk("c1", Span("d1", 0, 1), "x")]
+idx.build(chunks, np.zeros((1, 8), dtype="float32"))
+```
+
+With no server reachable, that raises:
+
+```
+IndexBuildError: could not connect to Postgres for the pgvector index: the pgvector index needs a running Postgres with the vector extension. Set PGVECTOR_DSN, or pass dsn=... -- for example `index: pgvector:hnsw,dsn=${PGVECTOR_DSN}`. To try one quickly:
+  docker run -p 5432:5432 -e POSTGRES_PASSWORD=pg pgvector/pgvector:pg17
+```
+
+<Warning>
+  `ef_search` and `probes` are Postgres **session** settings, not index settings — applied per
+  query with a plain `SET`, deliberately not `SET LOCAL` (which is silently a no-op on an
+  autocommit connection, and was a real bug here before the fix). A production system that never
+  sets them runs on whatever the server defaults to.
+</Warning>
+
+`size_bytes()` queries `pg_total_relation_size` — the one index on this page whose memory figure
+is measured rather than estimated.
+
+## `recall_against_exact`: turning a feeling into a number
+
+```python
+from collections.abc import Sequence
+from contextgrid.index.base import Scored
+
+def recall_against_exact(approximate: Sequence[Scored], exact: Sequence[Scored], k: int) -> float: ...
+```
+
+The fraction of `exact[:k]`'s chunk ids that also appear in `approximate[:k]`:
+
+```python
+from contextgrid import recall_against_exact
+from contextgrid.index.base import Scored
+
+exact = [Scored("a", 0.9), Scored("b", 0.8), Scored("c", 0.7)]
+approx = [Scored("a", 0.9), Scored("z", 0.85), Scored("c", 0.7)]
+print(recall_against_exact(approx, exact, k=3))  # 2 of 3 exact hits found
+
+print(recall_against_exact(approx, [], k=3))  # empty exact -- reads as "perfect"
+```
+
+Output:
+
+```
+0.6666666666666666
+1.0
+```
+
+<Warning>
+  An empty `exact` list returns `1.0`, not an error and not `0.0` — worth knowing, since it
+  reads as "perfect recall" rather than "there was nothing to compare against." This isn't
+  specific to quantized indexes: `recall_against_exact` works on any two `Scored` lists, not
+  just ones a `quantized` index produced.
+</Warning>
+
+## Errors
+
+Every index in this list raises `IndexBuildError` for a bad spec, a shape mismatch, or a missing
+dependency — except `hybrid`, whose `fusion`/`alpha` validation raises `FusionError` instead
+(`from contextgrid.index import FusionError`). Both subclass `ContextGridError`.
+
+```python
+from contextgrid import get_index, Chunk, Span
+import numpy as np
+
+chunks = [Chunk("c1", Span("d1", 0, 1), "x")]
+
+try:
+    get_index("dense").build(chunks, None)
+except Exception as e:
+    print(type(e).__name__, "-", e)
+
+dense = get_index("dense")
+dense.build(chunks, np.zeros((1, 4), dtype="float32"))
+try:
+    dense.search("q", np.zeros(8, dtype="float32"), k=1)  # wrong width
+except Exception as e:
+    print(type(e).__name__, "-", e)
+```
+
+Output:
+
+```
+IndexBuildError - the 'dense' index needs vectors. Give it an embedder, or use a sparse index that works on text alone.
+IndexBuildError - query has 8 dimensions but the index was built with 4. The query and the documents were embedded by different models.
+```
+
+See [Embedders](/axes/embedders) for what produces the vectors these indexes hold, and
+[Retrieval](/axes/retrieval) for how many searches run against one.

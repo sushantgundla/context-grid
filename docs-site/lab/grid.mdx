@@ -1,0 +1,207 @@
+---
+title: "Defining a Sweep"
+description: "Every axis lab.grid() takes, single values versus lists, factorial versus ofat, and what lab.estimate() tells you before anything runs."
+---
+
+`lab.grid()` sets the axes of the experiment. Call it once, pass a single value or a list on
+any axis, and it returns (and stores on `lab.matrix`) a `Matrix` — the thing `lab.estimate()`
+and `lab.run()` both read.
+
+```python no-run: signature shown for reference, not a runnable statement
+lab.grid(
+    parser: str | Sequence[str] = "markdown",
+    chunker: str | Sequence[str] = "recursive:512",
+    embedder: str | Sequence[str | None] | None = "tfidf",
+    index: str | Sequence[str] = "dense",
+    transform: str | Sequence[str | None] | None = None,
+    reranker: str | Sequence[str | None] | None = None,
+    candidates: int | Sequence[int] = 50,
+    k: int = 10,
+    *,
+    ingestion: str | Sequence[str | None] | None = None,
+    retrieval: str | Sequence[str | None] | None = None,
+    generator: str | Sequence[str | None] | None = None,
+) -> Matrix
+```
+
+## The axes
+
+Ten axes, matching the `grid:` section of a config file (see [Config](/concepts/config)). `k`
+is the only argument here that is not an axis — it is one integer, applied to every
+configuration, not something you sweep.
+
+| Axis | Default | What it picks |
+| --- | --- | --- |
+| `parser` | `"markdown"` | How documents are read. [Parsers](/axes/parsers) |
+| `chunker` | `"recursive:512"` | How parsed text is split. [Chunkers](/axes/chunkers) |
+| `embedder` | `"tfidf"` | What turns chunks into vectors — `None` for an index that doesn't need any. [Embedders](/axes/embedders) |
+| `index` | `"dense"` | What structure holds the vectors or text. [Indexes](/axes/indexes) |
+| `transform` | `None` | What rewrites a query before it's searched. [Transforms](/axes/transforms) |
+| `reranker` | `None` | What reorders candidates after the first search. [Rerankers](/axes/rerankers) |
+| `candidates` | `50` | How many candidates are pulled before reranking cuts to `k`. |
+| `k` | `10` | How many results come back. Not sweepable — one value, shared by every configuration. |
+| `ingestion` (keyword-only) | `None` | How documents are prepared before chunking. [Ingestion](/axes/ingestion) |
+| `retrieval` (keyword-only) | `None` | The retrieval strategy itself. [Retrieval](/axes/retrieval) |
+| `generator` (keyword-only) | `None` | What writes an answer from retrieved context. [Generation](/axes/generation) |
+
+`ingestion`, `retrieval` and `generator` are keyword-only because they were added after
+`grid()`'s positional signature was already public — putting them anywhere but last would
+silently change what every call written before they existed means.
+
+## Single value or list, on any axis
+
+Anything you leave as a single value is held still across the whole sweep. Anything you give
+as a list is what actually gets swept:
+
+```python
+import contextgrid as cg
+
+lab = cg.Lab(corpus={"a.md": "# A\n\nSome text about apples."})
+lab.grid(chunker=["recursive:512", "sentence"], index="dense")  # index held still
+```
+
+No need to wrap a single value in a list yourself — `chunker="recursive:512"` and
+`chunker=["recursive:512"]` mean the same thing.
+
+## Two ways to walk the matrix: factorial and ofat
+
+Selecting several values on more than one axis multiplies fast — four axes with three values
+each is 81 configurations. `lab.estimate(mode)` and `lab.run(evalset, mode=...)` both take a
+`mode` that decides how the matrix gets walked. Two of the three sweep modes are relevant here:
+
+<Tabs>
+<Tab title="factorial">
+Every combination of every axis. Measures interactions between axes — whether the best
+chunker changes depending on which index you pair it with — and is also the mode that
+explodes: it *is* the full product `Matrix.shape()` prints.
+</Tab>
+<Tab title="ofat (one-factor-at-a-time)">
+The default. Holds a baseline (the first value on every axis) and varies one axis at a time
+against it. Linear rather than exponential, and directly interpretable — "switching the
+chunker gained 0.08" — but blind to interactions between axes.
+</Tab>
+</Tabs>
+
+The difference in count, for real:
+
+```python
+import contextgrid as cg
+
+lab = cg.Lab(corpus={"a.md": "# A\n\nApples."})
+lab.grid(
+    chunker=["recursive:512", "recursive:16"],
+    index=["dense", "bm25"],
+    reranker=[None, "lexical"],
+)
+print("shape:", lab.matrix.shape())
+print("ofat:     ", lab.estimate("ofat"))
+print("factorial:", lab.estimate("factorial"))
+```
+
+```text
+shape: 1 × 1 × 2 × 1 × 2 × 1 × 1 × 2 × 1 × 1 = 8
+ofat:      {'configurations': 4, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 2 × 1 × 1 × 2 × 1 × 1 = 8', 'approximate_index_tokens': 3, 'estimated_usd': 0.0}
+factorial: {'configurations': 8, 'mode': 'factorial', 'shape': '1 × 1 × 2 × 1 × 2 × 1 × 1 × 2 × 1 × 1 = 8', 'approximate_index_tokens': 3, 'estimated_usd': 0.0}
+```
+
+Three axes are varying (`chunker`, `index`, `reranker`), each with 2 values. `factorial` runs
+every combination: `2 × 2 × 2 = 8`. `ofat` runs the baseline plus one changed axis at a time:
+1 baseline + (2-1) + (2-1) + (2-1) = 4. `shape` is always the full factorial product, whichever
+mode you asked for — it is the honest denominator to compare `configurations` against.
+
+<Note>
+There is a third mode, `staged` — pick the winner on one axis, freeze it, move to the next.
+Cheapest of the three, and the one `lab.run()` accepts too, but it can only be counted after it
+runs (each stage depends on the winner of the one before it). See [Running a Sweep](/lab/running).
+</Note>
+
+## Impossible combinations are skipped, not errored
+
+A factorial expansion over `embedder=["tfidf", None]` and `index=["dense", "bm25"]` produces
+`tfidf + bm25`, `tfidf + dense`, `None + bm25`, and `None + dense` — and the last one cannot be
+built: a dense index has nothing to search without vectors. Writing `embedder: [tfidf, null]`
+alongside `index: [dense, bm25]` clearly means "tfidf with dense, and bm25 with nothing," so
+the impossible cell is dropped rather than raised as an error:
+
+```python
+import contextgrid as cg
+
+lab = cg.Lab(corpus={"a.md": "# A\n\nApples.", "b.md": "# B\n\nBananas."})
+lab.grid(embedder=["tfidf", None], index=["dense", "bm25"])
+
+for mode in ("ofat", "factorial"):
+    configs, report = lab.matrix.expand_with_report(mode)
+    print(mode, "-", report.note())
+    for c in configs:
+        print("   ", c.label)
+```
+
+```text
+ofat - 1 impossible combination(s) skipped
+    markdown · recursive:512 · tfidf · dense
+    markdown · recursive:512 · bm25
+factorial - 1 impossible combination(s) skipped, 1 collapsed onto an identical run
+    markdown · recursive:512 · tfidf · dense
+    markdown · recursive:512 · bm25
+```
+
+Factorial also drops a second cell: `None + bm25` and `tfidf + bm25` both canonicalise to
+plain `bm25` — BM25 works on text and never looks at a vector, so the two would otherwise
+count as two identical runs under different names, diluting any axis effect that gets computed
+on `embedder` afterwards. `report.note()` names every category that fired; `lab.run()` folds
+the same accounting into a warning on `Results` (see [Running a Sweep](/lab/running)).
+
+`Matrix.expand_with_report(mode)` is not on `Lab` itself — reach for it through `lab.matrix`
+when you want to see the dropped combinations before running. `lab.estimate()` and `lab.run()`
+apply the same dropping automatically; `estimate()`'s `configurations` count is already the
+post-drop number.
+
+## `lab.estimate()`
+
+```python no-run: signature shown for reference, not a runnable statement
+lab.estimate(mode: SweepMode | str = SweepMode.OFAT) -> dict[str, Any]
+```
+
+Returns a plain dict — no cost lookup needs a network call, so this is instant and free even
+before anything about the corpus is real:
+
+```python
+import contextgrid as cg
+
+lab = cg.Lab(corpus={"a.md": "# A\n\n" + "Some text about apples. " * 20})
+lab.grid(chunker=["recursive:512", "structural:512"], index=["dense", "bm25", "hybrid"])
+print(lab.estimate())
+```
+
+```text
+{'configurations': 4, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 3 × 1 × 1 × 1 × 1 × 1 = 6', 'approximate_index_tokens': 121, 'estimated_usd': 0.0}
+```
+
+<ResponseField name="configurations" type="int">
+How many configurations this mode will actually run, after impossible and duplicate
+combinations are dropped.
+</ResponseField>
+<ResponseField name="mode" type="str">
+The mode that was estimated — `"ofat"` or `"factorial"`, echoing back whatever you passed.
+</ResponseField>
+<ResponseField name="shape" type="str">
+The full factorial product, as a string — `Matrix.shape()`. Always the same regardless of
+`mode`, so you can see how much `ofat` is saving you.
+</ResponseField>
+<ResponseField name="approximate_index_tokens" type="int">
+The corpus's total size in bytes divided by 4 — a rough characters-per-token guess, not a real
+tokenizer pass. Deliberately crude: the point is to catch "this will cost forty dollars" before
+you start, not to be exact.
+</ResponseField>
+<ResponseField name="estimated_usd" type="float">
+Rough total indexing cost across every configuration this mode will run, from `CostModel`. `0.0`
+for local embedders — pass `machine_usd_per_hour` to `cg.Lab(...)` if your compute isn't
+actually free. See [Cost](/reference/cost).
+</ResponseField>
+
+<Warning>
+`estimated_usd` only prices indexing. It has no way to know what an `agentic` retrieval
+strategy or an `llm` generator will spend at query time — that depends on how many model calls
+each question actually needs, which isn't knowable until the sweep runs. `lab.run(..., budget_usd=...)`
+is the real ceiling for that; see [Running a Sweep](/lab/running).
+</Warning>

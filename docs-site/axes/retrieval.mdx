@@ -1,0 +1,375 @@
+---
+title: "Retrieval Strategies"
+description: "The retrieval axis: the five strategies, what agentic retrieval needs and costs, and how a strategy differs from the index underneath it."
+---
+
+An [index](/axes/indexes) is a **store** — where the vectors or text live, and how one search
+runs against them. A retrieval strategy is what sits on top of a store: how many searches happen,
+who decides what to search for, and whether the answer to one search changes the next.
+
+`dense`, `bm25`, `faiss:hnsw`, `pgvector` — those are places to put your documents. `simple`,
+`widened`, `decomposed`, `agentic` — those are what you do with the place once it exists. Keeping
+them apart turns "does agentic retrieval beat plain search on my pgvector index, and is it worth
+the model calls?" into a cell in a grid: pick any index, sweep any strategy over it.
+
+<Warning>
+Unlike every other axis, retrieval is **not** re-exported from top-level `contextgrid`. There is
+no `cg.get_retriever` or `cg.RETRIEVERS`. Import from `contextgrid.retrieve` directly:
+
+```python
+from contextgrid.retrieve import RETRIEVERS, get_retriever
+```
+</Warning>
+
+```python
+RETRIEVERS.names()
+```
+
+```
+['agentic', 'decomposed', 'relevance-feedback', 'simple', 'widened']
+```
+
+Set the axis with `retrieval` in `Config`, or `grid.retrieval` in a config file.
+
+## The index versus the strategy
+
+A strategy never sees the index. It's handed a `Searcher` — a plain function, `(text, k) ->
+list[Scored]` — that runs one search against whatever index the config picked:
+
+```python
+from collections.abc import Callable, Sequence
+from contextgrid.index.base import Scored
+from contextgrid import Chunk
+
+Searcher = Callable[[str, int], Sequence[Scored]]
+Lookup = Callable[[str], "Chunk | None"]
+```
+
+That's the whole seam. It's why a new store never has to touch any strategy, and why every
+strategy below works identically whether the searcher underneath is `bm25` or `pgvector:hnsw`.
+
+A strategy that wants to *read* what it found — not just an id and score, but the text — is
+handed a second, equally narrow thing: `Lookup`. Given a `chunk_id` a `searcher` call already
+returned, `lookup` hands back the `Chunk` behind it, or `None` for an id it doesn't recognise.
+There's no way to enumerate or browse — a strategy can only look up an id it already has. It
+defaults to a function that always returns `None`, so a strategy with no use for chunk text never
+has to know the parameter exists. `relevance-feedback`, below, is the strategy this exists for.
+
+## `RetrievalTrace`: what a strategy actually did
+
+A recall number alone can't tell two strategies apart if they tie. `RetrievalTrace` carries the
+difference — `searches`, `model_calls`, `queries`, and a free-form `notes` dict:
+
+```python
+from contextgrid.retrieve import RetrievalTrace, SimpleRetrieval, WidenedRetrieval, DecomposedRetrieval
+
+question = "what is the refund window and are digital goods refundable?"
+searcher = lambda text, k: []  # a real Searcher would query an index; the trace doesn't care
+
+for strategy in [SimpleRetrieval(), WidenedRetrieval(factor=4), DecomposedRetrieval()]:
+    trace = RetrievalTrace()
+    strategy.retrieve(question, [question], searcher, 5, trace)
+    print(strategy.name, trace.searches, trace.queries, trace.notes)
+```
+
+```
+simple 1 ['what is the refund window and are digital goods refundable?'] {}
+widened 1 ['what is the refund window and are digital goods refundable?'] {'depth': 20}
+decomposed 3 ['what is the refund window and are digital goods refundable?', 'what is the refund window', 'are digital goods refundable'] {'parts': 3}
+```
+
+`widened` made one search too, but asked the index for 20 results instead of 5 (`depth` in the
+notes); `decomposed` made three, splitting the question. Neither made a model call.
+
+Two strategies with the same recall and a different `model_calls` count are a decision, not a
+tie. If you want a ceiling that actually stops a sweep, set `run.budget_usd` — a model-backed
+strategy's calls are metered against it, and `model_calls` per configuration lands in
+`results.json`.
+
+## The five strategies
+
+| spec | class | `uses_model` | what it does |
+|---|---|---|---|
+| `simple` | `SimpleRetrieval` | `False` | One search per query, fused if the transform produced several. |
+| `widened` | `WidenedRetrieval` | `False` | Search deeper than asked, cut back to `k`. |
+| `decomposed` | `DecomposedRetrieval` | `False` | Split a multi-part question mechanically, search each part. |
+| `relevance-feedback` | `RelevanceFeedbackRetrieval` | `False` | Search, read the best hit, search again with its distinctive words. |
+| `agentic` | `AgenticRetrieval` | `True` | A model plans the searches, over one or more rounds. |
+
+`get_retriever(None)` returns `SimpleRetrieval()`, so a config that's never heard of this axis
+keeps behaving exactly as it did before the axis existed.
+
+### `simple` — the arm every other strategy has to beat
+
+```python
+retrieval = get_retriever("simple")
+```
+
+No parameters. Exactly what plain search does: one query in, one search, fused if the transform
+produced more than one query. It wins on a great many corpora, which is itself worth publishing —
+the field's default advice usually assumes otherwise.
+
+### `widened` — free recall, sometimes
+
+<ParamField path="factor" type="int" default="4">
+Search `k * factor` deep, cut back to `k`. `factor < 1` raises `RetrievalError`. `widened:8` sets
+`factor=8`.
+</ParamField>
+
+On a plain single-query search this changes nothing — the same top-`k` comes back — but it
+changes a lot once a reranker sits downstream, and it's the cheapest way to find out whether a
+configuration is limited by the retriever's *ordering* or its *reach*. Costs a little index time,
+zero model calls.
+
+### `decomposed` — split, search, fuse, mechanically
+
+<ParamField path="min_words" type="int" default="2">
+Floor on fragment length, so a piece like "and by when" doesn't become a search of its own.
+</ParamField>
+<ParamField path="max_parts" type="int" default="4">
+Cap on how many parts one question can split into. `max_parts < 1` raises `RetrievalError`.
+`decomposed:3` sets `max_parts=3`.
+</ParamField>
+
+A question like *"what is the refund window and are digital goods refundable?"* has two answers,
+usually in two different chunks — one search ranks whichever half the embedding favoured and the
+other half is lost. `.parts()` splits on conjunctions and clause punctuation, with the whole
+question always leading:
+
+```python
+import pprint
+pprint.pprint(DecomposedRetrieval().parts("what is the refund window and are digital goods refundable?"))
+```
+
+```
+['what is the refund window and are digital goods refundable?',
+ 'what is the refund window',
+ 'are digital goods refundable']
+```
+
+Splitting is deliberately mechanical rather than model-driven — this arm exists to show how much
+of the gain is free, which is exactly the comparison `agentic` has to be judged against.
+
+### `relevance-feedback` — read the best hit, search again
+
+<ParamField path="terms" type="int" default="5">
+How many distinctive words to pull from the top hit. `terms < 1` raises `RetrievalError`.
+`relevance-feedback:3` sets `terms=3`.
+</ParamField>
+
+Every strategy above decides its searches from the question alone. This one reads what the first
+search actually found: it assumes the top result is relevant, pulls the words out of it the
+question didn't already have, and searches again with those added. It's the one strategy that
+needs [`lookup`](#the-index-versus-the-strategy) — the text of a hit, not just its id and score.
+
+"Distinctive" is approximated from the one chunk `lookup` hands back — a word appearing once
+outranks one appearing five times, ties broken alphabetically:
+
+```python
+from contextgrid.retrieve import RelevanceFeedbackRetrieval
+from types import SimpleNamespace
+
+texts = {"top": "alpha beta beta gamma gamma gamma delta"}
+lookup = lambda chunk_id: SimpleNamespace(text=texts[chunk_id])
+searcher = lambda text, k: [Scored("top", 0.9)] if text == "find gamma things" else []
+trace = RetrievalTrace()
+found = RelevanceFeedbackRetrieval(terms=2).retrieve(
+    "find gamma things", ["find gamma things"], searcher, 5, trace, lookup
+)
+trace.notes["expansion_terms"]  # "gamma" was already in the question, so it's never a candidate
+```
+
+```
+['alpha', 'delta']
+```
+
+```python
+trace.queries
+```
+
+```
+['find gamma things', 'find gamma things alpha delta']
+```
+
+If the best hit has nothing new to say — every word is already in the question, or `lookup`
+returns `None` because it was never wired up — there's nothing to search for, and the strategy
+costs exactly one search, same as `simple`. It never crashes for lacking a `lookup`: the default
+always returns `None`.
+
+### `agentic` — a model decides what to search for, and when to stop
+
+<ParamField path="model" type="str | None" default="None">
+No default on purpose. `agentic` with no model anywhere — none in the spec, none in `run.model`
+— refuses to build rather than picking one for you.
+</ParamField>
+<ParamField path="rounds" type="int" default="1">
+`rounds >= 2` lets the model see what the first round found and search again for what's missing.
+It stops early if a round returns an empty plan.
+</ParamField>
+<ParamField path="max_queries" type="int" default="4">
+Cap on how many searches one round can produce.
+</ParamField>
+<ParamField path="backend" type="str" default="auto">
+`auto`, `agno`, or `llm`. `auto` tries the `agno` package first, falling back to this package's
+own `LLM` protocol. Requesting `backend="agno"` with `agno` not installed raises
+`RetrievalError` telling you to `pip install 'context-grid[agent]'` — it does not silently fall
+back the way `auto` does.
+</ParamField>
+
+```python
+get_retriever(None)
+```
+
+```
+SimpleRetrieval()
+```
+
+```python
+get_retriever("agentic")
+```
+
+```
+Traceback (most recent call last):
+    ...
+contextgrid.evalset.llm.LLMError: the 'agentic' retrieval strategy needs a model. Set `run.model` in your config, or use one of the model-free strategies: decomposed, relevance-feedback, simple, widened
+```
+
+Naming a model works either in the spec (`agentic:gpt-4o-mini`) or via `run.model` — when both
+are set, `run.model` wins, since that's the one the sweep can meter. This used to default silently
+to `openai:gpt-4o-mini`, spending money on a provider nobody named; now it refuses instead.
+
+**The ranking comes from what the agent searched for, not from what it says.** A model asked to
+name its own chunk ids invents them, so it's only ever asked for *queries* — the index still
+decides what matches, and results across rounds are fused by rank, never by raw score. Driving it
+with a scripted planner (no key, no network) — exactly the same technique used to write this
+example:
+
+```python
+from contextgrid.retrieve import AgenticRetrieval
+
+class ScriptedPlanner:
+    def complete(self, prompt, *, max_tokens=256):
+        return '["refund window 30 days purchase", "digital goods not refundable downloaded"]'
+
+strategy = AgenticRetrieval(model=None, rounds=1)
+object.__setattr__(strategy, "_llm", ScriptedPlanner())
+trace = RetrievalTrace()
+strategy.retrieve(question, [question], searcher, 5, trace)
+trace.searches, trace.model_calls, trace.queries, trace.notes
+```
+
+```
+(2, 1, ['refund window 30 days purchase', 'digital goods not refundable downloaded'], {'rounds': 1})
+```
+
+<Note>
+`object.__setattr__(strategy, "_llm", ...)` is what `get_retriever(spec, llm=...)` does internally
+to wire a planner in — shown here directly because it's the only way to swap in a scripted
+planner without a real model call. In normal use you pass `llm=` to `get_retriever` and never
+touch `_llm` yourself.
+</Note>
+
+**A planner failure never fails the sweep.** If the model errors, times out, or writes prose
+instead of JSON, the strategy falls back to searching the question as asked and notes
+`trace.notes["fell_back"] = True`:
+
+```python
+class RefusingPlanner:
+    def complete(self, prompt, *, max_tokens=256):
+        return "I'm sorry, I can't help with that."
+
+fallback = AgenticRetrieval(model=None, rounds=1)
+object.__setattr__(fallback, "_llm", RefusingPlanner())
+fb_trace = RetrievalTrace()
+q = "what is the refund window?"
+fallback.retrieve(q, [q], searcher, 5, fb_trace)
+fb_trace.searches, fb_trace.model_calls, fb_trace.queries, fb_trace.notes
+```
+
+```
+(1, 1, ['what is the refund window?'], {'fell_back': True, 'rounds': 0})
+```
+
+The model call is still counted as spent even when it fails — a cost column that omits failed
+calls understates what the run cost.
+
+```python no-run: needs a real model and an API key
+retrieval = get_retriever("agentic:gpt-4o-mini,rounds=2")
+```
+
+## Fusion: ranks, not scores
+
+Every strategy above that runs more than one search combines the results with
+`contextgrid.retrieve.fuse` — reciprocal rank fusion, not score averaging. A cosine similarity
+from one query and a cosine similarity from another aren't on the same scale, however similar the
+raw numbers look; averaging them lets whichever query happened to produce larger magnitudes win a
+result it didn't earn:
+
+```python
+from contextgrid.retrieve import fuse
+
+r1 = [Scored("a", 0.9), Scored("b", 0.5)]
+r2 = [Scored("b", 0.8), Scored("c", 0.4)]
+fuse([r1, r2], k=3)
+```
+
+```
+[Scored(chunk_id='b', score=0.03252247488101534), Scored(chunk_id='a', score=0.01639344262295082), Scored(chunk_id='c', score=0.016129032258064516)]
+```
+
+`b` shows up in both result lists at a good rank in each, so it fuses ahead of `a` and `c`, each
+of which only appears once.
+
+## Which strategies cost money
+
+```python
+from contextgrid.retrieve import model_backed_retrievers, model_free_retrievers
+
+model_backed_retrievers(), model_free_retrievers()
+```
+
+```
+(('agentic',), ('decomposed', 'relevance-feedback', 'simple', 'widened'))
+```
+
+These read `uses_model` off every *registered* strategy rather than a hand-kept list, so a
+strategy added later through `plugins:` in your config still shows up correctly here.
+
+## Config reachability
+
+Every strategy is a spec string, so a sweep over the whole axis is one line:
+
+```yaml
+grid:
+  retrieval: [simple, widened:8, decomposed:3, relevance-feedback:3, "agentic:gpt-4o-mini,rounds=2"]
+```
+
+A config's label only names the strategy when it isn't `simple`:
+
+```python
+from contextgrid.pipeline import Config
+
+Config(retrieval="simple").label
+```
+
+```
+'markdown · recursive:512 · tfidf · dense'
+```
+
+```python
+Config(retrieval="decomposed").label
+```
+
+```
+'markdown · recursive:512 · tfidf · ~decomposed · dense'
+```
+
+So a leaderboard row for the default arm never carries a word that adds nothing, and a row for a
+strategy that costs money is never silently unlabelled.
+
+## See also
+
+- [Indexes](/axes/indexes) — the stores a `Searcher` is built from.
+- [Query Transforms](/axes/transforms) — what can hand a strategy more than one query to fuse.
+- [Rerankers](/axes/rerankers) — what happens to a strategy's output next.
+- [The Ten Axes](/axes/overview) — where `retrieval` sits among the other nine.

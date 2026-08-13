@@ -1,0 +1,104 @@
+---
+title: "Installation"
+description: "What the bare install gives you, and what every optional extra unlocks — chosen so a plain pip install never pulls in torch, CUDA or a PDF engine."
+---
+
+```bash
+pip install context-grid
+```
+
+Requires Python 3.10 or newer.
+
+## What the bare install gives you
+
+The core is deliberately dependency-free. `pip install context-grid` pulls in exactly two
+packages beyond `pip` itself:
+
+```text
+Package      Version
+------------ -------
+context-grid 0.9.0
+numpy        2.5.2
+PyYAML       6.0.3
+```
+
+`numpy` does the vector math. `pyyaml` is not really optional — the config file
+[the CLI runs](/concepts/config) is the product, so its parser ships in core rather than behind
+an extra.
+
+That bare install is already enough for everything in the [Quickstart](/quickstart): the
+`text` and `markdown` parsers, all five built-in chunkers, the `hash`/`tfidf`/`length`
+embedders, and the `dense`/`bm25`/`hybrid`/`quantized` indexes need nothing else. Ask for
+anything heavier — a PDF parser, a hosted embedding model, `faiss` — and it fails cleanly
+rather than half-working:
+
+```python
+import contextgrid as cg
+from contextgrid.parse import TextParser
+from contextgrid.core.documents import SourceFile, MediaType
+
+parsed = TextParser().parse(SourceFile(id="a.txt", media_type=MediaType.TEXT, raw=b"a. b. c."))
+
+chunker = cg.get_chunker("chonkie:token")
+try:
+    chunker.chunk(parsed)
+except cg.ChunkerError as e:
+    print(e)
+```
+
+```text
+chonkie chunkers need chonkie. Install it with: pip install 'context-grid[chunk]'
+```
+
+The exception type isn't always the same one — most of the plugins below raise
+`cg.MissingExtraError` at the point they need the missing package, not at construction time.
+Either way the message always names the extra and the exact `pip install` to fix it.
+
+## Every optional extra
+
+Install only the ones you need, e.g. `pip install "context-grid[chunk,index]"` for the
+chunker libraries plus faiss/usearch.
+
+| extra | `pip install "context-grid[...]"` | unlocks | how heavy |
+|---|---|---|---|
+| `parse` | `[parse]` | The `pymupdf`, `pdfplumber` and `pymupdf4llm` parsers — fast PDF text extraction, table-aware extraction, and Markdown output from the same engine as `pymupdf`. | Medium. Three real PDF engines, no ML models. |
+| `parse-ml` | `[parse-ml]` | The `docling` parser — IBM's layout and table-structure models, and the widest file-type coverage (PDF, DOCX, PPTX, HTML). | Heavy. Downloads and runs vision models on first use. |
+| `parse-marker` | `[parse-marker]` | The `marker` parser — Surya OCR and layout, 90+ languages, the most faithful (and slowest) extraction. | Heaviest, and **install it alone** — see below. |
+| `chunk` | `[chunk]` | The `chonkie:*` and `langchain:*` chunkers — the chunker libraries most RAG systems actually run, so a comparison against them means something. Also brings `tree-sitter-language-pack` for `chonkie:code`. | Medium. `chonkie` is small; `langchain-text-splitters` and the tree-sitter grammars are heavier. |
+| `embed` | `[embed]` | Exact token counts via `tiktoken` — needed for costing, and for tokenizer names like `o200k_base`. | Light. One package. |
+| `llm` | `[llm]` | `LiteLLMEmbedder`, `LiteLLMReranker`, and every model-backed query transform, retrieval strategy, ingestion strategy and generator — one interface (`litellm`) onto OpenAI, Cohere, Voyage, Gemini, Bedrock, Azure and the rest. | Medium. One package, but it pulls its own sizable dependency set. |
+| `index` | `[index]` | The `faiss` and `usearch` approximate-search indexes. | Medium–heavy. `faiss-cpu` is a large compiled wheel. |
+| `pgvector` | `[pgvector]` | The `pgvector` index, backed by a real Postgres server with the `vector` extension. | Light package (`psycopg`), but needs a running Postgres — there is no in-process fallback. |
+| `judge` | `[judge]` | Generation metrics — faithfulness, answer relevance and the rest — through `deepeval`, scored by whichever model your config already names. | Heavy. Pulls in its own model-evaluation stack. |
+| `agent` | `[agent]` | The `agno` parser and backend for `AgenticRetrieval`, plus `pypdf` for agno's own PDF reader. | Medium. Two packages. |
+| `dev` | `[dev]` | Everything above, plus `pytest`, `mypy`, `ruff` and the rest of the toolchain used to work on context-grid itself. | Heaviest. For contributing to or testing the package, not for using it. |
+
+<Tip>
+`tei` (`TEIEmbedder`) and `tei-rerank` (`TEIReranker`) need no extra at all — they talk to a
+running HuggingFace text-embeddings-inference server over the standard library's `urllib`.
+</Tip>
+
+## Why `parse-marker` has to be installed alone
+
+`marker-pdf` (the `parse-marker` extra) is deliberately kept out of `parse-ml`, and it is not
+tidiness — the two conflict for real.
+
+`marker-pdf` pulls in `surya-ocr`, which wants `transformers>=5.12` and `pillow<11`.
+`docling` (the `parse-ml` extra) wants `transformers<5.9`, and `pdfplumber` wants
+`pillow>=12.2`. `pip` will happily resolve all three onto one compatible set of versions by
+backtracking — but the set it lands on breaks `docling` at *runtime*, not at install time,
+with `ConversionError: KeyError: torch.float64`. A resolver saying yes is not the same as the
+combination working, and an extra that installs cleanly and then breaks a different parser is
+worse than one that just refuses.
+
+So: install `parse-marker` on its own, in its own environment, when the `marker` parser is the
+one arm you are actually measuring — not alongside `parse-ml` in the same install.
+
+<Warning>
+Constructing `MarkerParser()` (or `cg.get_parser("marker")`) never fails, even without the
+extra installed — the import only happens inside `.parse(...)`, so a missing dependency shows
+up the first time you actually parse a document, not when you build the config. The first real
+run also downloads Surya's model weights over the network, which can look hung for several
+minutes; the "install the extra" error only appears on genuine failure, not on a slow-but-working
+first run.
+</Warning>

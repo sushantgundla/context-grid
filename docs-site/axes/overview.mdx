@@ -1,0 +1,68 @@
+---
+title: "The Ten Axes"
+description: "What each axis in a context-grid experiment controls, how many plugins ship for it, and which ones need an extra installed."
+---
+
+An experiment is a grid. Each row below is one axis of that grid — one decision you can hold
+still or sweep. They are exactly the ten keys under `grid:` in a config file, and the ten
+keyword arguments of `Lab().grid(...)` in Python.
+
+Nine of the ten pick a plugin by name (a **spec string** like `"recursive:512"` — see
+[Chunkers](/axes/chunkers) for the grammar). The tenth, `candidates`, is a plain integer.
+
+| Axis | What it is | Options that ship | Need an extra |
+|---|---|---|---|
+| [`ingestion`](/axes/ingestion) | What goes into the index, and what a hit on it returns | 8 | none |
+| [`parser`](/axes/parsers) | Reads a source file into text | 8 | 6 of 8 |
+| [`chunker`](/axes/chunkers) | Cuts a parsed document into retrievable pieces | 12 | 7 of 12 |
+| [`embedder`](/axes/embedders) | Turns text into vectors | 5 | 1 of 5 |
+| [`index`](/axes/indexes) | How the search itself is done | 7 | 3 of 7 |
+| [`transform`](/axes/transforms) | Rewrites the question before searching with it | 6 | none, but 4 of 6 need `run.model` set |
+| [`retrieval`](/axes/retrieval) | How the index is used, as opposed to what it is | 5 | none |
+| [`reranker`](/axes/rerankers) | Reorders what came back | 5 | 1 of 5 |
+| `candidates` | How deep the reranker gets to look before it reorders | not a plugin — an integer | n/a |
+| [`generator`](/axes/generation) | Turns retrieved passages into an answer, or stops at retrieval | 2 | none, but the `llm` one needs `run.model` set |
+
+<Note>
+`candidates` lives next to `reranker` in a config on purpose — it is the one number that
+changes how much work the reranker has to do. Set it on [Rerankers](/axes/rerankers).
+</Note>
+
+## Reading the "need an extra" column
+
+A plugin that needs an extra is still registered and still shows up in `PARSERS.names()` or
+`cg.CHUNKERS.names()` — installing nothing does not shrink the list of names, it just makes
+some of them fail when you actually build or run them. Building `cg.get_parser("marker")`
+never fails; calling `.parse(...)` on the result does, with a message naming the exact pip
+extra to install. The same shape holds for every other axis: constructing the plugin succeeds,
+using it is what raises `MissingExtraError`.
+
+Two axes are a partial exception. `transform` and `generator` both have plugins that need no
+extra at all but still will not run until you set `run.model` in your config (or pass an `llm`
+in Python) — a missing API key or unset model is a different failure than a missing package,
+and the axis pages for [Transforms](/axes/transforms) and [Generation](/axes/generation) say
+which plugins need which.
+
+## Defaults
+
+Leave an axis out of `grid:` entirely and it runs at a single default value rather than being
+swept:
+
+| Axis | Default |
+|---|---|
+| `ingestion` | `plain` |
+| `parser` | `markdown` |
+| `chunker` | `recursive:512` |
+| `embedder` | `tfidf` |
+| `index` | `dense` |
+| `transform` | none (no rewriting) |
+| `retrieval` | `simple` |
+| `reranker` | none (keeps retriever order) |
+| `candidates` | `50` |
+| `generator` | none (the sweep stops at retrieval) |
+
+<Tip>
+Naming one axis in `grid:` sweeps that axis and holds every other one at its default. Start
+with one axis at a time rather than sweeping all ten at once — see [Running](/lab/running) for
+why a full factorial grid gets expensive fast.
+</Tip>

@@ -1,0 +1,242 @@
+---
+title: "Is the Winner Real?"
+description: "Use paired_bootstrap, randomisation_test, and compare() to tell a real difference between two configs from noise in a small eval set."
+---
+
+Two configs score `0.69` and `0.44` on `recall@5`. Config A wins — but on 8 questions, is that
+a real difference, or would the ranking flip if you'd asked 8 slightly different questions?
+This page is about answering that question honestly instead of reading the leaderboard order
+as if it settles it.
+
+## Get paired per-question scores first
+
+Every function on this page compares two configurations **question by question**, so you need
+scores in the shape [`per_query()`](/scoring/metrics) already gives you: `{question_id: score}`
+for each config, over the *same* questions.
+
+```python
+import contextgrid as cg
+
+config_a = {"q1": 1.0, "q2": 1.0, "q3": 0.0, "q4": 1.0, "q5": 0.5, "q6": 1.0, "q7": 0.0, "q8": 1.0}
+config_b = {"q1": 0.0, "q2": 1.0, "q3": 0.0, "q4": 1.0, "q5": 0.0, "q6": 1.0, "q7": 0.0, "q8": 0.5}
+```
+
+In a real pipeline these come from `cg.per_query(qrels, run_a, "recall", 5)` and
+`cg.per_query(qrels, run_b, "recall", 5)` — same `qrels`, two different runs.
+
+## `Interval` and `bootstrap_interval` — a confidence interval for one score
+
+```python no-run: signature shown for reference, not a runnable statement
+Interval(estimate: float, low: float, high: float, confidence: float = 0.95)
+```
+
+`.width`, `.excludes_zero` (`low > 0 or high < 0`), and `str(interval)` renders as
+`"{estimate:.3f} [{low:.3f}, {high:.3f}]"`.
+
+```python no-run: signature shown for reference, not a runnable statement
+def bootstrap_interval(
+    scores: Sequence[float], *, confidence: float = 0.95, resamples: int = 2000, seed: int = 0,
+) -> Interval
+```
+
+```python
+scores = [1.0, 0.5, 0.0, 1.0, 1.0, 0.5]
+interval = cg.bootstrap_interval(scores, seed=0)
+print(interval, interval.width, interval.excludes_zero)
+# 0.667 [0.333, 0.917] 0.5833333333333333 True
+```
+
+It works by resampling the questions with replacement `resamples` times and taking the mean of
+each resample — no assumption that per-question scores are normally distributed, which they
+usually aren't (`recall@5` on one question is often just `0` or `1`). A single score returns a
+zero-width interval at that value, not an error or `NaN`.
+
+## `seed`: what it actually controls
+
+`seed` seeds the resampling RNG (`numpy.random.default_rng(seed)`). It does not change what your
+scores mean — it only makes the resampling **reproducible**: the same `scores`, `resamples`, and
+`seed` always give you back the exact same interval, so a number you report today won't quietly
+shift if someone reruns your script tomorrow.
+
+```python
+i1 = cg.bootstrap_interval(scores, seed=0, resamples=50)
+i2 = cg.bootstrap_interval(scores, seed=1, resamples=50)
+print(i1)
+# 0.667 [0.417, 0.917]
+print(i2)
+# 0.667 [0.417, 0.898]
+```
+
+<Note>
+Different seeds give visibly different bounds at low `resamples`, but converge to the same
+interval as `resamples` grows — at the default `resamples=2000`, two different seeds on the same
+small `scores` list will usually land on identical (or near-identical) bounds. The seed is for
+reproducibility, not for exploring how unstable the estimate is; use a smaller `resamples` if
+you actually want to see resampling noise.
+</Note>
+
+## `paired_bootstrap` — a confidence interval for the *difference*
+
+```python no-run: signature shown for reference, not a runnable statement
+def paired_bootstrap(
+    left: Sequence[float], right: Sequence[float], *, confidence: float = 0.95, resamples: int = 2000, seed: int = 0,
+) -> Interval
+```
+
+```python
+diff = cg.paired_bootstrap([1.0, 1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.5], seed=0)
+print(diff)
+# 0.375 [0.000, 0.750]
+```
+
+This is not two independent calls to `bootstrap_interval` — it resamples matched question pairs
+together, so the pairing (config A and config B answering the *same* question) contributes to
+the estimate. That pairing is what gives this test real power on a head-to-head comparison,
+compared to treating the two configs as unrelated samples.
+
+## `randomisation_test` — a p-value for the difference
+
+```python no-run: signature shown for reference, not a runnable statement
+def randomisation_test(
+    left: Sequence[float], right: Sequence[float], *, permutations: int = 2000, seed: int = 0,
+) -> float
+```
+
+A two-sided paired sign-flip permutation test. Returns `1.0` immediately, without running any
+permutations, if every paired difference is already ~0 (`np.allclose`) — two configs that always
+tie have nothing for a permutation test to say. Otherwise it uses a "+1 both sides" correction
+(`(count + 1) / (permutations + 1)`), so it can never report `p=0` no matter how consistent the
+difference looks.
+
+```python
+p = cg.randomisation_test([1.0, 1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.5], seed=0)
+print(p)
+# 0.49775112443778113
+```
+
+## `compare()` — the function you actually want
+
+`compare` is not promoted to `cg.compare` — import it from its module directly:
+
+```python
+from contextgrid.score.significance import compare
+```
+
+```python no-run: signature shown for reference, not a runnable statement
+def compare(
+    left_scores: Mapping[str, float],
+    right_scores: Mapping[str, float],
+    *,
+    left: str = "left",
+    right: str = "right",
+    metric: str = "recall@5",
+    alpha: float = 0.05,
+    confidence: float = 0.95,
+    resamples: int = 2000,
+    seed: int = 0,
+) -> Comparison
+```
+
+It takes the two `per_query()` dicts, matches them up by question id, and runs both
+`paired_bootstrap` and `randomisation_test` for you. `metric` is just a label used in the
+printed verdict — it isn't looked up or validated against `cg.METRICS`, so nothing stops you
+passing a name that doesn't match what you actually scored; keep it honest yourself.
+
+Only questions present in **both** dicts are used — a question scored on one side only is
+silently excluded, not counted as a miss. If there's no overlap at all, `compare` raises
+`contextgrid.score.significance.SignificanceError` — not a `cg.X` name, same as `compare` itself.
+
+```python
+result = compare(config_a, config_b, left="bm25", right="dense", metric="recall@5")
+print(result)
+# Comparison(left='bm25', right='dense', metric='recall@5', n=8, left_mean=0.6875,
+#            right_mean=0.4375, difference=Interval(estimate=0.25, low=0.0625, high=0.5,
+#            confidence=0.95), p_value=0.245..., alpha=0.05, wins=3, losses=0, ties=5)
+```
+
+## `Comparison` — read `.distinguishable`, not the raw means
+
+```python no-run: signature shown for reference, not a runnable statement
+Comparison(
+    left: str, right: str, metric: str, n: int,
+    left_mean: float, right_mean: float, difference: Interval, p_value: float,
+    alpha: float = 0.05, wins: int = 0, losses: int = 0, ties: int = 0,
+)
+```
+
+`bm25` scored `0.6875` and `dense` scored `0.4375` above — a 25-point gap. But:
+
+```python
+print(result.distinguishable)
+# False
+print(result.winner)
+# None
+```
+
+`.distinguishable` is deliberately conservative: it requires **both**
+`p_value < alpha` **and** `difference.excludes_zero` — not either alone. Two weak signals
+agreeing is a better basis for a decision than trusting one. `.winner` only returns a name when
+`.distinguishable` is `True`; otherwise it's `None`, on purpose, so you can't accidentally read
+a winner out of noise.
+
+`wins` / `losses` / `ties` are plain counts of `left > right`, `left < right`, `left == right`
+on the raw per-question scores — descriptive, not a statistical test. Here `bm25` won 3
+questions and tied 5, which is consistent with `distinguishable=False`: winning some individual
+questions is not the same as the aggregate gap being real.
+
+### `.verdict()` — the sentence you can paste into a PR description
+
+```python
+print(result.verdict())
+# bm25 and dense are not distinguishable on this eval set (n=8). The gap of +0.250 on
+# recall@5 sits inside the confidence interval +0.062 to +0.500, so it is consistent with
+# no difference at all. Settling a gap this size would take roughly 63 questions -- on a
+# two-sided test at alpha 0.05 with 80% power, assuming per-question scores vary as much as
+# a 0-1 score possibly can. It is an order of magnitude, not a count.
+```
+
+The negative case gets the longer explanation on purpose — a reader who's told "not
+distinguishable" needs to know what it would take to actually settle the question, or they'll
+just fall back to reading the raw means as if they were an answer. The "roughly 63 questions"
+estimate is a magnitude, not a precise target: it assumes worst-case variance for a 0/1-style
+score, so treat it as "you need an order of magnitude more data," not a number to hit exactly.
+
+When the gap *is* real — a bigger effect, more questions — `.verdict()` reads differently:
+
+```python
+config_c = {f"q{i}": 1.0 for i in range(20)}
+config_d = {f"q{i}": (1.0 if i % 5 == 0 else 0.0) for i in range(20)}
+
+result2 = compare(config_c, config_d, left="bm25", right="dense")
+print(result2.distinguishable, result2.winner)
+# True bm25
+print(result2.verdict())
+# bm25 beats dense by 0.800 on recall@5 (95% CI +0.600 to +0.950, p=0.000, n=20). It wins on
+# 16 questions, loses on 0 and ties on 4.
+```
+
+Compare that against the first example: same kind of question, but a bigger effect (0.8 vs.
+0.25) over more questions (20 vs. 8) is what actually clears the bar. A gap has to earn
+`distinguishable=True` on both fronts — size and sample — not just look big in a bar chart.
+
+<Note>
+An eval set this small will rarely produce a distinguishable result — that's the point of this
+page. `distinguishable=True` needs either a large effect or enough questions; see
+[Eval Set Quality](/evalsets/quality) for `minimum_detectable_difference`, which estimates how
+many questions a given effect size needs before `compare()` could ever call it.
+</Note>
+
+## When a leaderboard gap means nothing
+
+- **Small `n`.** 8 or 20 questions is not enough to distinguish anything but a huge effect.
+  `.verdict()`'s sample-size note exists specifically to put a number on "how much data would
+  it actually take."
+- **Ties dominate.** If `wins` and `losses` are both small next to `ties`, the two configs are
+  mostly agreeing question by question — the aggregate gap is being driven by a handful of
+  questions, which is exactly what a paired bootstrap is built to catch and a plain mean isn't.
+- **You compared on different questions.** `compare()` only uses the intersection of both score
+  dicts. If your two runs didn't answer the same questions (a filtered eval set, a crashed run),
+  the comparison is quietly narrower than you think — check `result.n` against the eval set size.
+- **The metric doesn't match the story.** `metric=` is a label, not a lookup — a `Comparison`
+  built by accidentally passing `precision@5` scores while labeling it `"recall@5"` will print a
+  perfectly confident, perfectly wrong sentence.

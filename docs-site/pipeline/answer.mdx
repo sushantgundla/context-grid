@@ -1,0 +1,274 @@
+---
+title: "Generating an Answer"
+description: "Turn a search() result into text with pipeline.answer(), score what came back with score_answer() and lift(), and see what generation actually costs."
+---
+
+Retrieval finds passages. Generation is one more thing done with what retrieval already
+found — context-grid never runs it unless `config.generator` names a generator, and building
+a pipeline with `generator=None` (the default) does no assembly, makes no model call, and
+costs nothing.
+
+## Turning on a generator
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_texts({
+    "refunds.md": "refunds take within 30 days of purchase. digital goods are not refundable once downloaded.",
+    "shipping.md": "express shipping arrives the next business day.",
+})
+config = cg.Config(
+    parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense",
+    k=2, generator="extractive",
+)
+pipeline = cg.build(config, corpus)
+print(pipeline.generator)
+```
+```
+ExtractiveGenerator(sentences=2)
+```
+
+Two generators, registered under `GENERATORS` and resolved by `config.generator`:
+
+<CardGroup cols={2}>
+<Card title="extractive">
+No model. Returns the top-ranked passage's first `sentences` sentences (default 2) verbatim.
+It's not really "generating" anything, and that's the point — it's the ceiling retrieval
+alone can reach, useful as a zero-cost baseline for `lift()` below.
+</Card>
+<Card title="llm">
+Needs a model. Fills `DEFAULT_PROMPT` with the retrieved context and the question, and calls
+it through an `LLM`. Not buildable from a spec string alone — see [below](#the-llm-generator).
+</Card>
+</CardGroup>
+
+`pipeline.generator` is `None` for every other config, and it's the flag every caller checks
+rather than reading `config.generator` back out — `pipeline.generator is not None` is the
+one-line way to ask "will this pipeline answer, or only retrieve."
+
+## `pipeline.answer()`
+
+```python no-run: signature shown for reference, not a runnable statement
+pipeline.answer(question: str, chunk_ids: Sequence[str]) -> tuple[Answer, AssembledContext]
+```
+
+Takes chunk ids, not a query — it assembles and answers from a result you already have,
+rather than retrieving again. That result is exactly what `search()` returns, so the usual
+shape is search then answer:
+
+```python
+question = "How long do refunds take?"
+ids = pipeline.search(question)
+answer, context = pipeline.answer(question, ids)
+
+print(answer)
+print(context.text)
+```
+```
+Answer(text='refunds take within 30 days of purchase. digital goods are not refundable once downloaded.', prompt_tokens=39, completion_tokens=0, citations=(1,))
+[1] refunds.md
+refunds take within 30 days of purchase. digital goods are not refundable once downloaded.
+
+---
+
+[2] shipping.md
+express shipping arrives the next business day.
+```
+
+`Answer` is a frozen dataclass:
+
+```python no-run: signature shown for reference, not a runnable statement
+Answer(
+    text: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    citations: tuple[int, ...] = (),
+)
+```
+
+`citations` are the `[N]` markers found in `answer.text`, matched against the numbered
+passages in `context.text` — passage `[1]` is `context.chunks[0]`, and so on.
+`answer.is_abstention` (a property) checks the text against a fixed list of refusal phrases
+("i don't know", "not enough information", "cannot be determined", ...) to say whether the
+model declined rather than guessed.
+
+<Warning>
+Neither built-in generator ever sets `completion_tokens` — it's `0` on every `Answer` either
+one returns, extractive or `llm`. `prompt_tokens` is always set, from `context.tokens`.
+</Warning>
+
+Calling `answer()` on a pipeline with no generator raises rather than assembling context for
+nothing:
+
+```python
+config2 = cg.Config(parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense")
+p2 = cg.build(config2, corpus)
+try:
+    p2.answer("How long do refunds take?", ["refunds.md:0-90"])
+except cg.ContextGridError as e:
+    print(e)
+```
+```
+this pipeline has no generator configured -- check `pipeline.generator is not None` before calling `answer`
+```
+
+## The `llm` generator
+
+`generator="llm"` can't be resolved from the spec string alone — it needs a real `LLM` to
+call, so `cg.build()` takes one separately:
+
+```python no-run: fragment for illustration -- my_llm is not defined here
+cg.build(config, corpus, llm=my_llm)
+```
+
+Any object satisfying the `LLM` protocol works — `name` (a property) and
+`complete(prompt: str, *, max_tokens: int = 512) -> str`. For a real model, resolve one with
+`contextgrid.evalset.llm.get_llm`, which understands spec strings like `"openai:gpt-4o-mini"`
+and `"anthropic:claude-3-5-sonnet-20241022"`, both routed through `litellm`.
+
+```python no-run: needs a real provider API key (OPENAI_API_KEY / ANTHROPIC_API_KEY)
+from contextgrid.evalset.llm import get_llm
+
+llm = get_llm("openai:gpt-4o-mini")
+config = cg.Config(
+    parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense",
+    k=2, generator="llm",
+)
+pipeline = cg.build(config, corpus, llm=llm)
+
+ids = pipeline.search("How long do refunds take?")
+answer, context = pipeline.answer("How long do refunds take?", ids)
+print(answer.text)
+```
+
+<Tip>
+`cg.RecordingLLM` implements the same protocol with scripted replies and no network call —
+it's what the test suite uses in place of a real model, and it's exactly as usable for trying
+`generator="llm"` out without a key:
+</Tip>
+
+```python
+llm = cg.RecordingLLM(default="refunds take within 30 days of purchase [1].")
+config = cg.Config(
+    parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense",
+    k=2, generator="llm",
+)
+pipeline = cg.build(config, corpus, llm=llm)
+
+ids = pipeline.search("How long do refunds take?")
+answer, context = pipeline.answer("How long do refunds take?", ids)
+print(answer)
+print(llm.prompts[0][:120])
+```
+```
+Answer(text='refunds take within 30 days of purchase [1].', prompt_tokens=39, completion_tokens=0, citations=(1,))
+Answer the question using only the passages below.
+Cite the passages you used by their number, like [1].
+If the passages
+```
+
+Building a `generator="llm"` config without passing `llm` fails the same way, before any
+indexing happens:
+
+```python
+config3 = cg.Config(
+    parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense",
+    generator="llm",
+)
+try:
+    cg.build(config3, corpus)
+except cg.ContextGridError as e:
+    print(e)
+```
+```
+the 'llm' generator needs a model. Set `run.model` in your config, or use one of the model-free generators: extractive
+```
+
+## Scoring an answer
+
+`score_answer()` judges one answer without a second model — deliberately lexical, so it's
+checkable rather than another opaque model call:
+
+```python no-run: signature shown for reference, not a runnable statement
+score_answer(
+    item: EvalItem,
+    answer: Answer,
+    context: AssembledContext,
+    gold_chunks: Sequence[Chunk] = (),
+) -> AnswerScore
+```
+
+```python
+item = cg.EvalItem(id="q1", question="How long do refunds take?")
+ids = pipeline.search(item.question)
+answer, context = pipeline.answer(item.question, ids)
+
+score = cg.score_answer(item, answer, context)
+print(score)
+```
+```
+AnswerScore(item_id='q1', groundedness=1.0, citation_accuracy=1.0, evidence_overlap=0.0, abstained=False, should_have_abstained=True, warnings=[])
+```
+
+- **`groundedness`** — fraction of the answer's content words that also appear in the context
+  it was given. Content not traceable to the context is either invention or general knowledge.
+- **`citation_accuracy`** — fraction of `answer.citations` that point at a passage number that
+  actually exists in `context`. `None` when the answer cited nothing.
+- **`evidence_overlap`** — overlap with `gold_chunks`, if you pass any. `0.0` without them —
+  note above that `gold_chunks` defaults to `()`, so leaving it off doesn't skip the field, it
+  zeroes it.
+- **`abstained`** — `answer.is_abstention`, copied onto the score.
+- **`should_have_abstained`** — `True` when `item.is_resolved` is `False` (no `gold` spans on
+  the item) or the context has no chunks at all.
+- **`abstention_correct`** (property) — `abstained == should_have_abstained`. A correct
+  refusal counts as a success here, not a zero.
+
+<Note>
+`should_have_abstained` reads `item.is_resolved`, which asks whether `item.gold` is set —
+**not** whether `item.anchors` is set. An `EvalItem` built with only `anchors` (the portable,
+un-resolved form most eval sets are authored in) looks unresolved to `score_answer()` until
+something has turned those anchors into `gold` spans for this parse — which is what
+`resolve_evalset()` does. Score against a raw, unresolved eval set and every item will show
+`should_have_abstained=True`, answer or no answer.
+</Note>
+
+## `lift()`: did the retrieval gain reach the answer
+
+```python no-run: signature shown for reference, not a runnable statement
+lift(retrieval_score: float, answer_score: float, baseline_answer: float) -> str
+```
+
+The question a retrieval metric alone can't answer: a config that scores better on recall
+might still produce the same answers, if the generator was finding the evidence either way.
+`lift()` takes a retrieval score, this config's answer-quality score, and a baseline
+answer-quality score, and says in plain English whether the gain survived:
+
+```python
+print(cg.lift(0.8, 0.7, 0.5))
+print(cg.lift(0.8, 0.5, 0.5))
+print(cg.lift(0.8, 0.3, 0.5))
+```
+```
+Retrieval scored 0.800 and answer quality rose +0.200. The retrieval gain survived to the answer.
+Retrieval scored 0.800, and answer quality is unchanged against the baseline. The generator was finding the answer either way, so this retrieval gain bought nothing.
+Retrieval scored 0.800 and answer quality *fell* -0.200. Better retrieval that produces worse answers usually means more context, not better context -- check character precision before believing the retrieval number.
+```
+
+`abs(answer_score - baseline_answer) < 0.01` is read as "unchanged" — small enough to be noise
+rather than a real move.
+
+`GenerationReport` (returned by a Lab sweep with a generator on the grid, not built by hand in
+normal use) collects `AnswerScore`s across a whole eval set and adds
+`.abstention_accuracy`, `.confident_when_it_should_not_be` (the item ids answered despite
+`should_have_abstained`), `.metrics()`, and `.summary()` for a one-paragraph readout.
+
+## What generation costs
+
+`Answer.prompt_tokens` and `Answer.completion_tokens` are the only cost signal
+`pipeline.answer()` produces by itself — calling it directly, as on this page, prices nothing.
+Turning tokens into dollars is `CostModel`'s job, and it needs a model name to look a price up
+under; that pricing — `PRICES` first, `litellm.model_cost` second, input and output priced
+separately — is covered in full in [Cost](/reference/cost). A Lab sweep with `generator="llm"`
+on the grid wires this up for you automatically and reports `generation_usd_per_1k` per
+configuration; calling `pipeline.answer()` outside a sweep does not, so price it yourself from
+`answer.prompt_tokens` / `answer.completion_tokens` if you need a number for a one-off call.

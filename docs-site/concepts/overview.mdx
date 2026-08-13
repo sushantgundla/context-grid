@@ -1,0 +1,127 @@
+---
+title: "How It Fits Together"
+description: "The ten axes a context-grid experiment can sweep, the order data moves through them, and when to reach for the Lab instead of build()."
+---
+
+context-grid takes documents in, and turns "which retrieval setup works best on my
+documents" into a number you can compare. Everything in the package is one of two things:
+an **axis** — a decision you can hold still or sweep — or the **machinery** that runs a
+config through those axes and scores what came back.
+
+## The flow
+
+Building an index is six steps, in this order:
+
+```
+corpus -> parse -> chunk -> ingest -> embed -> index
+```
+
+- **corpus** — your documents, loaded as bytes. See [Loading a Corpus](/concepts/corpus).
+- **parse** — turns one source file into text plus structure (headings, tables, code).
+  Every character in that text is addressable by offset from here on — see
+  [Spans and Offsets](/concepts/spans-and-offsets).
+- **chunk** — cuts the parsed text into the retrievable units a search actually returns.
+- **ingest** — decides what gets indexed and what a hit on it hands back. Plain ingestion
+  indexes the chunk and returns the chunk; the other seven strategies index something else
+  (a parent passage, a generated question, an LLM-written summary) and return something
+  else. See [Ingestion](/axes/ingestion).
+- **embed** — turns indexed text into vectors, if the index needs them (`bm25` does not).
+- **index** — builds the structure a query is actually run against.
+
+Querying is four more steps, run once per question:
+
+```
+transform -> retrieve -> rerank -> generate
+```
+
+- **transform** — rewrites the question before it hits the index (HyDE, multi-query, ...).
+  `None` means ask it verbatim.
+- **retrieve** — how the index is used, as opposed to what it is: one search, several fused,
+  a model deciding as it goes.
+- **rerank** — reorders the `candidates` results the retriever found, down to `k`.
+- **generate** — turns the retrieved passages into an answer. Skipped entirely if
+  `config.generator` is `None`, which is what a plain retrieval comparison looks like.
+
+And **score** sits outside the pipeline itself: given an eval set of questions with known
+answers, [Scoring](/scoring/metrics) checks what came back against what should have — recall,
+precision, and (when a generator ran) whether the answer was actually right.
+
+## The ten axes
+
+Nine of the ten pick a plugin by a spec string like `"recursive:512"`; `candidates` is a
+plain integer. Full detail, including which ones need an extra installed, is on
+[Axes](/axes/overview):
+
+| Axis | What it does |
+|---|---|
+| `ingestion` | What goes into the index, and what a hit on it returns |
+| `parser` | Reads a source file into text |
+| `chunker` | Cuts a parsed document into retrievable pieces |
+| `embedder` | Turns text into vectors |
+| `index` | How the search itself is done |
+| `transform` | Rewrites the question before searching with it |
+| `retrieval` | How the index is used, as opposed to what it is |
+| `reranker` | Reorders what came back |
+| `candidates` | How deep the reranker gets to look before it reorders |
+| `generator` | Turns retrieved passages into an answer, or stops at retrieval |
+
+<Note>
+`candidates` and `k` are both integers, but only `candidates` is an axis. `k` — how many
+results a query returns — lives on [`Config`](/concepts/config) and the run settings, not the
+grid.
+</Note>
+
+## The Lab vs. `build()`
+
+Two ways to run all of this, and the difference is whether you're comparing configurations
+or running one:
+
+```python
+from pathlib import Path
+import contextgrid as cg
+
+Path("mydocs").mkdir(exist_ok=True)
+Path("mydocs/refund.md").write_text(
+    "# Refund Policy\n\n"
+    "Refunds are accepted within 30 days of purchase. Contact support with your order "
+    "number to start a return. Once approved, refunds are issued to the original payment "
+    "method within 5 business days.\n"
+)
+Path("mydocs/shipping.md").write_text(
+    "# Shipping\n\n"
+    "Orders ship within two business days. Standard shipping takes 5 to 7 business days "
+    "to arrive.\n"
+)
+
+corpus = cg.Corpus.from_dir("./mydocs")
+
+# One configuration, indexed and ready to query.
+config = cg.Config()
+pipeline = cg.build(config, corpus)
+print(pipeline.search("How long do I have to request a refund?"))
+```
+
+```
+['refund.md:0-212', 'shipping.md:0-105']
+```
+
+`cg.build(config, corpus)` runs the indexing half of the flow above — parse through index —
+for exactly one `Config`, and gives you back a `BuiltPipeline` you can call `.search()`,
+`.answer()`, or `.run_queries()` on. Nothing is compared to anything. Covered in
+[Building One Pipeline](/pipeline/build).
+
+```python
+lab = cg.Lab(corpus="./mydocs")
+lab.grid(chunker=["recursive:512", "structural:512"], index=["dense", "bm25"])
+print(lab.estimate())
+```
+
+```
+{'configurations': 3, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 2 × 1 × 1 × 1 × 1 × 1 = 4', 'approximate_index_tokens': 100, 'estimated_usd': 0.0}
+```
+
+`cg.Lab` sweeps many configurations — `.grid(...)` names the values to try per axis, holding
+everything else at its default. Call `.run(evalset)` and it calls `build()` once per point in
+the grid, scores each `BuiltPipeline` against the eval set, and gives back a leaderboard. Use
+`build()` when you already know the configuration and just want it running; use `Lab` when the
+question is which configuration to use at all. See [The Lab](/lab/overview).

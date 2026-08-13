@@ -1,0 +1,475 @@
+---
+title: "Embedders"
+description: "The five embedders context-grid ships, what each one costs and needs, and how to fit a query-side adapter on top of any of them."
+---
+
+An embedder turns text into a vector. Every embedder in context-grid has two methods, not one:
+
+```python
+from collections.abc import Sequence
+from contextgrid.embed.base import EmbeddingResult
+
+def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult: ...
+def embed_queries(self, texts: Sequence[str]) -> EmbeddingResult: ...
+```
+
+Some models were trained with a prefix in front of the text — E5 wants `query: ` on the
+question and `passage: ` on the document, BGE wants an instruction on the query and nothing on
+the document. Embed both sides the same way and nothing errors. The scores just come out a few
+points lower, uniformly, with nothing on the chart to say why. Keeping the two methods separate
+is what makes it possible to get this right without you having to remember it every time.
+
+Use `get_embedder` to build one from a spec string — the same string you'd put in a config file
+under `embedder:`:
+
+```python
+from contextgrid import get_embedder
+
+embedder = get_embedder("hash:512")
+```
+
+<Note>
+  In a real run, chunks come from your corpus through `build()` — see
+  [Build](/pipeline/build). The examples on this page construct a handful of chunks by hand so
+  each one runs on its own, with nothing else installed.
+</Note>
+
+## The five embedders
+
+`cg.EMBEDDERS.names()` returns `['hash', 'length', 'litellm', 'tei', 'tfidf']`.
+
+| Spec | Class | Extra | Needs a key | Dimensionality | Cost |
+|---|---|---|---|---|---|
+| `hash` | `HashEmbedder` | none | no | fixed — set by `dimensions` (default 256) | free, local |
+| `tfidf` | `TfidfEmbedder` | none | no | learned from your corpus — `0` until `.prepare()` runs | free, local |
+| `length` | `TokenCountEmbedder` | none | no | always `1` | free, local |
+| `litellm` | `LiteLLMEmbedder` | `llm` | yes — via `api_key_env` | whatever the provider returns (`0` = don't check) | paid — one API call per batch |
+| `tei` | `TEIEmbedder` | none | no | whatever the server returns (`0` = don't check) | no per-call charge, but you run and pay for the server |
+
+None of these classes are top-level (`cg.HashEmbedder` does not exist, for example) — reach
+them through `get_embedder("<spec>")`, or import the class directly from `contextgrid.embed`
+when you need to call a method the `Embedder` interface doesn't have, like `TfidfEmbedder.prepare()`.
+
+### `hash` — no model, no dependency
+
+```python
+from contextgrid import get_embedder
+
+hash_emb = get_embedder("hash:512")  # dimensions=512, seed=0 (shorthand: dimensions)
+print(hash_emb.name, hash_emb.dimensions, hash_emb.version, hash_emb.normalised)
+
+result = hash_emb.embed_documents([
+    "Refunds are issued within thirty days of purchase.",
+    "Shipping takes five to seven business days.",
+])
+print(result.vectors.shape, result.input_tokens)
+```
+
+Output:
+
+```
+hash 512 2 True
+(2, 512) 15
+```
+
+<ParamField path="dimensions" type="int" default="256">
+  Vector width. This is the shorthand parameter — `hash:512` means `dimensions=512`, not `seed`.
+</ParamField>
+<ParamField path="seed" type="int" default="0">
+  Two different seeds on the same text give two different, but each individually stable, sets
+  of vectors.
+</ParamField>
+
+`hash` hashes with `hashlib.blake2b`, not Python's built-in `hash()` — deliberately, because
+`hash()` is salted per process and would give a different vector for the same text on every
+run. That fix is why the class carries `version="2"`: it's baked into the cache key so an old
+run's vectors are never silently served back under the new scheme. Its job is to be the floor —
+a paid model that can't beat `hash` on your corpus isn't earning its cost.
+
+### `tfidf` — classical, and still competitive
+
+```python
+from contextgrid.embed import TfidfEmbedder
+
+docs = [
+    "Refunds are issued within thirty days of purchase.",
+    "Shipping takes five to seven business days.",
+]
+model = TfidfEmbedder()
+print(model.dimensions)  # 0 -- nothing learned yet
+
+try:
+    model.embed_documents(docs)
+except RuntimeError as e:
+    print(e)
+
+model.prepare(docs)  # learns the vocabulary
+print(model.dimensions)
+print(model.embed_documents(docs).vectors.shape)
+```
+
+Output:
+
+```
+0
+TfidfEmbedder.prepare() must be called with the corpus before embedding. It learns its vocabulary from the documents it will search.
+14
+(2, 14)
+```
+
+<ParamField path="max_features" type="int" default="4096">Vocabulary cap.</ParamField>
+<ParamField path="min_document_frequency" type="int" default="1">Drop terms rarer than this.</ParamField>
+<ParamField path="sublinear_tf" type="bool" default="True">Use `1 + log(tf)` instead of raw term frequency.</ParamField>
+
+`dimensions` is a property (`len(self._vocabulary)`), not a fixed number — it's `0` until
+`.prepare(documents)` has run, and calling either `embed_documents` or `embed_queries` first
+raises a plain `RuntimeError` (not a context-grid error class), on purpose: returning zero
+vectors would score as "this embedder is bad" rather than "it was never fitted." Queries are
+embedded against the **document** IDF, never their own — a query's own word statistics over one
+sentence mean nothing. On corpora with distinctive vocabulary (legal, medical, code), `tfidf`
+regularly beats a dense model that costs real money to run.
+
+### `length` — deliberately useless
+
+```python
+from contextgrid import get_embedder
+
+length = get_embedder("length")
+print(length.name, length.dimensions, length.normalised)
+print(length.embed_documents(["a short one", "a somewhat longer document than the first"]).vectors)
+```
+
+Output:
+
+```
+length 1 False
+[[3.]
+ [7.]]
+```
+
+One dimension: token count. No parameters. It exists so a sweep has something that should
+score near chance — if `length` wins, the scoring is broken, not whatever it's being compared to.
+
+### `litellm` — any hosted model, one interface
+
+Needs `pip install 'context-grid[llm]'`. `model` is the shorthand parameter.
+
+<ParamField path="model" type="str" default='""'>Required in practice — constructing with the default empty string raises immediately.</ParamField>
+<ParamField path="dimensions" type="int" default="0">`0` means "don't validate the width." If set and the provider returns a different width, that's a logged warning, not a stopped run — the width actually returned is what gets used.</ParamField>
+<ParamField path="batch_size" type="int" default="32" />
+<ParamField path="max_tokens" type="int | None" default="512" />
+<ParamField path="api_base" type="str | None" default="None" />
+<ParamField path="api_key_env" type="str | None" default="None">
+  The **name** of an environment variable, not the key itself — `api_key_env="OPENAI_API_KEY"`.
+  Keys are never read from a config file.
+</ParamField>
+<ParamField path="timeout" type="float" default="60.0" />
+<ParamField path="retries" type="int" default="2" />
+<ParamField path="query_prefix" type="str | None" default="None">
+  `None` means "look this model up." An explicit `""` means "this model needs no prefix" and
+  wins over the lookup — it is not the same as leaving the argument out.
+</ParamField>
+<ParamField path="document_prefix" type="str | None" default="None" />
+<ParamField path="normalise_vectors" type="bool" default="True" />
+
+An empty `model` (the default) raises `EmbedderError` immediately, before any network call —
+the shorthand form exists exactly to stop you constructing one with nothing to call:
+
+```python
+from contextgrid.embed import LiteLLMEmbedder, EmbedderError
+
+try:
+    LiteLLMEmbedder()  # model="" is the default
+except EmbedderError as e:
+    print(e)
+```
+
+Output:
+
+```
+litellm needs a model name, e.g. `embedder: litellm:bge-base-en-v1.5`
+```
+
+Real usage — a hosted model, a key from the environment, no config file secret:
+
+```python no-run: needs a real provider key and network access
+from contextgrid.embed import LiteLLMEmbedder
+
+embedder = LiteLLMEmbedder(model="text-embedding-3-small", api_key_env="OPENAI_API_KEY")
+result = embedder.embed_documents(["refunds take thirty days"])
+```
+
+Both `litellm` and `tei` accept a `transport` callable — given one batch of texts, it returns
+`(vectors, token_count)` and stands in for the network call entirely. This is how you exercise
+the whole embed pipeline — prefixes, dimension checks, batching — with no key, no server, and
+no real cost:
+
+```python
+from contextgrid.embed import LiteLLMEmbedder
+
+def fake_provider(batch):
+    """Stands in for a real API call -- no key, no network, no cost."""
+    return [[float(len(t)), 1.0, 0.0] for t in batch], 0
+
+embedder = LiteLLMEmbedder(model="fake-embedding-model", dimensions=8, transport=fake_provider)
+result = embedder.embed_documents(["refunds take thirty days"])
+print(result.vectors.shape)
+for w in result.warnings.entries:
+    print(w.severity.value, "-", w.message)
+```
+
+Output:
+
+```
+(1, 3)
+caution - nothing is known about whether 'fake-embedding-model' wants query and document prefixes, so none were added. If it was trained with them, every score for this arm is several points low. Set `query_prefix=` and `document_prefix=` explicitly, or silence this with `query_prefix=""`
+caution - litellm was configured for 8 dimensions but fake-embedding-model returned 3. Using 3; set `dimensions=3` to silence this
+```
+
+Neither of these stops the run. That's deliberate — a whole sweep failing because one model's
+prefix is unknown would be worse than a warning column that says so.
+
+### `tei` — a local server, no key, no extra
+
+```python
+from contextgrid import get_embedder
+
+tei = get_embedder("tei:bge-base-en-v1.5,api_base=http://localhost:8080")
+```
+
+Same parameters as `litellm`, except `api_base` defaults to `http://localhost:8080` and no
+extra is required — `tei` is reached over plain `urllib` from the standard library, so a
+running server plus `pip install context-grid` is enough.
+
+Start a server:
+
+```bash no-run: needs a running Docker daemon and pulls an image from ghcr.io
+docker run -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
+    --model-id BAAI/bge-base-en-v1.5
+```
+
+`model` here is a label the server doesn't enforce — call `.info()` (not part of the `Embedder`
+interface, an extra method on this class) before trusting a sweep, to confirm the server is
+actually running the weights you think it is:
+
+```python no-run: needs a running TEI server on localhost:8080
+from contextgrid.embed import TEIEmbedder
+
+tei = TEIEmbedder(model="bge-base-en-v1.5")
+print(tei.info())  # hits GET http://localhost:8080/info
+```
+
+TEI's `/embed` endpoint doesn't report token usage, and `input_tokens` reflects that honestly
+instead of guessing:
+
+```python
+from contextgrid.embed import TEIEmbedder
+
+def fake_server(batch):
+    """Stands in for a running TEI server -- no docker, no network."""
+    return [[float(len(t)), 1.0, 0.0] for t in batch], 0
+
+embedder = TEIEmbedder(model="bge-base-en-v1.5", dimensions=3, transport=fake_server)
+docs = embedder.embed_documents(["refunds take thirty days"])
+queries = embedder.embed_queries(["how long for a refund"])
+print(docs.input_tokens, queries.input_tokens)
+```
+
+Output:
+
+```
+0 0
+```
+
+<Tip>
+  A local model's real cost is machine time, which the cost model prices from the clock, not
+  from a token count it would have to guess. See [Cost](/reference/cost).
+</Tip>
+
+## Query-side adapters
+
+An embedding model puts questions and their answers in the same space, but not in the same
+*part* of it — a question and its answer are worded differently and land apart. A `LinearAdapter`
+is one small matrix, fitted with ridge regression, that nudges **query** vectors toward where
+their answers actually sit. Document vectors are never touched, so the index never needs
+rebuilding.
+
+Two things make this worth doing:
+
+- **The training data already exists.** An eval set is a list of (question, evidence) pairs —
+  exactly a training set of positives.
+- **The hard negatives already exist too.** A sweep surfaces chunks that ranked highly and
+  weren't the answer — near-misses, which teach an adapter far more than a random negative would.
+
+<Steps>
+  <Step title="Mine triplets from a completed run">
+    `mine_triplets` reads positives from your eval set's gold, and negatives from chunks that
+    ranked in the run without being gold.
+  </Step>
+  <Step title="Split into train and held-out">
+    `split_triplets` — fitting and scoring on the same questions flatters the adapter, so keep a
+    held-out half.
+  </Step>
+  <Step title="Fit">
+    `fit_adapter` embeds the triplets and solves for the matrix in one call.
+  </Step>
+  <Step title="Wrap the base embedder">
+    `AdaptedEmbedder(base=embedder, adapter=adapter)` — same `Embedder` interface, queries go
+    through the adapter, documents pass straight through.
+  </Step>
+</Steps>
+
+```python
+from contextgrid import (
+    Chunk, Span, EvalItem, EvalSet, get_embedder, get_index,
+    mine_triplets, split_triplets, fit_adapter, AdaptedEmbedder, LinearAdapter,
+)
+
+DOCS = [
+    ("c1", "Refunds are issued within thirty days of purchase."),
+    ("c2", "The X-Api-Key header must be set on every request."),
+    ("c3", "Shipping takes five to seven business days for standard orders."),
+    ("c4", "Overnight shipping is available for an extra fee."),
+    ("c5", "Rotate your API key every ninety days for security."),
+    ("c6", "Contact support if a package arrives damaged."),
+    ("c7", "International orders take ten to fourteen business days."),
+    ("c8", "Store API keys in an environment variable, never in code."),
+]
+chunks = {cid: Chunk(id=cid, span=Span(cid, 0, len(t)), text=t) for cid, t in DOCS}
+
+# question id, question text, id of the chunk that answers it
+QUESTIONS = [
+    ("q1", "how long until I get my money back", "c1"),
+    ("q2", "which header carries the api key", "c2"),
+    ("q3", "how long does standard shipping take", "c3"),
+    ("q4", "can I pay more for faster delivery", "c4"),
+    ("q5", "how often should I rotate my api key", "c5"),
+    ("q6", "what do I do if my order shows up broken", "c6"),
+    ("q7", "how long for a package from another country", "c7"),
+    ("q8", "where should an api key be stored", "c8"),
+]
+evalset = EvalSet(id="demo", items=tuple(EvalItem(id=qid, question=q) for qid, q, _ in QUESTIONS))
+qrels = {qid: {gold_id: 2} for qid, _, gold_id in QUESTIONS}  # grade 2 = fully answers
+
+# a real run: search every question against a dense index built on the corpus
+embedder = get_embedder("hash:64")
+chunk_ids = list(chunks)
+vectors = embedder.embed_documents([chunks[cid].text for cid in chunk_ids]).vectors
+index = get_index("dense:cosine")
+index.build(list(chunks.values()), vectors)
+
+run = {}
+for qid, question, _ in QUESTIONS:
+    query_vector = embedder.embed_queries([question]).vectors[0]
+    run[qid] = [scored.chunk_id for scored in index.search(question, query_vector, k=5)]
+
+triplets = mine_triplets(evalset, qrels, run, chunks, negatives_per_query=2)
+print(f"mined {len(triplets)} triplets from {len(evalset)} questions")
+print(triplets[0])
+
+train, held_out = split_triplets(triplets, fraction=0.5, seed=0)
+print(f"train={len(train)} held_out={len(held_out)}")
+
+adapter = fit_adapter(embedder, train, strength=0.15)
+adapted = AdaptedEmbedder(base=embedder, adapter=adapter)
+print(adapted.name, "is_fitted:", adapter.is_fitted)
+
+plain = embedder.embed_queries(["how long for a refund"]).vectors
+nudged = adapted.embed_queries(["how long for a refund"]).vectors
+print("query vector changed:", not (plain == nudged).all())
+
+# the same fit, but through LinearAdapter directly, to see the report
+report = LinearAdapter(strength=0.15).fit(
+    embedder.embed_queries([t.query for t in train]).vectors,
+    embedder.embed_documents([t.positive for t in train]).vectors,
+)
+print(report.summary())
+for warning in report.warnings():
+    print("-", warning)
+```
+
+Output:
+
+```
+mined 8 triplets from 8 questions
+Triplet(query='how long until I get my money back', positive='Refunds are issued within thirty days of purchase.', negatives=('The X-Api-Key header must be set on every request.', 'Shipping takes five to seven business days for standard orders.'))
+train=4 held_out=4
+hash+adapter is_fitted: True
+query vector changed: True
+adapter fitted on 4 pairs and 0 hard negatives, moving query vectors by 0.167 on average. Trained on the same questions it is scored on.
+- This adapter was fitted on the same questions it is being scored on, so its score is optimistic and should not be compared with the other arms as though it were not. Fit it on a held-out split before believing the gain.
+- 4 pairs for 64 dimensions is a thin fit. The ridge term is carrying most of the solution, and the gain may not survive contact with queries unlike these.
+```
+
+`AdaptedEmbedder.embed_documents()` is a pure passthrough to the base embedder — untouched, by
+design. `.embed_queries()` applies the adapter only if `adapter.is_fitted`; otherwise it passes
+through unmodified, silently.
+
+<Warning>
+  **Default `strength=0.15` is low on purpose.** On the package's own benchmark (33 documents,
+  36 pairs, held-out half): `strength=0.1` gained **+0.081** recall@5; `strength=1.0` lost
+  **0.216**; a large ridge term lost **0.649**. An adapter fitted on a few dozen pairs should
+  nudge a query, not replace it — raising `strength` casually makes things worse, not better.
+
+  **It's for dense embeddings only.** The same procedure measured **-0.027 to -0.230** at every
+  setting tried on `tfidf`. A dense linear map over a sparse lexical space destroys the sparsity
+  that made TF-IDF work — don't fit an adapter on it.
+</Warning>
+
+### More ways this can fail
+
+```python
+from contextgrid.embed import LinearAdapter, AdapterError
+import numpy as np
+
+try:
+    LinearAdapter(strength=1.5)
+except AdapterError as e:
+    print("strength:", e)
+
+try:
+    LinearAdapter(ridge=0)
+except AdapterError as e:
+    print("ridge:", e)
+
+adapter = LinearAdapter()
+try:
+    adapter.apply(np.zeros((1, 4)))
+except AdapterError as e:
+    print("apply before fit:", e)
+
+try:
+    adapter.fit(np.zeros((1, 4)), np.zeros((1, 4)))  # only one pair
+except AdapterError as e:
+    print("too few pairs:", e)
+```
+
+Output:
+
+```
+strength: strength must be between 0 and 1, got 1.5
+ridge: ridge must be positive, got 0. It is what keeps a fit on a few dozen pairs from being wildly overconfident.
+apply before fit: the adapter has not been fitted yet
+too few pairs: an adapter needs at least two pairs to fit, got 1
+```
+
+`mine_triplets` skips (silently, not an error) any eval item with nothing relevant in `qrels`,
+and any item whose positive chunk id isn't in the `chunks` mapping — a small or odd eval set can
+produce fewer triplets than eval items. `fit_adapter` and `LinearAdapter.fit` both raise
+`AdapterError` below two pairs, since a ridge fit on one pair or zero has nothing to solve.
+
+`split_triplets(triplets, fraction=0.5, seed=0)` computes `cut = max(1, int(len(triplets) *
+fraction))` — the `max(1, ...)` floor means the training half is guaranteed at least one
+triplet, but with very few triplets the held-out half can end up empty even when you asked for a
+50/50 split. `fraction` outside `(0, 1)` raises `AdapterError`.
+
+`AdapterReport` and `AdapterError` are not top-level (`cg.AdapterReport` doesn't exist) — import
+both from `contextgrid.embed`. `Triplet`, `mine_triplets`, `split_triplets`, `fit_adapter`,
+`LinearAdapter`, and `AdaptedEmbedder` all are: `from contextgrid import ...` works for those six.
+
+See [Indexes](/axes/indexes) for what holds the vectors an embedder produces, and
+[Retrieval](/axes/retrieval) for how many searches run against it.
+
+Wrapping your own model — proprietary, fine-tuned, or just not one of the five above? See
+[Writing a Custom Plugin](/concepts/plugins) for how to implement the `Embedder` protocol and
+register it so it shows up in a sweep.

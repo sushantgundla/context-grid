@@ -1,0 +1,369 @@
+---
+title: "Query Transforms"
+description: "What each of the six query transforms does to a question, which need a model, and the TransformedQuery every one of them returns."
+---
+
+A transform rewrites the question before it's searched with. Retrieval fails most often because
+the user's words and the document's words don't match — someone asks "how long before I can walk
+away?" and the contract says "termination for convenience on thirty days written notice." They
+share almost no vocabulary. Every transform on this axis is an attempt to close that gap, one way
+or another.
+
+Set it with `transform` in `Config`, or `grid.transform` in a config file:
+
+```python
+from contextgrid.transform import TRANSFORMS, get_transform
+
+TRANSFORMS.names()
+```
+
+```
+['expand', 'none']
+```
+
+Only `none` and `expand` are in that registry. The other four transforms are model-backed and
+can't be built from a bare spec string — more on why below.
+
+Every transform's `.transform(query)` returns the same shape, `TransformedQuery`:
+
+<ResponseField name="original" type="str">
+The question exactly as asked.
+</ResponseField>
+<ResponseField name="queries" type="tuple[str, ...]">
+What actually gets searched with — one query for `none`, more for anything that fans out.
+</ResponseField>
+<ResponseField name="llm_calls" type="int" default="0">
+Model calls this transform spent.
+</ResponseField>
+<ResponseField name="llm_tokens" type="int" default="0">
+Tokens this transform spent.
+</ResponseField>
+<ResponseField name="fan_out" type="int">
+Property. `len(queries)` — how many searches this question now costs.
+</ResponseField>
+<ResponseField name="is_identity" type="bool">
+Property. `True` when `queries == (original,)` — nothing was actually rewritten.
+</ResponseField>
+
+## The cost that never goes away
+
+Four of the six transforms need a model call. That cost isn't like chunking or embedding, which
+you pay once when you build the index — it's paid **on every query, forever**. So the real
+question is never "does HyDE help?" — it's "does HyDE help *enough to justify a model call on
+every query, forever*?" Often the answer is no, and that's a real finding, not a disappointment.
+
+`none` — searching with the question exactly as asked — is the arm every other transform has to
+beat. It isn't a placeholder: most transforms don't clear their own cost, and you can't show that
+without `none` sitting on the same chart with the same cost column.
+
+Every transform reports what it spent, so a sweep can attribute the cost to the configuration
+that caused it:
+
+```python
+from contextgrid.evalset.llm import RecordingLLM
+from contextgrid.transform import get_transform, describe_cost
+
+llm = RecordingLLM(default="Either party may terminate on thirty days written notice.")
+t = get_transform("hyde", llm=llm)
+result = t.transform("How much notice is needed to terminate for convenience?")
+result.queries
+```
+
+```
+('How much notice is needed to terminate for convenience?', 'Either party may terminate on thirty days written notice.')
+```
+
+```python
+result.fan_out, result.llm_calls
+```
+
+```
+(2, 1)
+```
+
+```python
+describe_cost([result])
+```
+
+```
+1.0 model calls and 2.0 searches per question, on every query forever
+```
+
+`RecordingLLM` is a fake `LLM` that returns scripted text instead of calling a real provider — it
+ships with the package for exactly this: writing runnable examples, and tests, with no key and no
+network. `fan_out` is how many searches this one question now costs — each query in
+`TransformedQuery.queries` gets searched separately and the results are fused, a real cost in
+latency as well as tokens.
+
+## Why the model-backed ones aren't in the registry
+
+`none` and `expand` build from a plain spec string, no model required, so they live in the
+ordinary plugin registry (`contextgrid.transform.TRANSFORMS`). `hyde`, `multi-query`, `decompose`
+and `step-back` don't — a transform built with no model would silently fall back to doing
+nothing, and a config that *looks* like it's testing HyDE while testing nothing is worse than an
+error.
+
+```python
+from contextgrid.transform import get_transform, available_transforms, MODEL_BACKED
+
+available_transforms()
+```
+
+```
+('decompose', 'expand', 'hyde', 'multi-query', 'none', 'step-back')
+```
+
+```python
+MODEL_BACKED
+```
+
+```
+('hyde', 'multi-query', 'decompose', 'step-back')
+```
+
+```python
+get_transform("hyde")
+```
+
+```
+Traceback (most recent call last):
+    ...
+contextgrid.evalset.llm.LLMError: the 'hyde' transform needs a model. Set `run.model` in your config, or use one of the model-free transforms: expand, none
+```
+
+<Note>
+`available_transforms` and `MODEL_BACKED` are exported from `contextgrid.transform` but not from
+top-level `contextgrid` — there's no `contextgrid.available_transforms`. `TRANSFORMS`, `HyDE`,
+`MultiQuery`, `Decompose`, `StepBack`, `ExpandAcronyms`, `NoTransform`, `TransformedQuery` and
+`get_transform`, on the other hand, all *are* on `contextgrid` — `from contextgrid import HyDE`
+works.
+</Note>
+
+In a config file, the model comes from `run.model` — one name, so every model-backed transform,
+plus the LLM-backed ingestion strategies and the generation judge, share one key and one price:
+
+```yaml
+grid:
+  transform: [null, hyde, multi-query]
+
+run:
+  model: openai:gpt-4o-mini
+```
+
+## The six transforms
+
+| name | spec | needs a model | what it does |
+|---|---|---|---|
+| `none` | `none` | no | Search with the question as asked. The arm to beat. |
+| `expand` | `expand` | no | Spell out configured acronyms before searching. |
+| `hyde` | `hyde` | yes | Invent a hypothetical answer and search with that instead of the question. |
+| `multi-query` | `multi-query` or `multi-query:5` | yes | Paraphrase the question several ways and fuse the results. |
+| `decompose` | `decompose` or `decompose:2` | yes | Split a compound question into sub-questions. |
+| `step-back` | `step-back` | yes | Add a more general question alongside the specific one. |
+
+### `none` — `NoTransform`
+
+```python
+from contextgrid import NoTransform
+
+NoTransform()
+```
+
+Returns the question unchanged — `TransformedQuery(original=query, queries=(query,))`. Zero
+model calls, zero fan-out.
+
+### `expand` — `ExpandAcronyms`
+
+No model, and free. Unglamorous, but it moves lexical-search scores more than most of the fancier
+transforms below — a corpus that says "recovery point objective" won't be found by a query that
+says "RPO," and no embedding fixes a term the model has never seen.
+
+<ParamField path="expansions" type="dict[str, str]" default="{}">
+Short form to long form, e.g. `{"RPO": "recovery point objective"}`.
+</ParamField>
+
+It appends the expansion next to the abbreviation rather than replacing it, so the acronym stays
+searchable too:
+
+```python
+from contextgrid import ExpandAcronyms
+
+ExpandAcronyms(expansions={"RPO": "recovery point objective"}).transform("What is our RPO?").queries
+```
+
+```
+('What is our RPO recovery point objective?',)
+```
+
+With no expansions configured, or nothing in the query to expand, it's the identity —
+`is_identity` is `True` and no extra query is produced:
+
+```python
+r = ExpandAcronyms().transform("What is our RPO?")
+r.queries, r.is_identity
+```
+
+```
+(('What is our RPO?',), True)
+```
+
+### `hyde` — `HyDE`
+
+<ParamField path="llm" type="LLM" required>
+Required, no default.
+</ParamField>
+<ParamField path="include_question" type="bool" default="True">
+Keep the original question alongside the invented passage.
+</ParamField>
+<ParamField path="max_tokens" type="int" default="200">
+Cap on the invented passage.
+</ParamField>
+
+Searches with a hypothetical *answer* rather than the question. A question and its real answer
+share little vocabulary; a plausible fake answer and the real one usually share a lot. So the
+model invents a short passage that would answer the question, and that passage — not the
+question — gets embedded and searched:
+
+```python
+from contextgrid import HyDE
+
+hyde_llm = RecordingLLM(default="Either party may terminate the agreement on thirty days written notice.")
+HyDE(llm=hyde_llm).transform("How much notice is needed to terminate for convenience?").queries
+```
+
+```
+('How much notice is needed to terminate for convenience?', 'Either party may terminate the agreement on thirty days written notice.')
+```
+
+It works best where the model already knows the domain, and worst where it doesn't — on internal
+jargon it invents confident nonsense matching nothing in the corpus. Keeping
+`include_question=True` (the default) hedges that failure: when the invention is nonsense, the
+real question is still in the fused results.
+
+### `multi-query` — `MultiQuery`
+
+<ParamField path="llm" type="LLM" required>
+Required, no default.
+</ParamField>
+<ParamField path="variants" type="int" default="3">
+How many paraphrases to generate. `multi-query:5` sets `variants=5`.
+</ParamField>
+<ParamField path="max_tokens" type="int" default="250">
+Cap on the model's reply.
+</ParamField>
+
+Asks the same question several different ways and fuses the results. The most reliable of these
+transforms and the least clever — it doesn't need the model to know anything about the domain,
+only to paraphrase:
+
+```python
+import json
+from contextgrid import MultiQuery
+
+mq_llm = RecordingLLM(replies=[json.dumps(["how long is notice", "what is the notice period"])])
+result = MultiQuery(llm=mq_llm, variants=2).transform("How much notice is needed to terminate for convenience?")
+result.fan_out
+```
+
+```
+3
+```
+
+### `decompose` — `Decompose`
+
+<ParamField path="llm" type="LLM" required>
+Required, no default.
+</ParamField>
+<ParamField path="max_parts" type="int" default="3">
+Cap on how many sub-questions come back. `decompose:2` sets `max_parts=2`.
+</ParamField>
+<ParamField path="max_tokens" type="int" default="250">
+Cap on the model's reply.
+</ParamField>
+
+The only one of these that fixes a *structural* failure rather than a vocabulary one. "Which
+vendor has the shortest notice period and what is their monthly fee?" can't be answered by any
+single passage, however well it's embedded — the question itself has to become two:
+
+```python
+from contextgrid import Decompose
+
+dc_llm = RecordingLLM(replies=[json.dumps(["what is the notice period", "is there an early termination fee"])])
+Decompose(llm=dc_llm, max_parts=2).transform(
+    "What is the notice period and is there an early termination fee?"
+).queries
+```
+
+```
+('what is the notice period', 'is there an early termination fee')
+```
+
+Duplicate sub-questions are dropped.
+
+### `step-back` — `StepBack`
+
+<ParamField path="llm" type="LLM" required>
+Required, no default.
+</ParamField>
+<ParamField path="max_tokens" type="int" default="120">
+Cap on the model's reply.
+</ParamField>
+
+Asks the more general question alongside the specific one — "what is Northwind's notice period?"
+becomes "what do the termination clauses say?" as well. It helps when the specific answer sits
+inside a passage about the general topic, and hurts when the general query drags in every
+document that mentions termination:
+
+```python
+from contextgrid import StepBack
+
+sb_llm = RecordingLLM(default="What do the termination clauses say?")
+StepBack(llm=sb_llm).transform("What is Northwind's notice period?").queries
+```
+
+```
+("What is Northwind's notice period?", 'What do the termination clauses say?')
+```
+
+If the model just repeats the question back, `StepBack` treats that as a no-op and returns the
+identity.
+
+## Failure handling, uniformly
+
+Every model-backed transform degrades to `NoTransform`'s behavior — search with the original
+question — when the model call errors, returns nothing usable, or returns something that doesn't
+parse as expected:
+
+```python
+fail_llm = RecordingLLM(default="I'm sorry, I can't help with that.")
+result = MultiQuery(llm=fail_llm, variants=2).transform("How much notice is needed?")
+result.queries, result.is_identity, result.llm_calls
+```
+
+```
+(('How much notice is needed?',), True, 0)
+```
+
+Searching with an empty query would score zero and *look like* a retrieval failure; falling back
+to the original question means a broken transform costs a wasted model call, not a corrupted
+result. And `llm_calls` is `0` in this fallback case too — a failing transform is invisible in the
+cost report unless you also check `is_identity`.
+
+## What ends up in the config
+
+```yaml
+grid:
+  transform: [null, expand, hyde, "multi-query:5", decompose, step-back]
+
+run:
+  model: openai:gpt-4o-mini   # supplies the model to hyde, multi-query, decompose, step-back
+```
+
+`null` in YAML is `None` in Python, which `get_transform` treats the same as `"none"` — no
+rewriting.
+
+## See also
+
+- [Rerankers](/axes/rerankers) — what happens to the results after a search runs.
+- [Retrieval Strategies](/axes/retrieval) — how the rewritten queries are actually searched with.
+- [The Ten Axes](/axes/overview) — where `transform` sits among the other nine.

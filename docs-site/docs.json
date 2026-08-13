@@ -1,0 +1,110 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "context-grid",
+  "colors": {
+    "primary": "#0D9488",
+    "light": "#14B8A6",
+    "dark": "#0F766E"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "index",
+          "quickstart",
+          "installation"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/overview",
+          "concepts/spans-and-offsets",
+          "concepts/config",
+          "concepts/corpus",
+          "concepts/plugins"
+        ]
+      },
+      {
+        "group": "The Lab",
+        "pages": [
+          "lab/overview",
+          "lab/grid",
+          "lab/running",
+          "lab/results"
+        ]
+      },
+      {
+        "group": "One Pipeline",
+        "pages": [
+          "pipeline/build",
+          "pipeline/search",
+          "pipeline/answer"
+        ]
+      },
+      {
+        "group": "Axes",
+        "pages": [
+          "axes/overview",
+          "axes/parsers",
+          "axes/chunkers",
+          "axes/embedders",
+          "axes/indexes",
+          "axes/rerankers",
+          "axes/transforms",
+          "axes/retrieval",
+          "axes/ingestion",
+          "axes/generation"
+        ]
+      },
+      {
+        "group": "Eval Sets",
+        "pages": [
+          "evalsets/overview",
+          "evalsets/loading",
+          "evalsets/generating",
+          "evalsets/quality"
+        ]
+      },
+      {
+        "group": "Scoring",
+        "pages": [
+          "scoring/metrics",
+          "scoring/significance",
+          "scoring/diagnostics"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli",
+          "reference/cost",
+          "reference/caching",
+          "reference/reports",
+          "reference/errors",
+          "reference/api"
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/sushantgundla/context-grid"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Get Started",
+      "href": "/quickstart"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/sushantgundla/context-grid"
+    }
+  }
+}

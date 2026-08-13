@@ -1,0 +1,344 @@
+---
+title: "Running a Sweep"
+description: "What lab.run() needs and returns, what the seed and the cache actually reproduce, and how it handles a configuration that fails."
+---
+
+```python no-run: signature shown for reference, not a runnable statement
+lab.run(
+    evalset: EvalSet,
+    *,
+    mode: SweepMode | str = SweepMode.OFAT,
+    budget_seconds: float | None = None,
+    budget_usd: float | None = None,
+    headline: str = "recall@5",
+    metrics: Sequence[str] = (),
+    on_progress: Any = None,
+) -> Results
+```
+
+`lab.run()` needs two things already in place: a matrix from `lab.grid()` (or the default,
+single-baseline matrix if you never called it), and an `EvalSet` — real questions with ground
+truth, not the corpus itself. It builds every configuration the matrix and `mode` produce,
+answers every question in the eval set against each one, scores them, and returns a `Results`.
+
+Every example on this page uses the same eight-document corpus and thirteen-question eval set,
+built inline so it runs on its own:
+
+```python
+import contextgrid as cg
+
+DOCS = {
+    "billing.md": (
+        "# Billing\n\n"
+        "Invoices are generated on the first day of each calendar month and emailed to the "
+        "account owner as a PDF. A failed card payment is retried automatically three times "
+        "over six days before the subscription is marked past due. Once an account is thirty "
+        "days past due, API access is suspended until the balance is paid, though the "
+        "dashboard itself stays reachable so an admin can update the card on file.\n\n"
+        "Storage overage is billed monthly and measured as the average of hourly samples "
+        "across the billing period rather than the peak usage seen at any single moment. "
+        "Customers on the annual plan are billed once a year and get a ten percent discount "
+        "against the monthly price.\n"
+    ),
+    "pricing.md": (
+        "# Pricing\n\n"
+        "The starter plan includes 10,000 API calls per month and 5 GB of storage for 29 "
+        "dollars. The growth plan raises the call limit to 250,000 per month and storage to "
+        "100 GB for 199 dollars. Overage on API calls is billed at 0.002 dollars per call "
+        "above the plan limit, rounded up to the nearest thousand calls.\n\n"
+        "Every plan includes a fourteen day free trial that does not require a credit card up "
+        "front. A card is only requested when the trial converts to a paid plan or when a "
+        "customer explicitly upgrades before the trial ends.\n"
+    ),
+    "sso-setup.md": (
+        "# SSO Setup\n\n"
+        "Single sign-on is configured from the security tab in workspace settings, and is "
+        "available on the growth plan and above. The workspace admin uploads an identity "
+        "provider metadata file, and the system generates a service provider metadata file in "
+        "return that the identity provider needs.\n\n"
+        "Once SSO is enabled, members can still sign in with a password for thirty days as a "
+        "fallback, after which password login is disabled for that workspace entirely, with "
+        "one deliberate exception: it does not apply to the account Owner, who can always sign "
+        "in with a password even after the fallback window closes.\n"
+    ),
+    "api-authentication.md": (
+        "# API Authentication\n\n"
+        "Requests are authenticated with a personal access token, sent in the Authorization "
+        "header as a bearer token. Tokens do not expire by default, but a workspace admin can "
+        "set a maximum token age in the security settings, after which every token older than "
+        "that age stops working on its next use.\n\n"
+        "The API allows 100 requests per minute per token. Exceeding this limit returns a 429 "
+        "status code along with a Retry-After header naming the number of seconds to wait "
+        "before trying again.\n"
+    ),
+    "data-export.md": (
+        "# Data Export\n\n"
+        "A full data export can be requested from the settings page and is delivered as a "
+        "download link sent by email once it finishes building. Exports over 1 GB are split "
+        "into multiple files rather than one large archive, because a single file above that "
+        "size fails to download reliably in some browsers.\n\n"
+        "Export links expire after seven days, after which the export must be requested again "
+        "from scratch. There is no limit on how many exports a workspace can request in a "
+        "month.\n"
+    ),
+    "uptime-and-status.md": (
+        "# Uptime and Status\n\n"
+        "The service targets 99.9 percent uptime measured over each calendar month, and actual "
+        "uptime is published on the public status page along with a rolling twelve month "
+        "history. A incident is only logged on the status page once it has affected more than "
+        "one percent of workspaces for longer than five minutes.\n\n"
+        "Scheduled maintenance windows are announced on the status page at least 72 hours in "
+        "advance and are excluded from the uptime calculation entirely, whether or not they "
+        "run over their announced length.\n"
+    ),
+    "closing-your-account.md": (
+        "# Closing Your Account\n\n"
+        "An account can be closed from the account settings page by the account owner only. "
+        "Closing an account cancels any active subscription immediately rather than at the end "
+        "of the current billing period, and no partial refund is issued for unused days.\n\n"
+        "All data is retained for thirty days after closure in case the decision is reversed, "
+        "and is permanently deleted on the thirty first day with no further recovery window "
+        "after that point.\n"
+    ),
+    "deleting-a-workspace.md": (
+        "# Deleting a Workspace\n\n"
+        "Deleting a workspace is separate from closing an account, since one account can hold "
+        "several workspaces. A workspace can be deleted by any admin, not only the owner, once "
+        "every other member has been removed from it first.\n\n"
+        "A deleted workspace's name is held in reserve for ninety days before it can be reused "
+        "by a new workspace, to avoid a stale integration accidentally pointing at the wrong "
+        "place during that window.\n"
+    ),
+}
+
+QUESTIONS = [
+    ("q1", "How many times is a failed card payment retried?", "billing.md",
+     "retried automatically three times over six days", "billing"),
+    ("q2", "How is storage overage measured for billing?", "billing.md",
+     "measured as the average of hourly samples across the billing period rather than the peak usage", "billing"),
+    ("q3", "What discount does the annual plan get?", "billing.md",
+     "get a ten percent discount against the monthly price", "billing"),
+    ("q4", "How much does API overage cost per call on the growth plan?", "pricing.md",
+     "billed at 0.002 dollars per call above the plan limit", "billing"),
+    ("q5", "Does the free trial require a credit card up front?", "pricing.md",
+     "does not require a credit card up front", "billing"),
+    ("q6", "Who can still sign in with a password after SSO's fallback window closes?", "sso-setup.md",
+     "it does not apply to the account Owner, who can always sign in with a password", "sso"),
+    ("q7", "What happens to API tokens older than the configured maximum age?", "api-authentication.md",
+     "every token older than that age stops working on its next use", "api"),
+    ("q8", "What status code does the API return when the rate limit is exceeded?", "api-authentication.md",
+     "Exceeding this limit returns a 429 status code", "api"),
+    ("q9", "Why are exports over 1 GB split into multiple files?", "data-export.md",
+     "a single file above that size fails to download reliably in some browsers", "export"),
+    ("q10", "How long until a data export link expires?", "data-export.md",
+     "Export links expire after seven days", "export"),
+    ("q11", "How far in advance is scheduled maintenance announced?", "uptime-and-status.md",
+     "announced on the status page at least 72 hours in advance", "reliability"),
+    ("q12", "Who can close an account?", "closing-your-account.md",
+     "can be closed from the account settings page by the account owner only", "account"),
+    ("q13", "How long is a deleted workspace's name held in reserve?", "deleting-a-workspace.md",
+     "held in reserve for ninety days before it can be reused", "account"),
+]
+
+corpus = cg.Corpus.from_texts(DOCS, media_type=cg.MediaType.MARKDOWN)
+evalset = cg.EvalSet(
+    id="support-kb",
+    items=tuple(
+        cg.EvalItem(
+            id=qid, question=question,
+            anchors=(cg.GoldAnchor(source_id=source, quote=quote),),
+            qtype=qtype,
+        )
+        for qid, question, source, quote, qtype in QUESTIONS
+    ),
+)
+```
+
+## What it returns, and how long it takes
+
+```python
+lab = cg.Lab(corpus=corpus)
+lab.grid(
+    chunker=["recursive:512", "recursive:16"],
+    index=["dense", "bm25"],
+    reranker=[None, "lexical"],
+)
+results = lab.run(evalset, mode="factorial")
+print(type(results).__name__, "-", len(results.runs), "runs")
+```
+
+```text
+Results - 8 runs
+```
+
+`Results` is a `list`-like container of `RunResult`, one per configuration — see
+[Reading Results](/lab/results) for everything it can do. On this eight-configuration,
+thirteen-question, all-local sweep the whole thing runs in well under a second; every stage
+here is TF-IDF, BM25 and a lexical reranker, none of it a network call. A sweep with a hosted
+embedder or an `llm` generator is dominated by those calls instead, which is exactly what
+`lab.estimate()` and `budget_usd` (below) exist to bound in advance — see
+[Defining a Sweep](/lab/grid).
+
+## The seed: what it does and does not reproduce
+
+`cg.Lab(corpus, seed=...)` (default `0`) is carried onto `Results.seed` and every
+`RunResult.seed`. It is the resampling seed for `interval()`, `significance()` and
+`is_the_winner_real()` — the bootstrap and permutation tests that turn a bare score into a
+confidence interval or a p-value. The same seed on the same scores reproduces the same
+interval and the same verdict:
+
+```python
+lab = cg.Lab(corpus=corpus, seed=7)
+lab.grid(chunker=["recursive:512", "recursive:16"], index="dense")
+results = lab.run(evalset, mode="ofat")
+print("results.seed:", results.seed)
+run = results.get("markdown · recursive:16 · tfidf · dense")
+print("run.seed:", run.seed)
+print("run.interval():", run.interval())
+```
+
+```text
+results.seed: 7
+run.seed: 7
+run.interval(): 0.808 [0.577, 1.000]
+```
+
+<Warning>
+That is **all** the seed touches. It does not make retrieval itself stochastic-safe or
+deterministic beyond whatever the plugins in that configuration already are — a hosted
+embedder, an `agentic` retrieval strategy, or an `llm` generator can still answer differently
+between two runs of the identical matrix, seed included, because none of those read this seed
+at all. On an all-local sweep like the one above there is nothing stochastic to begin with, so
+the metrics themselves are already reproducible without the seed doing any work.
+</Warning>
+
+## Caching between runs
+
+A `Lab` gets a `MemoryCache()` by default (unless you pass `cache=`), and parses, chunks and
+embeddings are reused across every configuration in a sweep that shares them — sweeping
+`reranker` across one chunker embeds exactly once, not once per reranker. Run the *same*
+matrix again through the *same* `Lab`, and the second run is a cache hit end to end:
+
+```python
+lab = cg.Lab(corpus=corpus)
+lab.grid(
+    chunker=["recursive:512", "recursive:16"],
+    index=["dense", "bm25"],
+    reranker=[None, "lexical"],
+)
+
+r1 = lab.run(evalset, mode="factorial")
+print("first run: ", r1.cache_summary)
+
+r2 = lab.run(evalset, mode="factorial")
+print("second run:", r2.cache_summary)
+```
+
+```text
+first run:  106 of 132 lookups reused (80%), chunk 48/64, embed 2/4, parse 56/64
+second run: 132 of 132 lookups reused (100%), chunk 64/64, embed 4/4, parse 64/64
+```
+
+The 80% on the *first* run is prefix sharing within the sweep itself — four configurations
+share the `recursive:512` chunker's parse and embeddings, the other four share `recursive:16`'s.
+The 100% on the second run is because nothing changed at all: same corpus, same matrix, same
+cache instance still warm in memory.
+
+<Warning>
+`cg.DiskCache(root=...)` exists to keep that reuse across separate Python processes, and its
+own docstring says so. Verified against a fresh, empty cache directory, though,
+`cg.Lab(corpus, cache=cg.DiskCache(root="./somewhere"))` does **not** end up using it: a
+`DiskCache` with nothing written to it yet is falsy (`len(cache) == 0`), and `Lab.__init__`
+picks a cache with `cache or MemoryCache()` — so an empty `DiskCache`, which is what every
+first run starts with, is silently swapped out for an in-memory one instead. Nothing is ever
+written to disk through this path as a result, on any process, because the directory never
+stops being empty. Building a `Runner` directly with `cache=` (see [`contextgrid.grid.Runner`](/reference/api))
+does not have this problem — only `Lab`'s constructor does.
+</Warning>
+
+## Bounding a sweep: `budget_seconds` and `budget_usd`
+
+Cost is charged **after** each configuration finishes, not predicted before it — an `agentic`
+retrieval strategy decides its own number of model calls, so there is no way to know a
+configuration's true cost until it has actually run. A budget is honoured to within one
+configuration, and the sweep stops with a partial `Results` and a warning rather than
+finishing over budget:
+
+```python
+lab = cg.Lab(corpus=corpus)
+lab.grid(
+    chunker=["recursive:512", "recursive:16"],
+    index=["dense", "bm25"],
+    reranker=[None, "lexical"],
+)
+results = lab.run(evalset, mode="factorial", budget_seconds=0.0001)
+print(len(results.runs), "of 8 configurations ran")
+for w in results.warnings:
+    if w.code.name == "BUDGET_REACHED":
+        print(w.message)
+```
+
+```text
+1 of 8 configurations ran
+stopped after 1 of 8 configurations: the 0.0001s budget ran out. The leaderboard below is partial
+```
+
+## Watching it run: `on_progress`
+
+```python
+def on_progress(done, total, config):
+    print(f"[{done}/{total}] {config.label}")
+
+lab = cg.Lab(corpus=corpus)
+lab.grid(chunker=["recursive:512", "recursive:16"], index="dense")
+results = lab.run(evalset, mode="ofat", on_progress=on_progress)
+```
+
+```text
+[1/2] markdown · recursive:512 · tfidf · dense
+[2/2] markdown · recursive:16 · tfidf · dense
+```
+
+`on_progress` is called once per configuration, before it runs — the arguments are
+`(configurations_done, configurations_total, config)`. In `staged` mode `total` counts the
+whole sweep, not the current stage.
+
+## How a failure is reported — and how it is not
+
+Two different kinds of failure happen inside a sweep, and only one of them is contained.
+
+**A question the generator or judge cannot answer is skipped, not fatal.** If a `generator` or
+the generation judge raises on one question, that question is logged as a warning and left out
+of the generation metrics; the rest of the eval set and every other configuration keep going.
+The warning reads (with the real generator name and question id filled in):
+
+```text
+the {generator_name!r} generator failed on {question_id!r}: {error}. That question was skipped
+rather than failing the run
+```
+
+**A configuration that cannot be built at all stops the whole sweep.** Give `grid()` a chunker,
+embedder, index or reranker spec that does not exist, and `lab.run()` raises — it does not skip
+that one configuration and continue to the next:
+
+```python
+lab = cg.Lab(corpus=corpus)
+lab.grid(chunker=["recursive:512", "not-a-real-chunker:512"], index="dense")
+try:
+    lab.run(evalset, mode="ofat")
+except Exception as error:
+    print(f"{type(error).__name__}: {error}")
+```
+
+```text
+UnknownPluginError: no chunker named 'not-a-real-chunker'. Available: chonkie:code,
+chonkie:recursive, chonkie:sentence, chonkie:token, fixed, langchain:character,
+langchain:markdown, langchain:recursive, recursive, semantic, sentence, structural
+```
+
+There is no per-configuration try/except around building a pipeline — a typo in a spec string,
+or a plugin that genuinely cannot run in this environment (a missing extra, for instance), takes
+the whole sweep down with it rather than showing up as a gap on the leaderboard. Impossible
+*combinations* of otherwise-valid values (a dense index with no embedder) are the exception:
+those are dropped before the sweep starts, not discovered by trying to build them — see
+[Defining a Sweep](/lab/grid).

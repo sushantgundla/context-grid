@@ -1,0 +1,235 @@
+---
+title: "Caching"
+description: "What context-grid caches between runs, what invalidates an entry, and why timing a warm cache lies about real cost."
+---
+
+A sweep of 48 configurations does not mean 48 parses and 48 embedding runs. Configurations
+that share a parser share its parse output; those that also share a chunker and embedder
+share the embeddings too. Sweeping five rerankers across one chunking strategy embeds exactly
+once, not five times.
+
+## What gets cached
+
+Three stages are cached: **parse**, **chunk**, and **embed**. Each cache key is built from
+`(stage, stage version, parameters, input hashes)` — so the same document parsed the same way
+never gets parsed twice, and changing the parser invalidates every chunk set built from it,
+automatically, because the chunk stage's key includes the parse's hash.
+
+```python
+from contextgrid.cache import cache_key
+
+key = cache_key(
+    "chunk",
+    "1",
+    {"size": 512, "overlap": 64},
+    inputs=["abc123"],
+)
+print(key)
+```
+
+```
+6a1270118a584566e0bd2bc3a353c6b84cdb63b1cb88eb1ea5cf78e95d4e9292
+```
+
+Two properties fall out of this, and both matter: the same work is never redone, and
+*different* work never collides — a cache hit on the wrong entry would produce a plausible
+number rather than an error, which is the failure mode worth avoiding.
+
+<Note>
+`cache_key` and `cached` live in `contextgrid.cache`, not at the top of `contextgrid` — import
+them from there. `Cache`, `CacheStats`, `MemoryCache`, `DiskCache` and `NullCache` are all
+exported from `contextgrid` directly.
+</Note>
+
+## Passing a cache to a run
+
+`cg.build` and `Lab` both accept `cache=`. A `Lab` gets a `MemoryCache` by default, so runs
+inside one `Lab` session already share work; give it a `DiskCache` to keep that across
+processes. The examples below all use the same two-file `./my-docs` directory — create it
+first:
+
+```python
+from pathlib import Path
+
+Path("my-docs").mkdir(exist_ok=True)
+Path("my-docs/a.md").write_text("# A\n\nSome text about apples and refunds.\n")
+Path("my-docs/b.md").write_text("# B\n\nMore text about shipping and returns.\n")
+```
+
+```python
+import contextgrid as cg
+from pathlib import Path
+
+cache = cg.DiskCache(root=Path("./.cg-cache"))
+lab = cg.Lab("./my-docs", cache=cache)
+```
+
+## The three cache types
+
+<CardGroup cols={3}>
+<Card title="MemoryCache">
+In-process, cleared when the process exits. The default, and enough for a single sweep.
+</Card>
+<Card title="DiskCache">
+Pickled entries under a root directory, survives the process — for re-running a sweep after
+changing one axis without recomputing everything else.
+</Card>
+<Card title="NullCache">
+Caches nothing. For measuring what a stage really costs, with no reuse hiding the number.
+</Card>
+</CardGroup>
+
+```python
+from contextgrid import MemoryCache, DiskCache, NullCache
+from pathlib import Path
+
+cache = MemoryCache()
+disk = DiskCache(root=Path("./diskcache"))
+disk.put("somekey", {"a": 1})
+print(disk.get("somekey"))
+print("somekey" in disk)
+print(len(disk))
+
+null = NullCache()
+print(null.get("x"), "x" in null)
+```
+
+```
+{'a': 1}
+True
+1
+None False
+```
+
+A `DiskCache` entry that cannot be read back — a partial write, or a value pickled by a
+different `CACHE_FORMAT` — is treated as a miss and deleted, never as a hard failure.
+Recomputing is cheap; crashing on someone's stale cache directory is not.
+
+## What invalidates a cache entry
+
+Anything that changes the key invalidates the entry it used to point at:
+
+- **The document's content.** A parse is keyed on `source.content_hash()`; edit the file and
+  the old parse is simply never looked up again.
+- **The stage's parameters.** `recursive:512` and `recursive:256` are different chunk keys,
+  because their params differ.
+- **Anything upstream.** A chunk key includes the parse's hash, so changing the *parser*
+  invalidates every chunk set downstream of it, even though nothing about the chunker itself
+  changed.
+- **The tokenizer**, for any stage that measures size in tokens. Two embedders with different
+  tokenizers both asking for "512-token chunks" want genuinely different chunk sets — the
+  tokenizer belongs in `params` for exactly this reason, and every built-in stage already does
+  this.
+- **A `CACHE_FORMAT` bump.** Bumped when the pickled shape of a cached value changes between
+  package versions, so an old entry misses instead of unpickling into the wrong shape.
+
+Nothing invalidates a `DiskCache` on a timer. It is content-addressed, not time-addressed —
+stale in the sense of "describes an old document" simply cannot happen, because the old
+document's hash is a different key.
+
+## `CacheStats`: what the cache actually did
+
+`CacheStats` counts hits, misses and writes, by stage. It only fills in when you pass it
+explicitly — a cache used on its own (no `stats=`) does not record hits or misses anywhere,
+only writes:
+
+```python
+from contextgrid import MemoryCache, CacheStats
+from contextgrid.cache import cache_key, cached
+
+cache = MemoryCache()
+stats = CacheStats()
+
+key = cache_key("chunk", "1", {"size": 512}, inputs=["doc-a"])
+calls = []
+compute = lambda: calls.append(1) or "the chunk set"
+
+cached(cache, key, "chunk", compute, stats=stats)
+cached(cache, key, "chunk", compute, stats=stats)  # same key: a hit, compute() not called again
+
+print("compute() calls:", len(calls))
+print(stats.summary())
+```
+
+```
+compute() calls: 1
+1 of 2 lookups reused (50%), chunk 1/2
+```
+
+<Tip>
+Pass the **same** `CacheStats` instance to every stage of a run if you want one number for the
+whole sweep. `cg.build(config, corpus, cache=cache, stats=stats)` does this for you — the
+`stats` you pass in is shared across parse, chunk and embed.
+</Tip>
+
+Run the same configuration through the same cache a second time, and hit rate climbs — real,
+end-to-end, off an actual `contextgrid.build` call:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("./my-docs")
+config = cg.Config(parser="markdown", chunker="recursive:256", embedder="tfidf")
+cache = cg.MemoryCache()
+stats = cg.CacheStats()
+
+cg.build(config, corpus, cache=cache, stats=stats)
+print("after first build:", stats.summary())
+cg.build(config, corpus, cache=cache, stats=stats)
+print("after second build:", stats.summary())
+```
+
+```
+after first build: 0 of 5 lookups reused (0%), chunk 0/2, embed 0/1, parse 0/2
+after second build: 5 of 10 lookups reused (50%), chunk 2/4, embed 1/2, parse 2/4
+```
+
+`cache.stats` (the `CacheStats` a `MemoryCache` or `DiskCache` carries on itself) only tracks
+`writes` — it is not wired to the `stats=` argument above, so it under-reports hits and
+misses unless you also read the one you passed to `build()`.
+
+## The warm-cache trap when timing
+
+Every cached stage wraps its `time.perf_counter()` measurement around the whole
+cache-lookup-or-compute call, not around the compute alone. A cache hit skips the real work
+entirely, so **`Timings.build_ms` (and the `compute_seconds` that feeds `CostModel`) measure
+the cache, not the pipeline, the moment the cache is warm**:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("./my-docs")
+config = cg.Config(parser="markdown", chunker="recursive:256", embedder="tfidf")
+cache = cg.MemoryCache()
+
+p1 = cg.build(config, corpus, cache=cache)
+print("cold build_ms:", p1.timings.build_ms)
+
+p2 = cg.build(config, corpus, cache=cache)  # same config, same cache: everything is a hit
+print("warm build_ms:", p2.timings.build_ms)
+```
+
+```
+cold build_ms: 0.593
+warm build_ms: 0.069
+```
+
+<Note>
+The exact numbers will differ run to run — this is a wall-clock measurement, not a fixed
+constant. What is stable is the direction: the warm run is measuring a handful of cache
+lookups, not the work those lookups replaced.
+</Note>
+
+That is not a faster pipeline — it is the same pipeline with its actual work skipped. Two
+practical consequences:
+
+- **Don't compare `build_ms` or `compute_seconds` across runs that share a warm cache with an
+  earlier run.** The second and later runs in a sweep will look artificially cheap and fast
+  purely because of cache reuse, not because the configuration is actually faster.
+- **A `machine_usd_per_hour` cost figure inherits the same distortion**, since `CostModel`
+  prices `compute_seconds` directly — see [Cost](/reference/cost). A warm-cache run of a local
+  embedder can price out at close to zero machine time even though the first, cold run of that
+  same configuration took real seconds.
+
+Use a `NullCache` (or a fresh cache directory) when the number you actually want is "how long
+does this configuration take to build from nothing" rather than "how fast is my second run."

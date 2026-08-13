@@ -1,0 +1,212 @@
+---
+title: "Loading a Corpus"
+description: "Load documents with Corpus.from_dir, from_files, or from_texts, and understand what fingerprint() and content_hash() are for."
+---
+
+A `Corpus` is a named set of source files, before anything has been extracted from them —
+deliberately dumb: it holds bytes and identity, nothing about structure or content. Three
+ways to build one.
+
+## `Corpus.from_dir`
+
+The examples on this page use a `./mydocs` directory with three files in it. Create it first:
+
+```python
+from pathlib import Path
+
+Path("mydocs").mkdir(exist_ok=True)
+Path("mydocs/refund.md").write_text(
+    "# Refund Policy\n\n"
+    "Refunds are accepted within 30 days of purchase. Contact support with your order "
+    "number to start a return. Once approved, refunds are issued to the original payment "
+    "method within 5 business days.\n"
+)
+Path("mydocs/shipping.md").write_text(
+    "# Shipping\n\n"
+    "Orders ship within two business days. Standard shipping takes 5 to 7 business days "
+    "to arrive.\n"
+)
+Path("mydocs/page.html").write_text(
+    "<html><body><h1>Contact</h1><p>Reach us at support@example.com.</p></body></html>\n"
+)
+```
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("./mydocs")
+print(corpus.name, corpus.ids, corpus.total_bytes)
+```
+
+```
+mydocs ('page.html', 'refund.md', 'shipping.md') 401
+```
+
+```python no-run: signature shown for reference, not a runnable statement
+cg.Corpus.from_dir(
+    path: str | Path,
+    *,
+    patterns: Sequence[str] = DEFAULT_PATTERNS,
+    recursive: bool = True,
+    max_files: int | None = None,
+    name: str | None = None,
+) -> Corpus
+```
+
+`name` defaults to the directory's own name. Each file's `id` is its path relative to the
+directory, which is why `search()` results look like `"refund.md:0-196"` — stable if the
+corpus moves, and readable in a leaderboard. `patterns` defaults to:
+
+```
+"*.txt", "*.md", "*.markdown", "*.mdx", "*.html", "*.htm",
+"*.pdf", "*.docx", "*.pptx", "*.xlsx"
+```
+
+<Note>
+Widening the list is Python-only. There is no `patterns:` key in a YAML config — if a config
+file's corpus needs a pattern that isn't in the default list, load it in Python and hand
+`Lab` the `Corpus` object instead of a path.
+</Note>
+
+Hidden entries (anything starting with `.`) and build directories (`.git`, `.venv`, `venv`,
+`node_modules`, `__pycache__`, `.mypy_cache`, `.ruff_cache`) are always skipped, however deep
+they sit — the directory you point at is never itself skipped, only what's below it. An empty
+match raises `CorpusError` explaining specifically why: no files at all, files that matched
+but were hidden, or files with none of the expected extensions.
+
+## What gets picked up without an extra, and what doesn't
+
+`from_dir` only reads bytes — it never parses anything, so loading a `.pdf` or `.docx` never
+needs an extra installed. Whether a file's contents are ever *readable* is a separate
+question, decided by which [parser](/axes/parsers) you choose and whether its extra is
+installed:
+
+| Extension | Loads with `from_dir` | Readable by | Needs |
+|---|---|---|---|
+| `.txt` | yes | `text`, `markdown` | nothing |
+| `.md`, `.markdown`, `.mdx` | yes | `text`, `markdown` | nothing |
+| `.html`, `.htm` | yes | `docling`, `agno` | `parse-ml` (`docling`) or `agent` (`agno`) |
+| `.pdf` | yes | `pymupdf`, `pdfplumber`, `docling`, `marker`, `agno`, `pymupdf4llm` | `parse`, `parse-ml`, `parse-marker`, or `agent` depending on which |
+| `.docx` | yes | `docling`, `agno` | `parse-ml` or `agent` |
+| `.pptx`, `.xlsx` | yes | no parser currently reads either, on any extra | — |
+
+<Warning>
+`.pptx` and `.xlsx` are in the default patterns, so `from_dir` picks them up — but as of this
+version, no shipped parser's `supports()` returns true for either media type, not even
+`docling` (whose own docstring says it reads "PPTX, XLSX and HTML" — its registered
+`media_types` don't currently include either). A corpus with only `.pptx`/`.xlsx` files
+parses to nothing and `build()` raises `CorpusError` saying so. Convert them, or pick a
+parser and check `parser.supports(source.media_type)` yourself before relying on one.
+</Warning>
+
+Point the wrong parser at a type it doesn't support and nothing crashes silently — `build()`
+skips that file with a `PARSER_FALLBACK` warning instead of indexing it:
+
+```python
+pipeline = cg.build(cg.Config(parser="markdown"), corpus)
+for w in pipeline.warnings:
+    print(w.code, "-", w.message)
+print(sorted(c.doc_id for c in pipeline.chunks))
+```
+
+```
+WarningCode.PARSER_FALLBACK - 'markdown' does not read text/html, so 'page.html' is not in this index at all. Nothing in it can be retrieved
+['refund.md', 'shipping.md']
+```
+
+## `Corpus.from_files`
+
+An explicit list rather than a directory scan. Each file's `id` is just its file name, not a
+relative path:
+
+```python
+corpus = cg.Corpus.from_files(["./mydocs/refund.md", "./mydocs/shipping.md"], name="two-files")
+print(corpus.ids)
+```
+
+```
+('refund.md', 'shipping.md')
+```
+
+## `Corpus.from_texts`
+
+Skips the filesystem entirely — a mapping of id to string, useful for a script, a notebook,
+or a test:
+
+```python
+corpus = cg.Corpus.from_texts({
+    "policy": "Refunds are accepted within 30 days.",
+    "shipping": "Orders ship in two business days.",
+})
+print(corpus.ids)
+```
+
+```
+('policy', 'shipping')
+```
+
+```python no-run: signature shown for reference, not a runnable statement
+cg.Corpus.from_texts(
+    texts: Mapping[str, str],
+    *,
+    media_type: MediaType = MediaType.TEXT,
+    name: str = "corpus",
+) -> Corpus
+```
+
+Every entry gets the same `media_type` (default `MediaType.TEXT`) — pass `media_type=
+cg.MediaType.MARKDOWN` if your strings are Markdown and you want to parse them as such.
+
+## Fingerprinting
+
+`corpus.content_hash()` is a hash of every file's bytes, independent of the order they were
+listed in — it's what identifies *this exact set of documents*, and it's deterministic:
+
+```python
+print(cg.Corpus.from_dir("./mydocs").content_hash())
+print(cg.Corpus.from_dir("./mydocs").content_hash())
+```
+
+```
+7918bae628d8e57e0118a91d1f42d6237fe64cd28cd90ea425966a58d88b4441
+7918bae628d8e57e0118a91d1f42d6237fe64cd28cd90ea425966a58d88b4441
+```
+
+This is why it matters: `content_hash()` is written into every run's manifest as
+`corpus_hash`. Comparing two manifests (`explain_diff`, covered on
+[Reports](/reference/reports)) is how you tell "the numbers changed because a document
+changed" apart from "the numbers changed because the config changed" — without the hash,
+both look like the same kind of drift.
+
+`fingerprint_sources(corpus)` profiles a corpus from its bytes alone — instant, and enough to
+catch byte-identical duplicate files. Using the `policy`/`shipping` corpus from
+`from_texts` above:
+
+```python
+fp = cg.fingerprint_sources(corpus)
+print(fp.summary())
+```
+
+```
+2 files, 69 bytes
+```
+
+`cg.fingerprint(corpus, parses)` (or `Lab(...).fingerprint()`) adds the content statistics
+that need an actual parse — table share, code share, heading count, document lengths — and
+turns them into plain-English hints about which axes are worth sweeping on *this* corpus:
+
+```python
+parser = cg.get_parser("markdown")
+parses = {s.id: parser.parse(s) for s in corpus}
+fp2 = cg.fingerprint(corpus, parses)
+print(fp2.summary())
+print(fp2.hints())
+```
+
+```
+2 files, 69 bytes, 69 chars via markdown, 0% tables
+['No headings were found, so structural chunking has nothing to work with and will fall back to recursive splitting. If the documents do have structure, that is a finding about the parser rather than the corpus.', 'The median document is 34 characters. Chunk sizes above that cannot differentiate, so sweep small sizes.']
+```
+
+Each hint names an experiment worth running, not a conclusion — the tool exists so nobody has
+to take advice like this on trust.

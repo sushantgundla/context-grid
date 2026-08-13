@@ -1,0 +1,262 @@
+---
+title: "Generating Questions"
+description: "Draft an eval set automatically from a corpus's chunks with generate(), and read the warnings it leaves for you."
+---
+
+Writing an eval set by hand does not scale past a handful of questions. `generate()` drafts
+one automatically from a corpus's chunks — the trade is that a draft needs review before it
+is trustworthy ground truth. This page covers `generate()` itself, the two built-in question
+generators, and how to read what it skipped.
+
+<Warning>
+The function is `contextgrid.evalset.generate`, called through the package. It is **not**
+`cg.generate` — that name is the `contextgrid.generate` submodule (answer generation:
+`Generator`, `LLMGenerator`, ...), pulled into the top-level namespace as a side effect of
+importing it. Calling `cg.generate(chunks, generator)` calls the wrong thing, or fails.
+</Warning>
+
+```python
+import contextgrid as cg
+import contextgrid.evalset as es
+
+print(type(cg.generate))    # <class 'module'> -- wrong one
+print(type(es.generate))    # <class 'function'> -- this is the one you want
+```
+
+```text
+<class 'module'>
+<class 'function'>
+```
+
+## `generate()`
+
+```python no-run: signature shown for reference, not a runnable statement
+generate(
+    chunks: Sequence[Chunk],
+    generator: QuestionGenerator,
+    *,
+    sample: int | None = 50,
+    seed: int = 0,
+    min_chunk_words: int = 25,
+    evalset_id: str = "generated",
+) -> Generation
+```
+
+It filters out chunks shorter than `min_chunk_words`, then samples from what's left —
+`sample` chunks by default, spread **across documents** rather than picked uniformly from
+the pool, so one long document in an otherwise small corpus doesn't end up supplying every
+question. `sample=None` uses every chunk that passed the word-count filter instead of
+sampling — useful for a small corpus, potentially slow or costly for an LLM generator on a
+big one, since it calls the generator once per usable chunk.
+
+<Note>
+If `generator` has a callable `.fit(chunks)` attribute (`KeywordProbeGenerator` does),
+`generate()` calls it for you on the usable chunks before sampling. If you write your own
+`QuestionGenerator` with a `.fit` method, expect `generate()` to reach in and call it.
+</Note>
+
+The return value is a `Generation`, not an `EvalSet` — get the questions via `.evalset`:
+
+```python no-run: signature shown for reference, not a runnable statement
+Generation(evalset: EvalSet, warnings: WarningLog, chunks_sampled: int = 0, chunks_skipped: int = 0)
+```
+
+`.count` is `len(self.evalset)`. `Generation` is not `cg.Generation` — import it as
+`contextgrid.evalset.Generation` if you need the type by name; most code just uses the
+value `generate()` returns.
+
+## A run with a real skip
+
+Two chunks pass the default `min_chunk_words=25`, one doesn't:
+
+```python
+import contextgrid as cg
+from contextgrid.core.types import Chunk, Span
+
+def make(doc, i, text):
+    return Chunk(id=f"{doc}::{i}", span=Span(doc_id=doc, start=0, end=len(text)), text=text)
+
+chunks = [
+    make("handbook.pdf", 0, "Employees accrue one and a half days of paid leave for every full "
+         "month of continuous service completed at the company, prorated for part time staff on the payroll."),
+    make("handbook.pdf", 1, "See section 2 for details."),  # 5 words -- too short
+    make("policy.pdf", 0, "Resignation requires thirty days of written notice delivered in "
+         "person to the direct manager and to human resources well in advance of the intended last working day."),
+]
+
+generator = cg.KeywordProbeGenerator()
+draft = cg.evalset.generate(chunks, generator)  # every keyword left at its default
+
+print("count:", draft.count)
+print("chunks_sampled:", draft.chunks_sampled)
+print("chunks_skipped:", draft.chunks_skipped)
+for item in draft.evalset:
+    print(" ", item.id, repr(item.question))
+for w in draft.warnings.entries:
+    print("warning:", str(w))
+```
+
+```text
+count: 2
+chunks_sampled: 2
+chunks_skipped: 1
+  handbook.pdf::0#probe 'accrue company completed continuous employees every'
+  policy.pdf::0#probe 'advance delivered direct human intended last'
+warning: INFO [evalset]: 2 questions drafted from 2 chunks by 'keyword-probe'. Nothing has filtered them and nobody has read them, so they are not ground truth yet -- run the filters, then the review queue
+```
+
+`chunks_skipped: 1` is "See section 2 for details." — five words, well under the
+`min_chunk_words=25` default. `generate()` doesn't tell you *which* chunk it dropped beyond
+that count; if you need to know, filter your own chunk list by word count before calling it.
+
+<Warning>
+If every chunk gets skipped, `generate()` doesn't fail — it returns an empty `Generation`
+with an `INVALID`-severity warning:
+
+```text
+INVALID [evalset]: none of the 3 chunks has 25 words, so there is nothing to write questions about. Try a larger chunk size
+```
+
+Read `draft.warnings` before assuming a draft with `count: 0` is just "an empty corpus."
+</Warning>
+
+## `KeywordProbeGenerator` — no model required
+
+```python no-run: signature shown for reference, not a runnable statement
+KeywordProbeGenerator(terms: int = 6, seed: int = 0, corpus_frequencies: dict[str, int] = {})
+```
+
+`.name` is `"keyword-probe"`. It needs no LLM — a "question" is a space-joined bag of the
+chunk's rarest words by corpus frequency (`terms` of them), which is what you saw in the run
+above (`'accrue company completed continuous employees every'`).
+
+<Warning>
+This is explicit in the source docstring: **use it to smoke-test your pipeline, not to
+publish a leaderboard.** The probe's vocabulary comes straight from the same chunk it's
+"testing," so scores against it run unrealistically high and measure almost nothing about
+real retrieval difficulty.
+</Warning>
+
+`generate()` returns `[]` for a chunk if its longest sentence has fewer than 2 distinctive
+words (words longer than 3 characters) — short or dense chunks silently produce no probe.
+The `seed` field exists on the dataclass but isn't used by `.generate()`/`.fit()` — there's
+no randomness in this generator despite the field.
+
+## `LLMQuestionGenerator` — real questions, needs a model
+
+```python no-run: signature shown for reference, not a runnable statement
+LLMQuestionGenerator(llm: LLM, questions_per_chunk: int = 1, max_tokens: int = 600)
+```
+
+`.name` is `"llm"`. Unlike the keyword probe, `llm` is required — there's no default. You
+can test this without a real API key using `cg.RecordingLLM`, a test double that pops
+canned replies off a list:
+
+```python
+import json
+import contextgrid as cg
+from contextgrid.core.types import Chunk, Span
+
+text = ("Employees accrue one and a half days of paid leave for every full month of "
+        "continuous service completed at the company, prorated for part time staff on the payroll.")
+chunks = [Chunk(id="h::0", span=Span(doc_id="h.pdf", start=0, end=len(text)), text=text)]
+
+reply = json.dumps([{
+    "question": "How much leave do employees accrue per month?",
+    "quote": "one and a half days of paid leave",
+}])
+llm = cg.RecordingLLM(replies=[reply])
+generator = cg.LLMQuestionGenerator(llm=llm)
+
+draft = cg.evalset.generate(chunks, generator, sample=10, seed=0)
+print(draft.count, draft.chunks_sampled, draft.chunks_skipped)
+for item in draft.evalset:
+    print(item.id, item.question, item.anchors)
+print("prompts sent:", len(llm.prompts))
+```
+
+```text
+1 1 0
+h::0#0 How much leave do employees accrue per month? (GoldAnchor(source_id='h.pdf', quote='one and a half days of paid leave', grade=2, page_hint=None, occurrence=0),)
+prompts sent: 1
+```
+
+The item id is the chunk id plus a `#`-numbered suffix per question (`h::0#0` for the first
+question drawn from chunk `h::0`).
+
+On any `LLMError`, or a reply that doesn't parse as JSON, `.generate()` returns `[]` for
+that chunk rather than raising — a broken model call produces an empty draft, not a crash.
+
+<Warning>
+An item is only produced if **both** `question` and `quote` come back non-empty from the
+model. If the model answers without a `quote` field, that question is silently dropped:
+
+```python
+bad_reply = json.dumps([{"question": "How much leave?"}])  # no quote field
+llm = cg.RecordingLLM(replies=[bad_reply])
+draft = cg.evalset.generate(chunks, cg.LLMQuestionGenerator(llm=llm))
+print(draft.count, draft.chunks_sampled, draft.chunks_skipped)
+for w in draft.warnings.entries:
+    print(str(w))
+```
+
+```text
+0 1 0
+INVALID [evalset]: the 'llm' generator produced no questions from 1 chunks
+INFO [evalset]: 0 questions drafted from 1 chunks by 'llm'. Nothing has filtered them and nobody has read them, so they are not ground truth yet -- run the filters, then the review queue
+```
+</Warning>
+
+A real `LLMQuestionGenerator` run against a hosted model needs an API key and network
+access:
+
+```python no-run: needs a real LLM API key and network access
+from contextgrid.evalset.llm import get_llm
+
+llm = get_llm("openai:gpt-4o-mini")  # reads OPENAI_API_KEY from the environment
+generator = cg.LLMQuestionGenerator(llm=llm)
+draft = cg.evalset.generate(chunks, generator, sample=50)
+```
+
+## Writing your own generator
+
+Anything with a `.name` string and a `.generate(chunk) -> list[EvalItem]` method works —
+`QuestionGenerator` is a runtime-checkable `Protocol`, not a base class you have to inherit
+from:
+
+```python no-run: signature shown for reference, not a runnable statement
+class QuestionGenerator(Protocol):
+    name: str
+    def generate(self, chunk: Chunk) -> list[EvalItem]: ...
+```
+
+## Reading `draft.warnings`
+
+Every draft carries a `WarningLog` in `.warnings`, and `generate()` always logs at least one
+`INFO`-severity entry saying the draft is unreviewed — worth reading in full before you
+treat a draft as done. `draft`, `chunks`, and `generator` all get reassigned by the examples
+above, so this rebuilds the keyword-probe draft from the first example on this page instead
+of trusting whatever those names are still holding:
+
+```python
+chunks = [
+    make("handbook.pdf", 0, "Employees accrue one and a half days of paid leave for every full "
+         "month of continuous service completed at the company, prorated for part time staff on the payroll."),
+    make("handbook.pdf", 1, "See section 2 for details."),
+    make("policy.pdf", 0, "Resignation requires thirty days of written notice delivered in "
+         "person to the direct manager and to human resources well in advance of the intended last working day."),
+]
+generator = cg.KeywordProbeGenerator()
+draft = cg.evalset.generate(chunks, generator)
+
+for w in draft.warnings.entries:
+    print(w.severity.value, w.message)
+```
+
+```text
+info 2 questions drafted from 2 chunks by 'keyword-probe'. Nothing has filtered them and nobody has read them, so they are not ground truth yet -- run the filters, then the review queue
+```
+
+A draft is a starting point. The next steps — filtering out bad auto-generated questions and
+running a human review queue over what's left — are covered in
+[Eval Set Quality](/evalsets/quality).

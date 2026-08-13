@@ -1,0 +1,147 @@
+---
+title: "The Lab"
+description: "Construct cg.Lab, understand its five constructor arguments, and see all eight methods it puts on top of the rest of the package."
+---
+
+`cg.Lab` is the front door. Everything else in context-grid — parsers, chunkers, embedders,
+indexes, rerankers, the scoring functions, the significance tests — is composable and callable
+on its own, and every other page under this site mostly shows you those pieces directly. `Lab`
+is what you reach for when you just want an answer: point it at a corpus, describe a sweep,
+run it, read the leaderboard.
+
+`./docs` is a directory of your own markdown, html or pdf files. Here it's two tiny ones, just
+to make the example runnable:
+
+```python
+from pathlib import Path
+
+Path("docs").mkdir(exist_ok=True)
+Path("docs/a.md").write_text("# A\n\nSome text.")
+Path("docs/b.md").write_text("# B\n\nMore text.")
+```
+
+```python
+import contextgrid as cg
+
+lab = cg.Lab(corpus="./docs")
+lab.grid(chunker=["recursive:512", "structural:512"], index=["dense", "bm25", "hybrid"])
+print(lab.estimate())
+
+# results = lab.run(evalset)
+# print(results.summary())
+```
+
+```text
+{'configurations': 4, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 3 × 1 × 1 × 1 × 1 × 1 = 6', 'approximate_index_tokens': 8, 'estimated_usd': 0.0}
+```
+
+That output is real, against a two-file, two-sentence `./docs` — your own numbers will differ
+with your own corpus. The last two lines are commented out here because they need a real
+`evalset` — see [Running a Sweep](/lab/running) for `lab.run()` in full, and
+[Reading Results](/lab/results) for everything `results` can do.
+
+## Constructing a `Lab`
+
+```python no-run: signature shown for reference, not a runnable statement
+cg.Lab(
+    corpus: Corpus | str | Path | dict[str, str],
+    *,
+    cache: Cache | None = None,
+    machine_usd_per_hour: float = 0.0,
+    model: str | Any | None = None,
+    seed: int = 0,
+)
+```
+
+<ParamField path="corpus" type="Corpus | str | Path | dict[str, str]" required>
+The documents to search. A string or `Path` is read as a directory of files
+(`Corpus.from_dir`). A `dict[str, str]` is treated as `{document_id: text}` and read with
+`Corpus.from_texts(..., media_type=MediaType.MARKDOWN)` — no files on disk needed. Pass a
+`Corpus` object directly if you built one yourself, for instance with a different
+`media_type`. See [Corpus](/concepts/corpus) for the full set of ways to build one.
+</ParamField>
+
+<ParamField path="cache" type="Cache | None" default="None">
+Where parsed documents, chunks and embeddings get reused across the configurations in a
+sweep. `None` gives you a fresh `cg.MemoryCache()` — in-process, and enough for one sweep.
+Pass a `cg.DiskCache(root=...)` if you want that reuse to survive between separate Python
+processes. See [Running a Sweep](/lab/running) for what this actually buys you, including a
+gotcha worth knowing about before you rely on it.
+</ParamField>
+
+<ParamField path="machine_usd_per_hour" type="float" default="0.0">
+What your own compute costs, per hour, for pricing local (non-hosted) stages. At the default
+of `0.0`, local embedders, indexes and rerankers price out at $0 — which is honest for a
+laptop, and not honest for a GPU box you're paying for by the hour. See
+[Cost](/reference/cost).
+</ParamField>
+
+<ParamField path="model" type="str | Any | None" default="None">
+One model, shared by everything in this `Lab` that needs one: query transforms, agentic
+retrieval, the LLM-backed ingestion strategies, and the generation judge. A string is
+resolved with `get_llm` — `model="openai:gpt-4o-mini"` for example. Anything else (an `LLM`
+instance, or `None`) is used as-is.
+</ParamField>
+
+<ParamField path="seed" type="int" default="0">
+Carried onto every `Results` a `run()` produces, and used to reproduce confidence intervals
+and significance tests. See [Running a Sweep](/lab/running) for exactly what this does and
+does not make reproducible.
+</ParamField>
+
+<Note>
+**Why one `model` for the whole lab, and not one per stage?** The alternative is four places
+to set a key and four prices to reconcile. And without a shared model, most of the axes that
+need one can't be built at all: four of the six transforms, `agentic` retrieval, four of the
+eight ingestion strategies, and the `llm` generator. Leaving `model` unset doesn't just narrow
+what you can sweep quietly — it removes more than half of it.
+</Note>
+
+```python
+import contextgrid as cg
+
+# from a directory
+lab = cg.Lab(corpus="./docs")
+
+# from a dict of texts, no files needed
+lab = cg.Lab(corpus={"a.md": "# A\n\nSome text.", "b.md": "# B\n\nMore text."})
+
+# a Corpus you built yourself
+corpus = cg.Corpus.from_dir("./docs")
+lab = cg.Lab(corpus=corpus, machine_usd_per_hour=0.10, seed=42)
+```
+
+## The eight methods
+
+Roughly in the order you'd actually call them: look at the corpus, get ground truth ready,
+define the sweep, run it.
+
+| Method | What it does |
+| --- | --- |
+| `fingerprint(parser="markdown")` | Profiles the corpus with one parser and returns a `CorpusFingerprint` — size, document lengths, block kinds, tables and code found. Worth running before configuring anything. |
+| `draft_evalset(*, llm=None, parser="markdown", chunker="recursive:512", sample=50, questions_per_chunk=1, seed=0)` | Drafts a `Generation` (an `EvalSet` plus warnings) from the corpus. With `llm`, questions are written by a model; without one, you get keyword probes, useful for checking wiring rather than as real ground truth. |
+| `filter_evalset(evalset, *, baseline_scores=None, llm=None, chain=None)` | Drops the questions that would make a comparison meaningless, returning a `FilterResult`. |
+| `review(evalset, *, skip_reviewed=True)` | Builds a `ReviewQueue`: a queue of questions to accept, fix or drop. |
+| `assess(evalset, *, baseline_scores=None)` | Returns `EvalSetQuality` — what the eval set can and cannot support, including how many questions are answerable and reviewed. |
+| `grid(...)` | Sets the axes of the sweep and returns the resulting `Matrix`. See [Defining a Sweep](/lab/grid). |
+| `estimate(mode=SweepMode.OFAT)` | How many configurations the current grid will run, and roughly what it will cost, before anything runs. |
+| `run(evalset, *, mode=SweepMode.OFAT, budget_seconds=None, budget_usd=None, headline="recall@5", metrics=(), on_progress=None)` | Runs the matrix and scores every configuration, returning `Results`. See [Running a Sweep](/lab/running). |
+
+`lab.matrix` is also there as a read-only property, returning whatever `grid()` last built —
+useful for inspecting the sweep without re-running `grid()`.
+
+<CardGroup cols={2}>
+<Card title="Defining a Sweep" href="/lab/grid">
+Every axis `grid()` takes, single values versus lists, and the two ways to walk the matrix.
+</Card>
+<Card title="Running a Sweep" href="/lab/running">
+What `run()` needs, what it returns, and what the seed and the cache actually buy you.
+</Card>
+<Card title="Reading Results" href="/lab/results">
+Every method on `Results`, including the one that stops you shipping a difference that isn't
+real.
+</Card>
+<Card title="Eval Sets" href="/evalsets/overview">
+What `draft_evalset`, `filter_evalset`, `review` and `assess` are for, in full.
+</Card>
+</CardGroup>

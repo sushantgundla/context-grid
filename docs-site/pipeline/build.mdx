@@ -1,0 +1,219 @@
+---
+title: "Building One Pipeline"
+description: "Use cg.build(config, corpus) to turn one configuration into a ready-to-query pipeline, without sweeping anything."
+---
+
+The [Lab](/lab/overview) sweeps many configurations and scores them against an eval set. Most
+of the time that is what you want. `cg.build()` is the piece underneath it, for the times it
+is not: you already know the configuration, you don't have an eval set yet, or you want to
+poke at chunks, timings, or an index directly.
+
+<Note>
+`cg.build()` runs the indexing half of a pipeline only — parse, chunk, embed, index. It does
+not run queries or score anything. That is what the [`BuiltPipeline`](#what-you-get-back) it
+returns is for.
+</Note>
+
+## The call
+
+```python no-run: narrative walkthrough -- ./documents isn't reconstructed in this snippet
+import contextgrid as cg
+
+corpus = cg.Corpus.from_dir("./documents")
+config = cg.Config(parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense")
+
+pipeline = cg.build(config, corpus)
+```
+
+`Config` is a frozen dataclass — every field is a spec string (`"recursive:512"`,
+`"tfidf"`, ...), which is what makes a configuration paste-able and diff-able. The axes and
+their spec grammar are covered per-axis under [Axes](/axes/overview); [Config](/concepts/config)
+covers the dataclass itself. `Corpus` is covered in [Corpus](/concepts/corpus) —
+`Corpus.from_dir(path)`, `Corpus.from_files(paths)`, and `Corpus.from_texts({...})` for
+building one in memory without touching disk.
+
+Run against a two-file corpus:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_texts({
+    "refunds.md": "refunds take within 30 days of purchase. digital goods are not refundable once downloaded.",
+    "shipping.md": "express shipping arrives the next business day.",
+})
+config = cg.Config(parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense")
+pipeline = cg.build(config, corpus)
+
+print(type(pipeline).__name__)
+print("chunks:", len(pipeline.chunks))
+print("index_bytes:", pipeline.index_bytes)
+print("embed_tokens:", pipeline.embed_tokens)
+print("build_ms:", pipeline.timings.build_ms)
+```
+
+```
+BuiltPipeline
+chunks: 2
+index_bytes: 168
+embed_tokens: 21
+build_ms: 0.391...
+```
+
+Full signature:
+
+```python no-run: signature shown for reference, not a runnable statement
+cg.build(
+    config: Config,
+    corpus: Corpus,
+    *,
+    cache: Cache | None = None,
+    stats: CacheStats | None = None,
+    llm: LLM | None = None,
+) -> BuiltPipeline
+```
+
+`cache` and `stats` are covered below. `llm` is only needed if `config.transform`,
+`config.retrieval`, or `config.generator` names something model-backed (`hyde`, `agentic`,
+`llm`, ...) — see [Transforms](/axes/transforms), [Retrieval](/axes/retrieval), and
+[Generating an Answer](/pipeline/answer). Building a config that names one of those without
+passing `llm` raises before anything is indexed, not partway through.
+
+## What you get back
+
+`BuiltPipeline` is a plain dataclass holding everything the indexing stage produced, plus the
+methods that use it — `search()`, `answer()`, `run_queries()`, `chunk_by_id()`, all covered on
+the next two pages.
+
+<AccordionGroup>
+<Accordion title="The fields">
+| Field | Type | What it is |
+|---|---|---|
+| `config` | `Config` | The configuration that produced this pipeline |
+| `parses` | `dict[str, ParsedDocument]` | Every source file's parse, keyed by source id |
+| `chunks` | `list[Chunk]` | What actually got indexed and can come back from a search |
+| `index` | `Index` | The built index — `pipeline.index.search(...)` if you need to bypass `search()` |
+| `embedder` | `Embedder \| None` | `None` exactly when `config.embedder` is `None` (e.g. plain `bm25`) |
+| `timings` | `Timings` | Wall-clock per stage — see below |
+| `warnings` | `WarningLog` | Everything that went sideways without stopping the build |
+| `index_bytes` | `int` | `index.size_bytes()` |
+| `embed_tokens` | `int` | Tokens spent embedding the corpus |
+| `vectors` | `Any` | The chunk vectors the index was built from, or `None` with no embedder |
+| `reranker` | `Reranker \| None` | Built from `config.reranker`, `None` if unset |
+| `transform` | `QueryTransform` | Built from `config.transform`; a `NoTransform` identity when unset, never `None` |
+| `retrieval` | `RetrievalStrategy` | Built from `config.retrieval`; a `SimpleRetrieval` default when unset |
+| `ingested` | `Ingested \| None` | What was indexed vs. what a hit resolves to — see [Ingestion](/axes/ingestion) |
+| `trace` | `RetrievalTrace` | Accumulates what the retrieval strategy did across every query run through `search()` |
+| `assembler` | `ContextAssembler` | Turns retrieved chunks into the text a generator sees — built even without a generator |
+| `generator` | `Generator \| None` | `None` unless `config.generator` named one — see [Generating an Answer](/pipeline/answer) |
+
+`transform`, `retrieval`, and `assembler` are the three fields on this list that are never
+`None` — each has a no-op default so downstream code doesn't need to branch on whether the
+axis is switched on. `embedder`, `reranker`, `ingested`, and `generator` can genuinely be
+`None`.
+</Accordion>
+</AccordionGroup>
+
+## `Timings`
+
+```python no-run: signature shown for reference, not a runnable statement
+Timings(
+    parse_ms: float = 0.0,
+    chunk_ms: float = 0.0,
+    embed_ms: float = 0.0,
+    index_ms: float = 0.0,
+    query_ms: list[float] = [],
+)
+```
+
+Kept per stage on purpose — "this config is slow" isn't actionable, "this config spends 90%
+of its time in the reranker" is.
+
+- **`build_ms`** (property) — `parse_ms + chunk_ms + embed_ms + index_ms`. Everything `build()`
+  itself did.
+- **`query_ms`** — starts empty. `build()` never queries anything; each call to
+  [`search()` or `run_queries()`](/pipeline/search) appends one entry.
+- **`percentile(fraction)`** — latency at a percentile, e.g. `timings.percentile(0.95)` for
+  p95. Empty `query_ms` returns `0.0` rather than raising.
+- **`as_dict()`** — the above as a flat dict (`parse_ms`, `chunk_ms`, `embed_ms`, `index_ms`,
+  `build_ms`, `query_p50_ms`, `query_p95_ms`, `query_p99_ms`), which is what the reporting
+  side reads.
+
+```python
+print(pipeline.timings)
+```
+```
+Timings(parse_ms=0.119..., chunk_ms=0.086..., embed_ms=0.167..., index_ms=0.019..., query_ms=[])
+```
+
+## Caching across builds
+
+Pass a `Cache` to reuse work between calls — the same instance, called twice:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_texts({
+    "refunds.md": "refunds take within 30 days of purchase.",
+    "shipping.md": "express shipping arrives the next business day.",
+})
+config = cg.Config(parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense")
+
+cache = cg.MemoryCache()
+cg.build(config, corpus, cache=cache, stats=cache.stats)
+cg.build(config, corpus, cache=cache, stats=cache.stats)
+print(cache.stats)
+```
+
+```
+CacheStats(hits=5, misses=5, writes=5, by_stage={'parse': [2, 2], 'chunk': [2, 2], 'embed': [1, 1]})
+```
+
+<Warning>
+`cache=cache` alone reuses cached work but does **not** update `cache.stats` — `build()` takes
+`cache` and `stats` as two separate parameters, and nothing wires one to the other for you.
+Leave off `stats=cache.stats` and every build looks like it hit nothing, hits or no hits.
+</Warning>
+
+`DiskCache` works the same way and survives the process, for reusing work across separate
+`contextgrid run` invocations — see [Caching](/reference/caching).
+
+## When it fails
+
+If a parser reads no text at all from the corpus — the wrong parser for the file type, or a
+scanned PDF with no text layer — `build()` raises `CorpusError` before anything downstream
+runs, rather than silently indexing zero chunks:
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_texts({"a.pdf": "hello world"}, media_type=cg.MediaType.PDF)
+config = cg.Config(parser="text", chunker="recursive:512", embedder="tfidf", index="dense")
+
+try:
+    cg.build(config, corpus)
+except cg.CorpusError as e:
+    print(e)
+```
+
+```
+the 'text' parser read no text from 1 file in corpus 'corpus' (a.pdf), so none of them are in
+this index at all and nothing can be retrieved. These files are application/pdf. Usually the
+parser does not read the file types in this corpus -- check 'text' against them -- or the
+files have no text layer and need OCR first.
+```
+
+If some files parse and others don't, `build()` doesn't raise — it drops the unreadable ones
+and adds a `PARSER_FALLBACK` warning to `pipeline.warnings` instead, naming which source id was
+skipped. Check `pipeline.warnings.entries` (or `pipeline.warnings.summary()`) after a build
+you're not sure about.
+
+## Build vs. the Lab
+
+Reach for `cg.build()` directly when you want one configuration and nothing else — a script,
+a notebook, a service that serves a fixed pipeline. Reach for [`cg.Lab`](/lab/overview) when
+you want to compare configurations against each other on an eval set: it calls `build()`
+under the hood, once per point in the grid, and adds scoring, caching defaults, cost
+estimates, and a leaderboard on top.
+
+Next: [Searching](/pipeline/search) covers what a `BuiltPipeline` does with a query, and
+[Generating an Answer](/pipeline/answer) covers turning a search result into text.

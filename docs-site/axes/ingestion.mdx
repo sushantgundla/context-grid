@@ -1,0 +1,347 @@
+---
+title: "Ingestion Strategies"
+description: "The ingestion axis: every strategy, what it builds on top of chunks, which need a model, and how scored_ids changes when one is in play."
+---
+
+A chunker produces units where the thing indexed and the thing returned are the same. An
+ingestion strategy deliberately breaks that identity: it indexes one thing and hands back
+another.
+
+That matters because chunk size is a compromise nobody is happy with. Small chunks embed
+precisely — a 128-token passage about one thing has a vector that means one thing — but they
+arrive at a generator stripped of the context that made them make sense. Large chunks keep
+their context and embed into mush, because a vector averaging six topics is close to nothing
+in particular. Plain chunking just accepts that trade. Everything on this page refuses it.
+
+Set it with `ingestion` on a [`Config`](/pipeline/build), or `grid.ingestion` in a
+[lab config](/lab/grid). It sits directly on top of [chunkers](/axes/chunkers) — the chunker
+still decides where the cuts fall, an ingestion strategy decides which cut gets embedded and
+which gets handed back.
+
+<Note>
+None of this is at the top level. `contextgrid.ingest` is not re-exported as `cg.X` at all —
+write `contextgrid.ingest.get_ingester`, not `cg.get_ingester`.
+</Note>
+
+## The eight strategies
+
+| name | shorthand | what's indexed | what comes back | model calls |
+|---|---|---|---|---|
+| `plain` | — | the chunk | the same chunk | none |
+| `parent-document` | `group` | small chunks | the passage they came from | none |
+| `sentence-window` | `window` | one chunk | that chunk plus its neighbours | none |
+| `hierarchical` | `group` | leaf chunks | the leaf, or the parent once enough siblings hit | none |
+| `contextual` | `model` | the chunk + an LLM-written note on where it sits | the original chunk | one per chunk |
+| `hypothetical-questions` | `count` | the questions a chunk answers | the chunk | one per chunk |
+| `propositions` | `count` | atomic facts pulled from a chunk | the chunk they came from | one per chunk |
+| `summary` | `model` | a summary of the whole document | the whole document | one per document |
+
+`ingestion=None` (the default on `Config`) means plain chunking, and so does the string
+`"plain"` — a sweep that lists both wastes a slot rather than adding a second baseline.
+
+## `Ingested`: the two sides and the map between them
+
+A chunker's `.chunk()` returns a flat list. An ingestion strategy's `.ingest()` returns
+`contextgrid.ingest.base.Ingested` instead — two lists and how they relate:
+
+```python
+>>> from dataclasses import dataclass, field
+>>> from contextgrid.core.documents import Chunk
+>>> @dataclass(slots=True)
+... class Ingested:
+...     indexed: list[Chunk]                        # embedded and searched
+...     retrievable: list[Chunk]                     # what a hit turns into
+...     parent_of: dict[str, str] = field(default_factory=dict)          # indexed id -> retrievable id
+...     presentation: dict[str, list[str]] = field(default_factory=dict)  # wider passage id -> units it covers
+...     presented_chunks: dict[str, Chunk] = field(default_factory=dict)  # those wider passages themselves
+...     model_calls: int = 0
+...     notes: dict[str, object] = field(default_factory=dict)
+>>> [f.name for f in Ingested.__dataclass_fields__.values()]
+['indexed', 'retrievable', 'parent_of', 'presentation', 'presented_chunks', 'model_calls', 'notes']
+```
+
+For `plain`, `indexed` and `retrievable` are the same list and everything else is empty. Every
+other strategy fills in at least one of `parent_of` or `presentation`.
+
+Resolve `contextgrid.ingest.get_ingester(spec)` the same way as every other axis — a spec
+string, an instance, or `None` (which returns `PlainIngestion()`):
+
+```python
+>>> from contextgrid.core.documents import Chunk
+>>> from contextgrid.core.span import Span
+>>> from contextgrid.ingest import get_ingester, IngestionContext
+>>> chunks = [
+...     Chunk(id="policy.md:0-25", span=Span("policy.md", 0, 25), text="Refunds are issued with"),
+...     Chunk(id="policy.md:25-50", span=Span("policy.md", 25, 50), text="in 30 days of purchase."),
+...     Chunk(id="policy.md:50-75", span=Span("policy.md", 50, 75), text="Digital goods are not r"),
+...     Chunk(id="policy.md:75-99", span=Span("policy.md", 75, 99), text="efundable once downlded"),
+... ]
+>>> plain = get_ingester("plain").ingest(chunks, IngestionContext())
+>>> len(plain.indexed), len(plain.retrievable), plain.expansion
+(4, 4, 1.0)
+>>> parent = get_ingester("parent-document:2").ingest(chunks, IngestionContext())
+>>> len(parent.indexed), len(parent.retrievable), parent.expansion
+(4, 2, 2.0)
+```
+
+`parent-document:2` groups every 2 chunks into one parent, so 4 indexed chunks resolve to 2
+retrievable passages — twice as many vectors per thing that can actually be handed back. That
+ratio is `.expansion`:
+
+```python
+@property
+def expansion(self) -> float:
+    """Indexed units per retrievable unit."""
+    return len(self.indexed) / len(self.retrievable) if self.retrievable else 0.0
+```
+
+`sentence-window` and `hierarchical` index one unit per retrievable unit (`expansion == 1.0`)
+because they only change what a *hit* returns, not what gets embedded.
+`hypothetical-questions:3` triples the index for the same retrievable set — worth reading
+beside whatever recall gain it bought, since it isn't free even though it costs no model calls
+at query time.
+
+## `scored_ids`: why a bigger passage doesn't multiply your evidence
+
+This is the part worth understanding before trusting a number from this axis.
+
+A naive scorer would credit whatever id came back. That breaks the moment a returned passage
+covers several indexed units: a question with one correct answer would suddenly have several
+things to find, one for every unit its answer's passage happens to contain — recall drops for
+a purely structural reason that has nothing to do with retrieval quality. That's exactly the
+bug the `presentation` field's own docstring describes hitting on `hierarchical`, measured at
+**1.86 relevant units per question against plain chunking's 1.00**.
+
+`Ingested.scored_ids(returned_id)` is the fix: a returned id counts as whatever units it
+covers, never as an extra unit of its own.
+
+```python
+def scored_ids(self, returned_id: str) -> list[str]:
+    return self.presentation.get(returned_id, [returned_id])
+```
+
+If `returned_id` isn't in `presentation`, it counts as itself — that's every strategy except
+`sentence-window` and `hierarchical`. Those two populate `presentation`, so a returned passage
+expands into the ids underneath it:
+
+```python
+>>> hier = get_ingester("hierarchical:2").ingest(chunks, IngestionContext())
+>>> hier.presentation
+{'policy.md:0-50:parent': ['policy.md:0-25', 'policy.md:25-50'], 'policy.md:50-99:parent': ['policy.md:50-75', 'policy.md:75-99']}
+>>> hier.scored_ids('policy.md:0-50:parent')
+['policy.md:0-25', 'policy.md:25-50']
+```
+
+`parent-document` does **not** use `presentation` — its `retrievable` list already *is* the
+merged parent, resolved at query time through `parent_of`/`.resolve()`, so `scored_ids` on a
+parent id just returns that id. Only the strategies that keep the small unit as the retrievable
+thing and hand back something *wider only for presentation* — `sentence-window`,
+`hierarchical` — need the expansion step.
+
+A whole [`Pipeline`](/pipeline/search) does this for you: `pipeline.scored_ids(pipeline.search(...))`
+expands every returned id and de-duplicates, in order, which is what actually feeds the scorer.
+You will rarely call `Ingested.scored_ids` by hand outside a strategy's own code — the pipeline
+method is the one worth knowing about when a recall number looks off.
+
+**Read `char_recall` beside `recall` for exactly this reason.** A cut-off like `recall@1`
+counts *ids*, and a strategy that hands back a passage covering several units expands into
+several of them before the cut-off is applied — so `recall@1` on `sentence-window` can ask
+whether the single first *unit* was gold, when what a generator actually received was a whole
+window. When `char_recall` and `recall` agree, the two are measuring the same retrieval; when
+they don't, read the presentation dict before trusting either number alone.
+
+## Free: structure only
+
+These four cost nothing but arithmetic — no model, no tokens, no bill. They're the arms the
+paid strategies have to beat before paying for one is worth it, and on a lot of corpora they
+aren't beaten.
+
+### `plain` — `contextgrid.ingest.PlainIngestion`
+
+Index the chunk, return the chunk. No parameters. The baseline every other strategy is judged
+against. Spec: `plain`.
+
+### `parent-document` — `contextgrid.ingest.ParentDocumentIngestion`
+
+Index small chunks, return the fixed passage they came from.
+
+<ParamField path="group" type="int" default="4">
+How many consecutive chunks (never crossing a document boundary) form one parent. Must be at
+least 2 — `group=1` raises `IngestionError`: `"parent-document needs to group at least 2
+chunks, got 1. A group of one is plain chunking under a different name."`
+</ParamField>
+
+Spec: `parent-document`, `parent-document:4` (shorthand for `group=4`).
+
+### `sentence-window` — `contextgrid.ingest.SentenceWindowIngestion`
+
+Index one chunk, return it plus `window` chunks on either side. Where `parent-document` always
+returns the same fixed passage no matter where inside it the hit landed, this one centers the
+returned context on the actual match.
+
+<ParamField path="window" type="int" default="2">
+How many chunks on each side come back with a hit. Must be at least 1 — `window=0` raises
+`IngestionError`: `"sentence-window needs a window of at least 1, got 0. A window of zero is
+plain chunking under a different name."`
+</ParamField>
+
+Windows overlap by design, and `Ingested.presentation` credits every unit a window covers —
+the centre chunk first, then its neighbours in document order:
+
+```python
+>>> sw = get_ingester("sentence-window:1").ingest(chunks[:3], IngestionContext())
+>>> sw.parent_of["policy.md:25-50"]
+'policy.md:0-75:window1'
+>>> sw.scored_ids('policy.md:0-75:window1')
+['policy.md:25-50', 'policy.md:0-25', 'policy.md:50-75']
+```
+
+Spec: `sentence-window`, `sentence-window:2` (shorthand for `window=2`).
+
+### `hierarchical` — `contextgrid.ingest.HierarchicalIngestion`
+
+Index leaves, and decide **at query time** whether to return the leaf or the merged parent —
+the one strategy on this axis that isn't decided when the index is built. Several sibling
+leaves hitting means the passage is the answer, not any one line of it; a single leaf hitting
+means that line was enough.
+
+<ParamField path="group" type="int" default="4">
+How many consecutive chunks form one parent. Must be at least 2, same rule and same error as
+`parent-document`.
+</ParamField>
+<ParamField path="threshold" type="float" default="0.5">
+Fraction of a parent's children that must hit before it merges into the parent. Must be in
+`(0, 1]` — `threshold=0` raises `IngestionError`: `"hierarchical threshold must be in (0, 1],
+got 0.0. At 1 every child must hit before the parent is returned."`
+</ParamField>
+
+Spec: `hierarchical`, `hierarchical:4` (shorthand for `group=4`).
+
+## Paid: one model call at index time, never again
+
+A genuinely different bargain from a [query-time transform](/axes/transforms): these call a
+model once per chunk (or once per document, for `summary`) while the index is built, and never
+again. On a corpus answering a thousand questions a day that cost amortises to nothing; on one
+answering three, it's the dominant expense.
+
+All four share two fields, and all four default `model` to `"openai:gpt-4o-mini"`:
+
+<ParamField path="model" type="str" default='"openai:gpt-4o-mini"'>
+Used when `IngestionContext.llm` isn't supplied. Resolved through
+`contextgrid.evalset.llm.get_llm` — the same model config, or a scripted/`RecordingLLM` for
+tests, works everywhere else this package needs one.
+</ParamField>
+<ParamField path="max_document_chars" type="int" default="12000">
+How much of the source document is put in the prompt, for the strategies that need document
+context (`contextual`, `summary`).
+</ParamField>
+
+**The written text is indexed and never returned.** All four build a chunk whose indexed
+`text` is not a literal slice of the document — that's why the indexed side always has
+`offsets_exact=False`. The `retrievable` side keeps the original chunk, offsets intact, so
+gold evidence resolves exactly as it does for every other arm; a strategy that returned the
+model's paraphrase would be scoring the model against the document, not the retriever.
+
+**A failed model call never loses the chunk.** Every call goes through the same guarded path
+(`_ask`), which catches any exception, records a `NON_DETERMINISTIC_STAGE` warning, and falls
+back to indexing the chunk (or document) as itself. A provider hiccup partway through a build
+degrades that chunk to plain chunking, not the whole run. Check `Ingested.notes["enriched"]`
+against `notes["of"]` after a build using one of these — a run that "used `contextual`" can
+quietly be a mix of enriched and un-enriched chunks.
+
+Pass the model with `IngestionContext(llm=...)` directly, or set `run.model` in a lab config —
+the same key that supplies the [transform axis's](/axes/transforms) model-backed strategies
+and the [generation judge](/axes/generation).
+
+### `contextual` — `contextgrid.ingest.ContextualIngestion`
+
+Prepend an LLM-written note on where the chunk sits in the document, then index that. This is
+Anthropic's contextual retrieval: a chunk reading "the notice period is thirty days" is a
+perfect answer that a search for "termination notice under the services agreement" will never
+find, because the words connecting the two live in a heading several chunks earlier.
+
+No parameters beyond the shared `model` / `max_document_chars`. Spec: `contextual`,
+`contextual:model=openai:gpt-4o-mini`.
+
+```python
+>>> class ScriptedLLM:
+...     def __init__(self, *replies): self.replies = list(replies)
+...     def complete(self, prompt, max_tokens=256):
+...         return self.replies.pop(0) if self.replies else ""
+>>> chunk = Chunk(id="policy.md:0-50", span=Span("policy.md", 0, 50), text="Refunds are issued within 30 days of purchase.")
+>>> ctx = IngestionContext(llm=ScriptedLLM("This chunk is from the refund policy, about the 30-day window."))
+>>> result = get_ingester("contextual").ingest([chunk], ctx)
+>>> result.model_calls
+1
+>>> result.indexed[0].text
+'This chunk is from the refund policy, about the 30-day window.\n\nRefunds are issued within 30 days of purchase.'
+>>> result.indexed[0].offsets_exact
+False
+>>> result.retrievable[0].text, result.retrievable[0].offsets_exact
+('Refunds are issued within 30 days of purchase.', True)
+```
+
+### `hypothetical-questions` — `contextgrid.ingest.HypotheticalQuestionsIngestion`
+
+Index the questions a chunk answers, and return the chunk. A question embeds closer to
+another question than a statement does — instead of rewriting the *query* to look like a
+document (what [HyDE](/axes/transforms) does, at query time, forever), this rewrites the
+*document* to look like a query, once.
+
+<ParamField path="count" type="int" default="3">
+How many questions to generate per chunk. Must be at least 1 — `count=0` raises
+`IngestionError`.
+</ParamField>
+
+Several vectors land per chunk, so the index grows by `count` and so does the embedding bill —
+this is the strategy where `.expansion` matters most:
+
+```python
+>>> ctx = IngestionContext(llm=ScriptedLLM('["How long is the refund window?", "Are digital goods refundable?"]'))
+>>> result = get_ingester("hypothetical-questions:count=2").ingest([chunk], ctx)
+>>> len(result.indexed), len(result.retrievable), result.expansion
+(2, 1, 2.0)
+>>> [c.text for c in result.indexed]
+['How long is the refund window?', 'Are digital goods refundable?']
+```
+
+Spec: `hypothetical-questions`, `hypothetical-questions:5` (shorthand for `count=5`).
+
+### `propositions` — `contextgrid.ingest.PropositionsIngestion`
+
+Index atomic, pronoun-resolved facts pulled from a chunk, and return the chunk they came from.
+A chunk covering six topics has a vector meaning roughly none of them; splitting it into
+standalone facts gives several vectors that each mean one thing.
+
+<ParamField path="count" type="int" default="6">
+Cap on how many propositions per chunk. Must be at least 1, same rule as
+`hypothetical-questions`.
+</ParamField>
+
+Spec: `propositions`, `propositions:4` (shorthand for `count=4`).
+
+### `summary` — `contextgrid.ingest.SummaryIngestion`
+
+Index a summary of the whole document, and return the whole document. The coarsest strategy
+here, and the cheapest of the paid ones — one call per **document**, not per chunk. It answers
+a different question from the rest: not "which passage answers this?" but "which document is
+this about?"
+
+No parameters beyond the shared `model` and `max_document_chars`. There's no `count` to tune —
+what comes back is the entire document, so the cost is context window, not model calls. Spec:
+`summary`.
+
+## Wiring it into a config
+
+```yaml
+grid:
+  ingestion: [null, "parent-document:4", "sentence-window:2", contextual]
+
+run:
+  model: openai:gpt-4o-mini   # supplies contextual, hypothetical-questions, propositions, summary
+```
+
+See [Config](/concepts/config) for how axes and `run.model` fit together, and
+[the Lab](/lab/grid) for running that sweep. `RAPTOR` and `GraphRAG` are not on this axis —
+both build a whole tree or graph over the corpus rather than transform its chunks, which is a
+larger piece of work than the other eight strategies combined.

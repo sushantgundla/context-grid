@@ -1,0 +1,216 @@
+---
+title: "Diagnosing Failures"
+description: "Use diagnose() to find out which pipeline stage actually lost each answer, so a bad score turns into a specific fix instead of a guess."
+---
+
+`recall@5 = 0.4` tells you something failed. It does not tell you whether the parser mangled
+the document, the chunker split the evidence across a boundary, or the retriever ranked a good
+chunk at position 40. `diagnose()` answers that question per question, so you fix the right
+stage instead of guessing.
+
+## The taxonomy: seven failure points
+
+`cg.FailurePoint` is based on the RAG failure taxonomy from Barnett et al. 2024:
+
+```python no-run: signature shown for reference, not a runnable statement
+class FailurePoint(str, Enum):
+    NONE = "none"
+    MISSING_CONTENT = "fp1_missing_content"
+    MISSED_TOP_RANKED = "fp2_missed_top_ranked"
+    NOT_IN_CONTEXT = "fp3_not_in_context"
+    NOT_EXTRACTED = "fp4_not_extracted"
+    WRONG_FORMAT = "fp5_wrong_format"
+    WRONG_SPECIFICITY = "fp6_wrong_specificity"
+    INCOMPLETE = "fp7_incomplete"
+    UNOBSERVABLE = "needs_generation"
+```
+
+<Warning>
+`cg.diagnose()` only sees retrieval — it has no view of what a generator did with the chunks it
+was handed. That means it can only ever assign `NONE`, `FP1`, `FP2`, `FP3`, or `FP7` (computed
+from rank position, see below). **FP4, FP5, and FP6 are in the taxonomy but nothing in
+`diagnose()` currently emits them** — don't expect a retrieval-only run to produce them.
+`UNOBSERVABLE` isn't assigned per item either; `FailureReport.observed_generation` is a flat
+`False` from this function, always.
+</Warning>
+
+## `diagnose()` — run it against a `qrels` / `run` pair
+
+```python no-run: signature shown for reference, not a runnable statement
+def diagnose(
+    evalset: EvalSet, qrels: Qrels, run: Mapping[str, Sequence[str]], *, k: int = 5, deep_k: int = 100,
+) -> FailureReport
+```
+
+It needs the same `qrels` and `run` shapes as [`evaluate()`](/scoring/metrics) — `qrels` from a
+resolved eval set, `run` from a pipeline search — plus the `EvalSet` itself, because it needs
+to see each item's ground truth directly, not just its judgements.
+
+```python
+import contextgrid as cg
+
+items = [
+    cg.EvalItem(id="q1", question="q1", gold=(cg.GoldSpan(cg.Span("doc1", 0, 50)),)),
+    cg.EvalItem(id="q2", question="q2", gold=(
+        cg.GoldSpan(cg.Span("doc1", 100, 150)),
+        cg.GoldSpan(cg.Span("doc1", 500, 550)),
+    )),
+    cg.EvalItem(id="q3", question="q3", gold=(cg.GoldSpan(cg.Span("doc2", 0, 50)),)),
+    cg.EvalItem(id="q4", question="q4", gold=(cg.GoldSpan(cg.Span("doc2", 200, 250)),)),
+    cg.EvalItem(id="q5", question="q5", anchors=(cg.GoldAnchor("doc3", "a quote that never resolved"),)),
+    cg.EvalItem(id="q6", question="q6", gold=(cg.GoldSpan(cg.Span("doc4", 0, 50)),)),
+    cg.EvalItem(id="q7", question="q7"),
+]
+evalset = cg.EvalSet(id="diag-demo", items=tuple(items))
+
+qrels = {
+    "q1": {"c1": 2},
+    "q2": {"c2a": 2, "c2b": 2},
+    "q3": {"c3": 2},
+    "q4": {"c4": 2},
+    "q6": {},  # gold exists, but nothing in this index resolved to it
+}
+run = {
+    "q1": ["c1", "cx", "cy"],
+    "q2": ["c2a", "cz"],
+    "q3": ["n1", "n2", "n3", "n4", "n5", "n6", "c3"],
+    "q4": ["n" + str(i) for i in range(150)] + ["c4"],
+    "q6": ["m1", "m2"],
+}
+
+report = cg.diagnose(evalset, qrels, run, k=5, deep_k=100)
+for d in report.diagnoses:
+    print(d.item_id, d.failure.value, "|", d.detail)
+```
+
+```
+q1 none | evidence at rank 1
+q2 fp7_incomplete | 1 of 2 relevant chunks made it into the top 5
+q3 fp2_missed_top_ranked | the evidence was retrieved at rank 7, just outside the top 5
+q4 fp3_not_in_context | the evidence ranked 151, far below the top 5
+q5 fp1_missing_content | the quoted evidence for this question could not be found in this parse
+q6 fp1_missing_content | no chunk in this index holds the evidence for this question
+```
+
+## How each item gets classified
+
+For every item with ground truth, `diagnose()` looks at `qrels.get(item.id, {})` and
+`run.get(item.id, ())`:
+
+- **No relevant chunk anywhere in `run`** → `FP1 MISSING_CONTENT`. The detail text tells you
+  which fix to reach for: `item.anchors` present but `item.gold` empty means the quote never
+  resolved to a span (**parse-loss** — `q5` above, fix the parser); `item.gold` present but no
+  chunk in the index holds it (**chunk-loss** — `q6` above, fix the chunker or the index). Same
+  failure point, different root cause, different fix.
+- **A relevant chunk is at rank ≤ `k`:** if *every* relevant chunk for that item made the top
+  `k`, that's `NONE` — success (`q1`). If *some but not all* did, that's `FP7 INCOMPLETE`
+  (`q2`) — the evidence straddles a boundary the retriever can't reassemble on its own.
+- **`k < rank ≤ deep_k`** → `FP2 MISSED_TOP_RANKED` (`q3`). The evidence exists and was
+  retrieved, just not ranked high enough — this is reranker territory, and the cheapest of the
+  seven failures to fix.
+- **`rank > deep_k`** → `FP3 NOT_IN_CONTEXT` (`q4`). Ranked far below the top k; recovering it
+  needs a bigger `k` or a different retrieval strategy, not just a reranker.
+
+`deep_k=100` is the line between FP2 ("rank too low, a reranker can likely fix this") and FP3
+("not in context at all") — it's a judgment call baked into the default, not something derived
+from your data. Pass a different `deep_k` if 100 doesn't fit your `k` values.
+
+## Items with no ground truth are excluded, not scored as FP1
+
+```python
+print(report.no_ground_truth)
+# ['q7']
+```
+
+`q7` has neither `gold` nor `anchors` — `diagnose()` puts it in `no_ground_truth` and leaves it
+out of `report.diagnoses` entirely. It is **not** counted as `MISSING_CONTENT`.
+
+<Note>
+This used to be a real bug: a gap in the eval set (a question with no ground truth attached) was
+counted as `FP1`, blaming the parser or chunker for something that was actually a hole in the
+eval set. `diagnose()` now tracks these separately in `no_ground_truth` for exactly that reason —
+worth knowing if you're reading an older writeup that describes the old behavior.
+</Note>
+
+## `FailureReport` — summarizing the run
+
+```python no-run: signature shown for reference, not a runnable statement
+FailureReport(diagnoses: list[Diagnosis] = [], k: int = 5, observed_generation: bool = False, no_ground_truth: list[str] = [])
+```
+
+```python
+print(report.total_items, len(report.failures()), report.dominant)
+# 7 5 FailurePoint.MISSING_CONTENT
+```
+
+- `.total_items` — `len(diagnoses) + len(no_ground_truth)`, i.e. every item the report looked at.
+- `.counts()` — a `dict[str, int]` by `failure.value`, including `"none"`.
+- `.failures()` — all diagnoses except the successes (`NONE` excluded).
+- `.of(failure)` — just the diagnoses for one `FailurePoint`.
+- `.dominant` — the mode of `.failures()`, or `None` if there aren't any.
+- `.summary(*, include_unscored=True) -> str` — a paragraph, not just numbers:
+
+```python
+print(report.summary())
+```
+
+```
+5 of 6 questions failed. 40% of those are fp1_missing_content: the evidence is not in this
+index at all. Either the parser lost it, the chunker dropped it, or the corpus does not
+contain it. No retriever can fix this. This was a retrieval-only run, so failure points four
+to seven -- the ones about what the generator did with the context -- cannot be seen from
+here. A further 1 question (q7) has no ground truth -- no gold spans and no anchors -- so it
+was not scored at all. That is a gap in the eval set, not a fault in this pipeline.
+```
+
+Note the denominator: "5 of 6 questions failed" — `q7` (no ground truth) isn't counted in the 6,
+matching `.no_ground_truth` being tracked separately from `.diagnoses`.
+
+## `Diagnosis` — one item's verdict
+
+```python no-run: signature shown for reference, not a runnable statement
+Diagnosis(item_id: str, failure: FailurePoint, detail: str, gold_rank: int | None = None, retrieved: int = 0)
+```
+
+`.succeeded` is `failure is FailurePoint.NONE`. `.remedy` looks up a one-line fix suggestion:
+
+```python
+d = report.of(cg.FailurePoint.MISSED_TOP_RANKED)[0]
+print(d.remedy)
+# the evidence was retrieved but ranked too low to be used. This is what a reranker is for,
+# and it is the cheapest failure on this list to fix
+```
+
+`.remedy` is `""` for `NONE` and `UNOBSERVABLE` — there's nothing to remedy on a success, and
+nothing to say about a failure point the run couldn't see.
+
+## `cluster()` — group failures so twelve investigations become one
+
+```python
+from contextgrid.diagnose.taxonomy import cluster
+```
+
+```python
+print(cluster(report))
+# {'fp1_missing_content': ['q5', 'q6'], 'fp2_missed_top_ranked': ['q3'],
+#  'fp3_not_in_context': ['q4'], 'fp7_incomplete': ['q2']}
+```
+
+`cluster` is not `cg.X` — import it from `contextgrid.diagnose.taxonomy` directly. It groups
+`report.failures()` by `failure.value`, sorted by key, and excludes successes. "These twelve
+failures are all FP2" means one reranker fix instead of twelve separate investigations — that's
+the point of running `cluster()` before you start debugging item by item.
+
+## Reading the failure points back to a fix
+
+| Failure point | What happened | Where to look |
+|---|---|---|
+| `FP1 MISSING_CONTENT` (parse-loss) | anchor present, but the quote never resolved to a span | the parser — see [Parsers](/axes/parsers) |
+| `FP1 MISSING_CONTENT` (chunk-loss) | gold span exists, but no chunk in this index holds it | the chunker — see [Chunkers](/axes/chunkers) |
+| `FP2 MISSED_TOP_RANKED` | evidence retrieved, ranked between `k` and `deep_k` | a reranker — see [Rerankers](/axes/rerankers) |
+| `FP3 NOT_IN_CONTEXT` | evidence ranked below `deep_k` | a bigger `k`, or a different retrieval strategy — see [Retrieval](/axes/retrieval) |
+| `FP7 INCOMPLETE` | some but not all relevant chunks made the top `k` | chunk size or overlap, or a strategy that can return more than one chunk per document |
+
+`diagnose()` only takes you this far — from a low score to a specific stage. Whether that stage
+is actually broken, or just needs a different config, is what the rest of the [Axes](/axes/overview)
+pages are for.

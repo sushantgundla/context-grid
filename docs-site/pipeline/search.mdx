@@ -1,0 +1,150 @@
+---
+title: "Searching"
+description: "Run queries against a BuiltPipeline with search(), scored_ids(), run_queries(), and chunk_by_id(), and the one argument mix-up that fails silently."
+---
+
+Everything on this page is a method on the [`BuiltPipeline`](/pipeline/build) that
+`cg.build()` returns. None of it needs an eval set — `run_queries()` takes one, but `search()`
+alone is enough to try a pipeline out.
+
+```python
+import contextgrid as cg
+
+corpus = cg.Corpus.from_texts({
+    "refunds.md": "refunds take within 30 days of purchase. digital goods are not refundable once downloaded.",
+    "shipping.md": "express shipping arrives the next business day.",
+})
+config = cg.Config(parser="markdown", chunker="recursive:512", embedder="tfidf", index="dense", k=2)
+pipeline = cg.build(config, corpus)
+```
+
+## `search()`
+
+```python no-run: signature shown for reference, not a runnable statement
+pipeline.search(query: str, k: int | None = None) -> list[str]
+```
+
+Takes a question, returns a list of chunk ids, best match first. `k` overrides
+`config.k` for this one call; leave it off and `config.k` is used.
+
+```python
+ids = pipeline.search("How long do refunds take?")
+print(ids)
+```
+```
+['refunds.md:0-90', 'shipping.md:0-47']
+```
+
+That's it — a chunk id, not a `Chunk`. To get the text back, see `chunk_by_id()` below.
+
+With `config.reranker` set, `search()` asks the retriever for `config.candidates` results
+first and lets the reranker cut that down to `k`; without one, the retriever is asked for `k`
+directly, so a no-reranker pipeline never pays for candidates it would throw away. Which
+retrieval strategy actually gathers those candidates — one lookup, several fused, a model
+deciding as it goes — is set by `config.retrieval`; see [Retrieval](/axes/retrieval).
+
+## `scored_ids()`
+
+```python no-run: signature shown for reference, not a runnable statement
+pipeline.scored_ids(returned: Sequence[str]) -> list[str]
+```
+
+Takes the chunk ids `search()` returned and maps them onto the ids your eval set's ground
+truth actually uses, in order, without repeats. For a plain configuration (no
+[ingestion](/axes/ingestion) strategy reshaping what gets indexed vs. what gets returned),
+this is the identity — you get the same ids back:
+
+```python
+scored = pipeline.scored_ids(ids)
+print(scored)
+```
+```
+['refunds.md:0-90', 'shipping.md:0-47']
+```
+
+It stops being the identity once `config.ingestion` is something like `contextual` or
+`propositions`, where several indexed units can stand for one presented passage — that's the
+whole reason this method exists, and why scoring should always go through it rather than
+scoring `search()`'s output directly.
+
+<Warning>
+**`scored_ids()` takes a sequence of chunk ids, not a query string.** A `str` in Python *is*
+a `Sequence[str]` — each character is a one-character string — so passing a query by mistake
+does not raise. It silently iterates the string's characters and "scores" each letter as if
+it were a chunk id:
+
+```python
+oops = pipeline.scored_ids("refunds.md:0-90")
+print(oops)
+```
+```
+['r', 'e', 'f', 'u', 'n', 'd', 's', '.', 'm', ':', '0', '-', '9']
+```
+
+No error, no warning — just a list of single characters (deduplicated, which is why repeated
+letters like the second `d` and `0` don't show up twice) that quietly fails to match anything
+in your qrels later. If a scoring run comes back with recall near zero for no reason you can
+explain, check that you passed `search()`'s *list* result into `scored_ids()`, not the
+question itself or a bare chunk id.
+</Warning>
+
+## `run_queries()`
+
+```python no-run: signature shown for reference, not a runnable statement
+pipeline.run_queries(evalset: EvalSet, k: int | None = None) -> dict[str, list[str]]
+```
+
+Runs `search()` (then `scored_ids()`) for every item in an `EvalSet`, keyed by
+`item.id`. It also records each query's wall-clock time into
+`pipeline.timings.query_ms` — `build()` never touches that list, so before the first call it
+is empty.
+
+```python
+evalset = cg.EvalSet(
+    id="demo",
+    items=(
+        cg.EvalItem(id="q1", question="How long do refunds take?"),
+        cg.EvalItem(id="q2", question="How fast is express shipping?"),
+    ),
+)
+
+run = pipeline.run_queries(evalset)
+print(run)
+print(pipeline.timings.query_ms)
+```
+```
+{'q1': ['refunds.md:0-90', 'shipping.md:0-47'], 'q2': ['shipping.md:0-47', 'refunds.md:0-90']}
+[0.048..., 0.554...]
+```
+
+The result is a `Run` (a plain `dict[str, list[str]]`) in the shape every metric in
+[Scoring](/scoring/metrics) expects — pass it alongside a `Qrels` to `cg.evaluate()`.
+Loading or building an `EvalSet` in the first place is covered in
+[Loading an Eval Set](/evalsets/loading).
+
+## `chunk_by_id()`
+
+```python no-run: signature shown for reference, not a runnable statement
+pipeline.chunk_by_id() -> dict[str, Chunk]
+```
+
+Every chunk that can come back from a search, keyed by id — including presentation passages
+from an ingestion strategy, which is why reranking and generation both use this map rather
+than indexing into `pipeline.chunks` directly.
+
+```python
+by_id = pipeline.chunk_by_id()
+print(list(by_id.keys()))
+print(by_id["refunds.md:0-90"].text)
+```
+```
+['refunds.md:0-90', 'shipping.md:0-47']
+refunds take within 30 days of purchase. digital goods are not refundable once downloaded.
+```
+
+Rebuilt on every call — it's a dict comprehension over `pipeline.chunks` plus
+`pipeline.ingested.presented_chunks`, not cached. Fine for occasional lookups; call it once
+and reuse the result if you're looking up many ids in a loop.
+
+Next: [Generating an Answer](/pipeline/answer) covers turning a `search()` result into text
+with `pipeline.answer()`.

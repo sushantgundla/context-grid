@@ -1,0 +1,199 @@
+---
+title: "Writing a Custom Plugin"
+description: "Implement your own Chunker, Embedder, Metric or other plugin, register it, and use it from a sweep — including the plugins: config key and its CLI-versus-Python gotcha."
+---
+
+Every axis in context-grid — parser, chunker, embedder, index, transform, retrieval, reranker,
+ingestion strategy, generator, metric, tokenizer — is a `Registry` of small, swappable classes,
+resolved by a spec string like `"recursive:512"`. The built-in plugins on each axis are
+documented under [Axes](/axes/overview), but the registries are not closed: writing your own
+class with the right shape and calling `.register()` on it puts your plugin on equal footing
+with every shipped one — usable in a sweep, on the grid, in a config file's `plugins:` list.
+
+This page covers all of that: the protocol shape, registering, the `plugins:` config key and
+its two forms, and a gotcha specific to the command line.
+
+## The shape every plugin has
+
+Every family's protocol is small — `name`, `version`, and one method that does the actual work.
+Two real ones, copied from the source:
+
+<Tabs>
+<Tab title="Chunker">
+```python no-run: a Protocol definition, not something you run directly
+class Chunker(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def version(self) -> str: ...
+
+    def chunk(self, parsed: ParsedDocument) -> list[Chunk]:
+        """Produce chunks in reading order.
+
+        Every chunk's span must point into `parsed.document`. A chunker that rewrites text --
+        prepending LLM-written context, extracting propositions -- must set
+        `offsets_exact=False` on the chunks it returns.
+        """
+        ...
+```
+`contextgrid.core.protocols.Chunker` — a `runtime_checkable` `Protocol`, not a base class. You
+don't inherit from it; a class with matching attributes and methods satisfies it.
+</Tab>
+<Tab title="Metric">
+```python no-run: a Protocol definition, not something you run directly
+class Metric(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def version(self) -> str: ...
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        """One query's score. Never raises for an empty or missing judgements/ranked."""
+        ...
+```
+`contextgrid.score.base.Metric`. `judgements` maps chunk id to grade (`grade > 0` means
+relevant); `ranked` is the retriever's ordered chunk ids for one query; `k` is the cut-off.
+</Tab>
+</Tabs>
+
+Parsers, embedders, indexes, transforms, retrieval strategies, rerankers, ingestion strategies
+and tokenizers each have their own protocol in this same shape — see the corresponding page
+under [Axes](/axes/overview) for the one you're implementing (for example, the full `Embedder`
+protocol — `embed_documents`, `embed_queries`, and the query/document split that makes E5- and
+BGE-style models work correctly — is on [Embedders](/axes/embedders)).
+
+## Registering it
+
+`register` is a decorator on the family's registry, taking the spec name and an optional
+`doc=` string (falls back to the class's own docstring):
+
+```python
+from collections.abc import Mapping, Sequence
+from contextgrid.score.base import METRICS
+
+
+class WeightedRecall:
+    """Recall, but a grade-2 chunk counts double."""
+
+    name = "weighted_recall"
+    version = "1"
+
+    def evaluate(self, judgements: Mapping[str, int], ranked: Sequence[str], k: int) -> float:
+        relevant = {cid: grade for cid, grade in judgements.items() if grade > 0}
+        if not relevant:
+            return 0.0
+        total = sum(max(grade, 1) for grade in relevant.values())
+        hit = sum(max(relevant[cid], 1) for cid in ranked[:k] if cid in relevant)
+        return hit / total
+
+
+METRICS.register("weighted_recall", doc="Recall, weighted by gold grade.")(WeightedRecall)
+
+print("weighted_recall" in dict(METRICS.describe()))
+metric = METRICS.create("weighted_recall")
+print(metric.name, metric.version)
+print(metric.evaluate({"c1": 2, "c2": 1}, ["c1", "c3"], k=5))
+```
+
+```text
+True
+weighted_recall 1
+0.6666666666666666
+```
+
+Every axis's registry has the same `register`, `describe`, and `create` methods —
+`contextgrid.chunk.CHUNKERS`, `contextgrid.embed.EMBEDDERS`, `contextgrid.parse.PARSERS`,
+`contextgrid.index.INDEXES`, `contextgrid.transform.TRANSFORMS`,
+`contextgrid.retrieve.RETRIEVERS`, `contextgrid.rerank.RERANKERS`,
+`contextgrid.ingest.INGESTERS`, `contextgrid.generate.GENERATORS`,
+`contextgrid.score.base.METRICS`, `contextgrid.tokens.TOKENIZERS`. Once registered, the spec
+string works everywhere a built-in one does — `cg.Lab(corpus).grid(chunker="my-chunker:32")`,
+or named in a config file, exactly like `"recursive"` or `"structural"`.
+
+From plain Python, that's the whole story: import the module that calls `.register()` before
+you build anything that needs the name, the same way you'd import any other piece of your own
+code.
+
+## Using it from a config file: the `plugins:` key
+
+A YAML experiment file names plugins by spec string too — `chunker: [my-chunker:32]`,
+`run: {headline: weighted_recall@5}` — and those strings have to resolve against a registry the
+same way. From Python that registry is already populated, because your script imported the file
+that calls `.register()`. **From the command line it is not**, and this is the part that surprises
+people: `contextgrid run config.yaml` starts a fresh process that imports `contextgrid` and
+nothing else. Your own module's `.register()` line never ran, so the name it would have
+registered doesn't exist, and the config is rejected as a typo.
+
+A top-level `plugins:` list in the config fixes it, by naming the modules to import first —
+either a dotted module name already importable from where you run the command, or a path to a
+file:
+
+```yaml
+plugins:
+  - my_metrics           # a module on sys.path
+  - ./local_plugins.py   # or a file sitting beside the config
+```
+
+Confirmed with the same `WeightedRecall` class above, saved as `my_metrics.py` next to the
+config and registered there instead of inline:
+
+```bash
+# without plugins: — the name isn't registered in this fresh process
+$ contextgrid check no_plugin.yaml
+```
+```text
+error: unknown metric 'weighted_recall' in run.headline. Available: hit_rate, map, mrr, ndcg, precision, recall
+```
+```bash
+# with `plugins: [./my_metrics.py]` in the config
+$ contextgrid check with_plugin.yaml
+```
+```text
+with_plugin: 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 1 on paper, 1 to run in ofat mode, scored on weighted_recall@5
+  ingestion   [None]
+  parser      ['markdown']
+  chunker     ['recursive:512']
+  embedder    ['tfidf']
+  index       ['dense']
+  transform   [None]
+  retrieval   [None]
+  reranker    [None]
+  candidates  [50]
+  generator   [None]
+
+config is valid.
+```
+
+<Warning>
+**Order matters.** These imports happen before `run:` is parsed, because parsing `run` is what
+validates `headline` against the registry. Loading plugins afterwards would reject the very name
+the plugin file exists to provide — which is why `plugins:` is read first regardless of where it
+sits in the file.
+</Warning>
+
+A dotted module name that can't be imported fails with a message that says exactly that,
+naming the module and the underlying `ImportError`:
+
+```text
+error: plugins: could not import 'not_a_real_module' (No module named 'not_a_real_module'). It has to be importable from where you are running -- either installed, or on PYTHONPATH. To load a file instead, give a path: `./my_plugins.py`
+```
+
+A `./file.py` path is resolved against the config file's own directory, so the config stays
+portable between working directories — it does not need to be on `PYTHONPATH` or installed at
+all.
+
+<Warning>
+**This executes code the config points at.** That is the entire feature — registering a plugin
+means running a `register` call — but it means a config file is as trusted as a script. Anything
+imported through `plugins:` can do whatever a Python module can do. Read a `contextgrid.yaml`
+from somewhere you would not run a script from before you run it.
+</Warning>
+
+## `contextgrid check` catches most mistakes here too
+
+[`contextgrid check`](/reference/cli) builds one instance of every plugin the matrix names,
+including the ones your own `plugins:` entries registered — so a typo in your custom class's
+spec string, or a missing optional dependency it needs, is caught the same way a built-in
+plugin's would be, before a sweep spends any time or money.

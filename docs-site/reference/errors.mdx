@@ -1,0 +1,200 @@
+---
+title: "Errors"
+description: "Every exception context-grid raises, the real message text for the ones you're most likely to hit, and what to do about each."
+---
+
+Every exception context-grid raises inherits from one base class, `ContextGridError`, which
+itself inherits from Python's built-in `Exception`. Catch `contextgrid.ContextGridError` and
+you catch everything this package can raise on purpose — including the ones below that are
+not imported at the top of `contextgrid` and need a submodule import to catch by name.
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_chunker("not-a-real-chunker")
+except cg.ContextGridError as exc:
+    print(f"context-grid could not do that: {exc}")
+```
+
+Most of `ContextGridError`'s subclasses also inherit a standard Python exception — `ValueError`,
+`KeyError`, `ImportError`, or `RuntimeError` — so `except ValueError` catches most of them too,
+if that fits better with error handling you already have.
+
+## `MissingExtraError`
+
+The one you will hit first. Ask for a parser, chunker, embedder or generator whose library
+is not installed, and instead of a bare `ModuleNotFoundError` four frames deep, you get an
+exact install command:
+
+```python
+from contextgrid.core.errors import MissingExtraError
+
+exc = MissingExtraError("The 'docling' parser", "parse-ml", package="docling")
+print(str(exc))
+```
+
+```
+The 'docling' parser requires the 'parse-ml' extra (needs docling). Install it with: pip install "context-grid[parse-ml]"
+```
+
+The message is built as `f"{feature} requires the '{extra}' extra{detail}. Install it with: {hint}"`
+where `hint` is always `pip install "context-grid[{extra}]"`. Run that exact command, then
+retry — nothing else about your code needs to change, since the plugin registers lazily and is
+only imported on first use.
+
+`MissingExtraError` is also an `ImportError`, so `except ImportError` catches it too.
+
+## The full hierarchy
+
+<Tabs>
+<Tab title="Exported from contextgrid">
+These are importable directly: `from contextgrid import SpanError` etc.
+
+| Exception | Also inherits | Raised when |
+|---|---|---|
+| `ContextGridError` | `Exception` | Base class. Never raised directly except for a handful of internal invariant checks. |
+| `MissingExtraError` | `ImportError` | An optional dependency for a plugin is not installed. |
+| `UnknownPluginError` | `KeyError` | A spec string names a parser/chunker/embedder/etc. that is not registered. |
+| `SpanError` | `ValueError` | A `Span` is malformed (`end < start`, negative `start`), or two spans were compared in a way that makes no sense. |
+| `DocumentError` | `ValueError` | A `Document`, `ParsedDocument` or source file is inconsistent — missing bytes, a block referencing text outside the document. |
+| `EvalSetError` | `ValueError` | An `EvalItem`, `GoldSpan` or `GoldAnchor` is malformed — empty question, zero-length gold span, negative grade. |
+| `ResolutionError` | `ValueError` | A `SpanResolver` was configured with an invalid threshold, or gold spans could not be resolved to chunks. |
+| `CorpusError` | `ValueError` | A `Corpus` could not be loaded — bad directory, or two source files sharing one id. |
+| `ChunkerError` | `ValueError` | A chunker was configured in a way that cannot produce sensible chunks — e.g. `size=0`. |
+</Tab>
+<Tab title="Reachable via a submodule">
+Still `ContextGridError` subclasses — `except contextgrid.ContextGridError` still catches
+these — but not re-exported at the top of `contextgrid`. Import from the path shown to catch
+one by name.
+
+| Exception | Import from | Raised when |
+|---|---|---|
+| `MatrixError` | `contextgrid.grid.matrix` | A `Matrix` axis is empty, or `k < 1`. |
+| `ConfigError` | `contextgrid.config.schema` | An experiment YAML file has an invalid or unknown key. |
+| `ValidationError` | `contextgrid.validate` | `self_check()` or `validate()` found the pipeline unusable. |
+| `SignificanceError` | `contextgrid.score.significance` | A comparison was asked for that cannot be computed — e.g. too few paired scores. |
+| `EmbedderError` | `contextgrid.embed.remote` | A hosted embedder call failed. |
+| `AdapterError` | `contextgrid.embed.adapter` | An embedding adapter (`fit_adapter`, `LinearAdapter`) was given data it cannot use. |
+| `EmbeddingQualityError` | `contextgrid.embed.quality` | An embedding quality check could not run. |
+| `AssemblyError` | `contextgrid.assemble.context` | `ContextAssembler` could not assemble retrieved chunks into context. |
+| `IngestionError` | `contextgrid.ingest.base` | An ingestion strategy failed on its input. |
+| `LLMError` | `contextgrid.evalset.llm` | A call to an LLM (question generation, judging) failed. |
+| `FusionError` | `contextgrid.index.hybrid` | A hybrid index could not fuse its component result sets. |
+| `IndexBuildError` | `contextgrid.index.dense` | A dense index could not be built from the given vectors. |
+| `QuantizationError` | `contextgrid.index.quantize` | A quantized index was configured or queried in an invalid way. |
+| `RerankerError` | `contextgrid.rerank.remote` | A hosted reranker call failed. |
+| `RetrievalError` | `contextgrid.retrieve.strategies` | A retrieval strategy could not complete a search. |
+| `JudgeError` | `contextgrid.generate.judge` | The generation judge could not score an answer. |
+</Tab>
+</Tabs>
+
+## `UnknownPluginError`: real triggers
+
+Every axis raises the same shape of error for an unrecognised spec string — a message that
+names what you asked for and lists everything that *is* registered:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.get_chunker("not-a-real-chunker")
+except cg.UnknownPluginError as exc:
+    print(exc)
+```
+
+```
+no chunker named 'not-a-real-chunker'. Available: chonkie:code, chonkie:recursive, chonkie:sentence, chonkie:token, fixed, langchain:character, langchain:markdown, langchain:recursive, recursive, semantic, sentence, structural
+```
+
+The same shape from `get_parser`:
+
+```python
+try:
+    cg.get_parser("nope")
+except cg.UnknownPluginError as exc:
+    print(exc)
+```
+
+```
+no parser named 'nope'. Available: agno, docling, markdown, marker, pdfplumber, pymupdf, pymupdf4llm, text
+```
+
+`UnknownPluginError` carries `.family` (`"chunker"`, `"parser"`, ...), `.name` (what you
+typed), and `.known` (the list of registered names) as attributes, if you want to act on them
+rather than parse the message.
+
+## Other errors, with their real message text
+
+```python
+from contextgrid import Span, SpanError, GoldSpan, EvalItem, EvalSetError, Corpus, CorpusError
+
+try:
+    Span(start=10, end=5, doc_id="x")
+except SpanError as exc:
+    print(exc)
+# span end (5) must be >= start (10)
+
+try:
+    GoldSpan(span=Span(start=0, end=0, doc_id="x"), grade=1)
+except EvalSetError as exc:
+    print(exc)
+# gold span must cover at least one character: Span('x', 0, 0)
+
+try:
+    EvalItem(id="q1", question="")
+except EvalSetError as exc:
+    print(exc)
+# eval item 'q1' has an empty question
+
+try:
+    Corpus.from_dir("/this/does/not/exist/at/all")
+except CorpusError as exc:
+    print(exc)
+# /this/does/not/exist/at/all is not a directory
+```
+
+```python
+from contextgrid import SpanResolver, ResolutionError
+
+try:
+    SpanResolver(threshold=1.5)
+except ResolutionError as exc:
+    print(exc)
+# threshold must be in (0, 1], got 1.5. A threshold of 0 would mark every touching chunk relevant.
+```
+
+```python
+from contextgrid import Matrix
+from contextgrid.grid.matrix import MatrixError
+
+try:
+    Matrix(chunker=())
+except MatrixError as exc:
+    print(exc)
+# the 'chunker' axis is empty. Give it at least one value, or leave it out to use the default.
+
+try:
+    Matrix(k=0)
+except MatrixError as exc:
+    print(exc)
+# k must be at least 1, got 0
+```
+
+## Quick reference
+
+| Error | What caused it | What to do |
+|---|---|---|
+| `MissingExtraError` | A plugin's library isn't installed. | Run the `pip install "context-grid[...]"` command the message gives you, exactly as printed. |
+| `UnknownPluginError` | Typo in a spec string, or a plugin from an extra you haven't installed yet. | Check `.known` (or the message) against what you typed. If it's spelled right, it may need an extra — see [Axes](/axes/overview). |
+| `CorpusError` | The path passed to `Corpus.from_dir` doesn't exist, or two source files share an id. | Check the path. For duplicate ids, rename the file or pass explicit ids yourself. |
+| `SpanError` | A `Span` has `end < start`, or a negative `start`. | Fix the offsets — spans are `[start, end)` in characters, and `end` must be `>= start`. |
+| `EvalSetError` | An `EvalItem`, `GoldSpan` or `GoldAnchor` is malformed. | Read the message — it names exactly which field failed and why. See [Eval Sets](/evalsets/overview). |
+| `ResolutionError` | `SpanResolver(threshold=...)` outside `(0, 1]`. | Pick a threshold in that range. `0` is rejected on purpose — it would mark every touching chunk relevant. |
+| `ChunkerError` | A chunker parameter can't produce chunks, e.g. `size=0`. | Use a positive size. |
+| `MatrixError` | A `Matrix` axis got an empty tuple, or `k < 1`. | Give every axis at least one value; `k` must be `>= 1`. |
+| `ContextGridError` (base, uncaught elsewhere) | An internal invariant was violated — e.g. registering two plugins under the same name. | Read the message; this one is rare in normal use. |
+
+See [Axes](/axes/overview) for which extra each plugin needs before it can be built at all,
+and [Cost](/reference/cost) for what happens when a model name can't be priced (a warning, not
+an exception).

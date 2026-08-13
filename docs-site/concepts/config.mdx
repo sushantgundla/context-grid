@@ -1,0 +1,128 @@
+---
+title: "The Config Object"
+description: "Every field on cg.Config, its default, and how to turn a built configuration back into runnable Python with config_to_python."
+---
+
+`Config` is one point in the grid — one parser, one chunker, one everything. It's a frozen
+(immutable) dataclass, written as spec strings, so a configuration is readable, diffable, and
+paste-able:
+
+```python
+import contextgrid as cg
+
+config = cg.Config(chunker="structural:512", index="bm25", reranker="lexical")
+print(config)
+```
+
+```
+Config(parser='markdown', chunker='structural:512', embedder='tfidf', index='bm25', transform=None, retrieval=None, reranker='lexical', k=10, candidates=50, ingestion=None, generator=None)
+```
+
+Only `chunker`, `index`, and `reranker` were named. Everything else — including `parser`,
+which comes first — sits at its own default.
+
+## Every field
+
+This is the declared order (also the positional order, if you construct one without keyword
+arguments):
+
+| Field | Type | Default | Spec grammar covered on |
+|---|---|---|---|
+| `parser` | `str` | `"markdown"` | [Parsers](/axes/parsers) |
+| `chunker` | `str` | `"recursive:512"` | [Chunkers](/axes/chunkers) |
+| `embedder` | `str \| None` | `"tfidf"` | [Embedders](/axes/embedders) |
+| `index` | `str` | `"dense"` | [Indexes](/axes/indexes) |
+| `transform` | `str \| None` | `None` | [Transforms](/axes/transforms) |
+| `retrieval` | `str \| None` | `None` | [Retrieval](/axes/retrieval) |
+| `reranker` | `str \| None` | `None` | [Rerankers](/axes/rerankers) |
+| `k` | `int` | `10` | how many results `search()` returns |
+| `candidates` | `int` | `50` | how many results the retriever hands the reranker |
+| `ingestion` | `str \| None` | `None` (meaning `plain`) | [Ingestion](/axes/ingestion) |
+| `generator` | `str \| None` | `None` (no generation) | [Generating an Answer](/pipeline/answer) |
+
+`ingestion` and `generator` sit last in the declared order on purpose, even though ingestion
+is the first thing to run — putting a new field ahead of `parser` would silently shift every
+positional argument anyone had already written against `Config`.
+
+<Note>
+`Config()` with no arguments at all is a real, runnable configuration: `markdown` parsing,
+`recursive:512` chunking, `tfidf` embeddings, a `dense` index, no transform, no reranker, no
+generation. That's what every axis defaults to when you leave it out of a `Lab().grid(...)`
+sweep too.
+</Note>
+
+## `Config` is frozen
+
+Fields can't be reassigned — build a changed copy with `.with_()` instead:
+
+```python
+base = cg.Config()
+variant = base.with_(chunker="structural:256", reranker="mmr")
+print(base)
+print(variant)
+```
+
+```
+Config(parser='markdown', chunker='recursive:512', embedder='tfidf', index='dense', transform=None, retrieval=None, reranker=None, k=10, candidates=50, ingestion=None, generator=None)
+Config(parser='markdown', chunker='structural:256', embedder='tfidf', index='dense', transform=None, retrieval=None, reranker='mmr', k=10, candidates=50, ingestion=None, generator=None)
+```
+
+Trying to set an attribute directly raises `FrozenInstanceError`, not a silent no-op.
+
+`config.label` is a short, human-readable identifier — the string a leaderboard row shows —
+built from whichever fields aren't at a "does nothing" value: `"markdown · structural:512 ·
+tfidf · bm25 · lexical@50"` for the config above. `config.as_dict()` gives the same fields
+back as a plain dict, which is what gets written into a report.
+
+## Round-tripping back to code
+
+`cg.config_to_python(config)` takes a built configuration and writes real, runnable Python
+that reconstructs it — the whole point being that it actually runs, not that it merely reads
+correctly:
+
+```python
+config = cg.Config(chunker="structural:512", index="bm25", reranker="lexical")
+print(cg.config_to_python(config))
+```
+
+```
+"""The winning configuration, as context-grid found it."""
+
+import contextgrid as cg
+
+# markdown · structural:512 · tfidf · bm25 · lexical@50
+# Any field not named below is at its default; `cg.Config()` puts it back.
+config = cg.Config(
+    chunker="structural:512",
+    index="bm25",
+    reranker="lexical",
+)
+
+# Placeholder: this export was not told where the documents are.
+corpus = cg.Corpus.from_dir("./documents")
+pipeline = cg.build(config, corpus)
+
+for chunk_id in pipeline.search("your question here"):
+    print(chunk_id)
+```
+
+Only fields that differ from `Config()`'s own defaults are written out — the same rule this
+page's own table follows, read straight off the dataclass rather than hand-maintained, so it
+can't drift out of sync with a field that gets added later.
+
+<Tip>
+Pass `corpus=` — the same path you built the pipeline against — and `config_to_python`
+resolves it to an absolute path instead of that `./documents` placeholder, so the exported
+script matches what was actually measured no matter where it's later run from. Swap in a real
+corpus path and the same script runs end to end: `pipeline.search(...)` prints a real chunk
+id, e.g. `refund.md:0-196`.
+</Tip>
+
+`config_to_python` is what the CLI writes into `report.out/` when `report: formats:
+[python]` is set — see [Reports](/reference/reports) for `config_to_yaml` and
+`winning_config_to_yaml`, the two sibling exporters that write YAML instead.
+
+This page covers `cg.Config` — one point in the grid. For the YAML experiment file the CLI
+reads (`corpus:`, `grid:`, `run:`, and its own `plugins:` key for registering your own
+chunker, embedder, or metric), see [CLI Reference](/reference/cli) and
+[Writing a Custom Plugin](/concepts/plugins).

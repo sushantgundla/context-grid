@@ -1,0 +1,399 @@
+---
+title: "API Index"
+description: "Every name context-grid exports, grouped by area, with a one-line purpose and a link to the page that explains it."
+---
+
+`contextgrid.__all__` holds 171 names. Every one of them is listed below, grouped by the part
+of the tool it belongs to, so you can find any symbol from this one page.
+
+```python
+import contextgrid as cg
+
+print(len(cg.__all__))
+```
+
+```
+171
+```
+
+<Tip>
+Most day-to-day code needs far less than this. `cg.Lab`, `cg.Corpus`, `cg.matrix` and
+`cg.EvalSet` cover the common path — see [the Lab](/lab/overview) if you haven't started
+there yet. This page is for when you already know roughly what you want and need the exact
+name.
+</Tip>
+
+Anything not on this list is not part of the public interface, even if you can technically
+import it from a submodule — importing straight from `contextgrid` (rather than
+`contextgrid.chunk.recursive` or similar) is the one guarantee that survives a version bump.
+
+## Core text model — spans, documents, chunks
+
+| Name | Purpose |
+|---|---|
+| `Span` | A half-open character range `[start, end)` in one document. |
+| `Document` | A body of text that character offsets refer to. |
+| `SourceFile` | One input file, before anything has been extracted from it. |
+| `MediaType` | The input formats the pipeline knows about. |
+| `ParsedDocument` | One parser's reading of one source file. |
+| `Block` | A structural region of a parsed document, with its position in the text. |
+| `BlockKind` | What a parser thinks a region of the document is. |
+| `Chunk` | A unit of retrievable text, and where it came from. |
+| `ChunkSet` | Every chunk one chunker produced from one parse, with its provenance. |
+| `merge_spans` | Collapse overlapping and touching spans into a minimal disjoint set. |
+| `total_length` | Characters covered by a set of spans, counting shared characters once. |
+| `covered_length` | Characters of one span that appear anywhere in a set of others. |
+| `coverage_fraction` | `covered_length` as a fraction of the target span, in [0, 1]. |
+| `intersection_length` | Characters covered by both of two span sets, counting each once. |
+| `collapse_whitespace` | Collapse runs of whitespace to one space, mapping each result character back. |
+
+See [Spans and Offsets](/concepts/spans-and-offsets).
+
+## Corpus
+
+| Name | Purpose |
+|---|---|
+| `Corpus` | A named set of source files, before anything has been extracted from them. |
+| `CorpusFingerprint` | What a corpus is made of: size, format mix, table density. |
+| `fingerprint` | Profile a corpus, using a parse for content statistics when one is available. |
+| `fingerprint_sources` | Profile a corpus from its bytes alone. Instant, and enough to catch duplicates. |
+
+See [Corpus](/concepts/corpus).
+
+## Configuration and the built pipeline
+
+| Name | Purpose |
+|---|---|
+| `Config` | One point in the grid: one value per axis. |
+| `build` | Run one configuration's indexing side: parse, chunk, embed, index. |
+| `BuiltPipeline` | A configuration that has read the corpus and is ready to answer queries. |
+| `Timings` | Wall-clock time per stage, in milliseconds. |
+
+See [Build](/pipeline/build).
+
+## Plugin registries and resolution
+
+| Name | Purpose |
+|---|---|
+| `Registry` | A named collection of plugins of one family. |
+| `UnknownPluginError` | Raised when a spec string names a plugin nothing is registered under. |
+| `CHUNKERS` | The chunker registry. |
+| `PARSERS` | The parser registry. |
+| `EMBEDDERS` | The embedder registry. |
+| `INDEXES` | The index registry. |
+| `RERANKERS` | The reranker registry. |
+| `TRANSFORMS` | The query-transform registry. |
+| `TOKENIZERS` | The tokenizer registry. |
+| `get_chunker` | Resolve a chunker from a spec like `recursive:512,overlap=64`, or pass one through. |
+| `get_parser` | Resolve a parser from a spec string, or pass an instance through. |
+| `get_embedder` | Resolve an embedder from a spec like `hash:512`, or pass an instance through. |
+| `get_index` | Resolve an index from a spec like `hybrid:weighted,alpha=0.7`, or pass one through. |
+| `get_reranker` | Resolve a reranker from a spec, or pass one through. `None` means no reranking. |
+| `get_transform` | Resolve a query transform, supplying the model to the ones that need one. |
+| `get_tokenizer` | Resolve a tokenizer from a name, a spec string, or an instance. |
+| `Chunker` | Protocol: cuts a parsed document into retrievable units. |
+| `Parser` | Protocol: turns a source file into text with structure. |
+| `Embedder` | Protocol: turns text into vectors, queries and documents handled separately. |
+| `Index` | Protocol: holds chunks and finds the ones most like a query. |
+| `Reranker` | Protocol: reorders a candidate list using the query and passage together. |
+| `QueryTransform` | Protocol: rewrites a question into one or more search queries. |
+| `Generator` | Protocol: turns a question and its context into an answer. |
+| `Tokenizer` | Protocol: turns text into token boundaries. |
+
+See [Axes Overview](/axes/overview).
+
+## Chunkers
+
+| Name | Purpose |
+|---|---|
+| `SemanticChunker` | Cut where consecutive sentences stop being about the same thing. |
+
+See [Chunkers](/axes/chunkers).
+
+## Embedders
+
+| Name | Purpose |
+|---|---|
+| `AdaptedEmbedder` | An embedder with an adapter on its query side. |
+| `LinearAdapter` | One matrix applied to query vectors. Documents are left alone. |
+| `Triplet` | One training example: a question, the passage that answers it, and near misses. |
+| `fit_adapter` | Embed a set of triplets and fit an adapter to them. |
+| `mine_triplets` | Turn a completed run into adapter training data. |
+| `split_triplets` | Split triplets into a training half and a held-out half. |
+
+See [Embedders](/axes/embedders).
+
+## Indexes
+
+| Name | Purpose |
+|---|---|
+| `Quantization` | How a `QuantizedDenseIndex` compresses its vectors. |
+| `QuantizedDenseIndex` | Exact dense search over compressed vectors, with an optional rescoring pass. |
+| `recall_against_exact` | What fraction of exact search's top k an approximate index also found. |
+
+See [Indexes](/axes/indexes).
+
+## Query transforms
+
+| Name | Purpose |
+|---|---|
+| `Decompose` | Break a question into the sub-questions it actually contains. |
+| `ExpandAcronyms` | Spell out acronyms and abbreviations. No model required. |
+| `HyDE` | Search with a hypothetical *answer* rather than the question. |
+| `MultiQuery` | Ask the same thing several ways and fuse the results. |
+| `NoTransform` | Search with the question as asked. The arm every transform has to beat. |
+| `StepBack` | Ask the more general question alongside the specific one. |
+| `TransformedQuery` | One question, and the queries actually sent to the index. |
+
+See [Transforms](/axes/transforms).
+
+## Retrieval and search
+
+| Name | Purpose |
+|---|---|
+| `RetrievedChunk` | A chunk a configuration returned for a query, with its position and score. |
+
+See [Search](/pipeline/search).
+
+## Assembling and answering
+
+| Name | Purpose |
+|---|---|
+| `AssembledContext` | What the generator will see, and what it cost to put together. |
+| `ContextAssembler` | Assembles retrieved chunks into a prompt's context block. |
+| `Ordering` | Where in the context the best evidence goes. |
+| `tokens_sent` | What one retrieval will cost the generator, per query, in tokens. |
+| `Answer` | What a generator said, and what it cost. |
+| `AnswerScore` | How good one answer was, judged against the context and the gold evidence. |
+| `GenerationReport` | Answer quality across an eval set, and whether retrieval gains reached the answer. |
+| `lift` | Whether a retrieval gain survived through to the answer. |
+| `score_answer` | Judge an answer without a second model. |
+
+See [Answer](/pipeline/answer).
+
+## Generators
+
+| Name | Purpose |
+|---|---|
+| `ExtractiveGenerator` | Returns the highest-ranked passage verbatim. No model required. |
+| `LLMGenerator` | Answers with a model, using a prompt template that is itself a sweepable axis. |
+
+See [Generation](/axes/generation).
+
+<Note>
+`/axes/ingestion` covers how chunks become retrievable units — deciding what a hit on the
+index actually returns. It has no unique top-level export of its own: select an ingestion
+strategy with the `ingestion` field on `Config`, the same spec-string mechanism every other
+axis uses. Likewise `/axes/rerankers` has no exports beyond `Reranker`, `RERANKERS` and
+`get_reranker`, already listed under [Plugin registries and resolution](#plugin-registries-and-resolution).
+</Note>
+
+## Loading and writing eval sets
+
+| Name | Purpose |
+|---|---|
+| `EvalSet` | A versioned collection of questions with span-level ground truth. |
+| `EvalItem` | One question and the source text that answers it. |
+| `GoldSpan` | A stretch of source text that answers a question, and how well it does so. |
+| `GoldAnchor` | Parser-independent evidence: the text that answers the question, quoted. |
+| `QuestionType` | The question categories the tool slices metrics by. |
+| `read_jsonl` | Read an eval set written by `write_jsonl`, or a bare list of items. |
+| `write_jsonl` | Write an eval set, one item per line, with a header line carrying its identity. |
+| `read_csv` | Read questions from a spreadsheet export. |
+| `write_csv` | Write an eval set back out as a spreadsheet, for hand editing. |
+| `read_beir` | Read a BEIR-format dataset: `queries.jsonl` plus a TSV of judgements. |
+| `read_legalbench_rag` | Read LegalBench-RAG, whose ground truth is character spans. |
+
+See [Loading Eval Sets](/evalsets/loading).
+
+## Generating and filtering eval sets
+
+| Name | Purpose |
+|---|---|
+| `Classifier` | Labels questions, by heuristic or by model. |
+| `KeywordProbeGenerator` | Builds keyword probes from a passage's most distinctive terms. No model required. |
+| `LLMQuestionGenerator` | Asks a model for questions answerable only from one passage. |
+| `RecordingLLM` | A model that returns scripted replies and remembers what it was asked. |
+
+See [Generating Eval Sets](/evalsets/generating).
+
+## Eval set quality
+
+| Name | Purpose |
+|---|---|
+| `EvalSetQuality` | What this eval set can and cannot support. |
+| `assess` | Score an eval set, using a baseline run to judge discriminating power where available. |
+| `FilterChain` | Runs filters in order, keeping a record of everything dropped. |
+| `FilterResult` | What survived, what did not, and anything worth knowing about the filtering. |
+| `default_filters` | The filters worth running on any auto-generated eval set, cheapest first. |
+| `ReviewQueue` | Questions awaiting judgement, and the decisions made so far. |
+| `Verdict` | What a reviewer decided about one question. |
+
+See [Eval Set Quality](/evalsets/quality).
+
+## Scoring: metrics and resolution
+
+| Name | Purpose |
+|---|---|
+| `METRICS` | The metric registry. |
+| `Metric` | Protocol: scores one query — relevance judgements in, a ranked list in, one float out. |
+| `get_metric` | Resolve a metric from a spec string, e.g. `recall`. |
+| `DEFAULT_KS` | The cut-offs metrics are computed at by default: `(1, 3, 5, 10, 20)`. |
+| `available_metrics` | Every metric name that can be requested. |
+| `evaluate` | Score a whole run, averaged over queries. |
+| `per_query` | One metric, for every query separately. |
+| `character_f1` | Harmonic mean of character precision and recall. |
+| `character_precision` | Fraction of the retrieved characters that are gold. |
+| `character_recall` | Fraction of the question's gold characters present anywhere in retrieved chunks. |
+| `gold_coverage_by_chunk` | Per chunk, the fraction of one question's gold characters it holds. |
+| `retrieved_character_count` | Characters sent downstream, counting overlapping chunks once. |
+| `RelevanceLabel` | A resolved judgement: for this question, this chunk is relevant at this grade. |
+| `SpanResolver` | Turns span-level ground truth into chunk-level relevance judgements. |
+| `ResolutionPolicy` | How to decide that a chunk counts as relevant to a gold span. |
+| `Resolution` | The resolved relevance judgements for one question, with diagnostics. |
+| `GoldResolution` | What happened to one gold span under one chunk set. |
+| `AnchorResolver` | Finds quoted evidence in a parse. |
+| `AnchorMatch` | Where one anchor ended up in one parse, and how sure we are about it. |
+| `MatchStrategy` | How an anchor was located, in decreasing order of confidence. |
+| `ValidationResult` | What was scored, what a benchmark's paper reported, and whether that is close enough. |
+| `load_benchmark` | Load a LegalBench-RAG benchmark file and the documents its spans point into. |
+| `self_check` | Check the span resolver against a benchmark's own annotations, with no retrieval. |
+| `validate` | Score a benchmark with this package's chain and compare against its published numbers. |
+
+See [Metrics](/scoring/metrics).
+
+## Scoring: significance
+
+| Name | Purpose |
+|---|---|
+| `Comparison` | Whether two configurations actually differ, and how sure we can be. |
+| `Interval` | An estimate and the range it could plausibly sit in. |
+| `bootstrap_interval` | A confidence interval for a mean score, by resampling the questions. |
+| `paired_bootstrap` | A confidence interval for the *difference* between two configurations. |
+| `randomisation_test` | A two-sided p-value from a paired randomisation test. |
+
+See [Significance](/scoring/significance).
+
+## Scoring: diagnostics
+
+| Name | Purpose |
+|---|---|
+| `Diagnosis` | Why one question failed, and what would help. |
+| `FailurePoint` | The stage a question's failure traces back to. |
+| `FailureReport` | Every question's diagnosis, and what the pattern across them suggests. |
+| `diagnose` | Sort every question into a failure point, from retrieval data alone. |
+
+See [Diagnostics](/scoring/diagnostics).
+
+## The Lab
+
+| Name | Purpose |
+|---|---|
+| `Lab` | A corpus, a matrix over it, and the runs that came out. |
+
+See [Lab Overview](/lab/overview).
+
+## The grid
+
+| Name | Purpose |
+|---|---|
+| `Matrix` | The axes of an experiment, and the baseline OFAT and staged sweeps vary from. |
+| `SweepMode` | `factorial`, `ofat`, or `staged` — the three ways to walk a matrix. |
+| `matrix` | Build a `Matrix`, accepting a single value or a list on any axis. |
+| `estimate_cost` | What a sweep will cost before it runs. Full detail in [Cost](/reference/cost). |
+
+See [The Grid](/lab/grid).
+
+## Running a sweep
+
+| Name | Purpose |
+|---|---|
+| `Runner` | Runs configurations against a corpus and an eval set. |
+
+See [Running](/lab/running).
+
+## Results and warnings
+
+| Name | Purpose |
+|---|---|
+| `Results` | Every configuration a sweep ran, and the ways to read them. |
+| `RunResult` | Everything one configuration produced. |
+| `format_leaderboard` | A fixed-width leaderboard for a terminal. |
+| `WarningLog` | An ordered, mergeable collection of warnings. |
+| `GridWarning` | One thing that happened which could change how a result should be read. |
+| `WarningCode` | Machine-readable warning kinds. |
+| `Severity` | How much a warning should change what you believe. |
+
+See [Results](/lab/results).
+
+## Exporting and reproducing runs
+
+| Name | Purpose |
+|---|---|
+| `Manifest` | Everything needed to reproduce one run, and nothing that changes between runs. |
+| `build_manifest` | Record everything about a run that could change its numbers. |
+| `explain_diff` | The difference between two runs, in plain English. |
+| `config_to_yaml` | The configuration as YAML, hand-written rather than via a dependency. |
+| `config_to_python` | Runnable Python that rebuilds one configuration. |
+| `winning_config_to_yaml` | The winning configuration as an experiment file you can hand back to the tool. |
+| `results_to_json` | Every configuration and every number, for offline analysis. |
+| `results_to_markdown` | A one-page report to paste into a decision doc. |
+| `write_bundle` | Write everything: the report, the raw results, the winning config and the manifest. |
+
+See [Exporting Runs](/reference/reports).
+
+## Cost
+
+| Name | Purpose |
+|---|---|
+| `CostModel` | Turns tokens and seconds into dollars. |
+| `CostBreakdown` | What one configuration costs, itemised. |
+| `Pricing` | What one model charges, in dollars per million tokens. |
+| `PRICES` | The published price list `CostModel` starts from. |
+
+See [Cost](/reference/cost).
+
+## Caching
+
+| Name | Purpose |
+|---|---|
+| `Cache` | Protocol: somewhere to put a stage's output and find it again. |
+| `CacheStats` | Hits, misses and what they saved. |
+| `MemoryCache` | In-process cache. The default, and enough for a single sweep. |
+| `DiskCache` | Cache that survives the process, for re-running a sweep after changing one axis. |
+| `NullCache` | Caches nothing. For measuring what a stage really costs. |
+
+See [Caching](/reference/caching).
+
+## Errors
+
+| Name | Purpose |
+|---|---|
+| `ContextGridError` | Base class for everything this package raises on purpose. |
+| `MissingExtraError` | An optional dependency is needed and is not installed. |
+| `CorpusError` | A corpus could not be loaded, or is not usable as given. |
+| `SpanError` | A span is malformed, or two spans were compared in a way that makes no sense. |
+| `DocumentError` | A document or a reference into one is inconsistent. |
+| `EvalSetError` | An eval set, an item, or a gold span is malformed. |
+| `ResolutionError` | Gold spans could not be resolved to chunks. |
+| `ChunkerError` | A chunker was configured in a way that cannot produce sensible chunks. |
+
+`UnknownPluginError` is also an exception, listed above under
+[Plugin registries and resolution](#plugin-registries-and-resolution) since that is where you
+will actually catch it. See [Errors](/reference/errors) for the full hierarchy, including
+exceptions raised deeper in the package that are not re-exported at the top level.
+
+## Package
+
+| Name | Purpose |
+|---|---|
+| `__version__` | The installed context-grid version, as a string. |
+
+```python
+import contextgrid as cg
+print(cg.__version__)
+```
+
+```
+0.9.0
+```

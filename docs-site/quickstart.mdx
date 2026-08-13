@@ -1,0 +1,157 @@
+---
+title: "Quickstart"
+description: "Build a tiny corpus, write three questions, sweep two chunkers and two indexes, and read the leaderboard — no API key, no heavy extras."
+---
+
+This is the whole loop in under five minutes: a few sentences of text, three questions with
+known answers, a sweep over two chunkers and two indexes, and a leaderboard. Everything here
+runs with the bare `pip install context-grid` — no API key, no model download, no extras.
+
+<Steps>
+<Step title="Make a tiny corpus">
+
+A corpus is just a mapping of document id to text. `Corpus.from_texts` is the fastest path to
+one — no files on disk required.
+
+```python
+import contextgrid as cg
+
+docs = {
+    "return-policy.md": (
+        "# Return Policy\n\n"
+        "Items may be returned within 30 days of delivery for a full refund. "
+        "The item must be unused and in its original packaging. "
+        "Refunds are issued to the original payment method within 5 business days "
+        "of us receiving the returned item.\n\n"
+        "Sale items marked 'final sale' cannot be returned.\n"
+    ),
+    "shipping.md": (
+        "# Shipping\n\n"
+        "Standard shipping takes 3 to 7 business days and costs $5.99. "
+        "Orders over $50 ship free. "
+        "Express shipping takes 1 to 2 business days and costs $19.99.\n\n"
+        "We currently ship only within the United States and Canada.\n"
+    ),
+    "warranty.md": (
+        "# Warranty\n\n"
+        "All electronics carry a 1 year manufacturer warranty covering defects "
+        "in materials and workmanship. "
+        "The warranty does not cover accidental damage or normal wear.\n\n"
+        "To file a warranty claim, contact support with your order number.\n"
+    ),
+}
+
+corpus = cg.Corpus.from_texts(docs, media_type=cg.MediaType.MARKDOWN)
+```
+
+</Step>
+<Step title="Write three questions">
+
+Ground truth is a `GoldAnchor`: a quoted passage, tied to the document id it came from. Quoting
+the answer is enough — context-grid resolves the quote to exact character offsets itself, in
+whichever parser you end up sweeping.
+
+```python
+evalset = cg.EvalSet(
+    id="quickstart",
+    items=(
+        cg.EvalItem(
+            id="q1",
+            question="How many days do I have to return an item?",
+            anchors=(
+                cg.GoldAnchor(
+                    source_id="return-policy.md",
+                    quote="returned within 30 days of delivery",
+                ),
+            ),
+        ),
+        cg.EvalItem(
+            id="q2",
+            question="How much does standard shipping cost?",
+            anchors=(
+                cg.GoldAnchor(
+                    source_id="shipping.md",
+                    quote="Standard shipping takes 3 to 7 business days and costs $5.99",
+                ),
+            ),
+        ),
+        cg.EvalItem(
+            id="q3",
+            question="How long is the warranty on electronics?",
+            anchors=(
+                cg.GoldAnchor(source_id="warranty.md", quote="carry a 1 year manufacturer warranty"),
+            ),
+        ),
+    ),
+)
+```
+
+Three questions is not a real eval set — it is enough to prove the wiring works. See
+[Eval Sets](/evalsets/overview) for what a trustworthy one takes.
+
+</Step>
+<Step title="Sweep two chunkers and two indexes">
+
+`Lab.grid` takes a single value or a list on every axis. Anything left as a single value is
+held still; anything given as a list gets swept. `Lab.estimate()` is worth checking before
+`run` — here it is free and instant, but on a real corpus with a hosted embedder it is the
+number that stops a surprise bill.
+
+```python
+lab = cg.Lab(corpus)
+lab.grid(chunker=["recursive:512", "sentence"], index=["dense", "bm25"])
+print(lab.estimate())
+```
+
+```text
+{'configurations': 3, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 2 × 1 × 1 × 1 × 1 × 1 = 4', 'approximate_index_tokens': 191, 'estimated_usd': 0.0}
+```
+
+`shape` is the full factorial (4 cells: 2 chunkers × 2 indexes); `configurations` is what the
+default sweep mode, `ofat` (one-factor-at-a-time), actually runs — it varies one axis at a
+time from a baseline instead of trying every combination, which is why 3 configurations came
+out of a 2×2 grid.
+
+</Step>
+<Step title="Run it and read the leaderboard">
+
+```python
+results = lab.run(evalset)
+print(results.summary())
+```
+
+```text
+markdown · recursive:512 · tfidf · dense scored best on recall@5 at 1.000, across 3 configurations, scored on 3 questions. markdown · recursive:512 · tfidf · dense and markdown · sentence · tfidf · dense are not distinguishable on this eval set (n=3). The gap of +0.000 on recall@5 sits inside the confidence interval +0.000 to +0.000, so it is consistent with no difference at all. They scored identically on every single question, so this is not a close call between two different configurations -- they are behaving the same way. It runs locally at no cost per query, answering at under 1 ms p95.
+```
+
+`summary()` is honest about a three-question eval set on three tiny documents: recall is
+perfect everywhere, and the text itself says the configurations "are not distinguishable" —
+that is `results` doing its job, not a bug. `leaderboard()` gives the same thing as rows:
+
+```python
+for row in results.leaderboard():
+    print(row)
+```
+
+```text
+{'config': 'markdown · recursive:512 · tfidf · dense', 'recall@5': 1.0, 'p95_ms': 0.35512499744072556, 'cost_per_1k': 0.0, 'chunks': 3, 'ci_low': 1.0, 'ci_high': 1.0}
+{'config': 'markdown · sentence · tfidf · dense', 'recall@5': 1.0, 'p95_ms': 0.04862499190494418, 'cost_per_1k': 0.0, 'chunks': 4, 'ci_low': 1.0, 'ci_high': 1.0}
+{'config': 'markdown · recursive:512 · bm25', 'recall@5': 1.0, 'p95_ms': 0.025417000870220363, 'cost_per_1k': 0.0, 'chunks': 3, 'ci_low': 1.0, 'ci_high': 1.0}
+```
+
+Every row is a `parser · chunker · embedder · index` label, latency and cost included — a
+leaderboard here can never hide the fact that the fastest, free, three-chunk configuration won
+by the same margin as everything else.
+
+</Step>
+</Steps>
+
+<Note>
+This corpus is three short paragraphs. Real recall differences between chunkers and indexes
+only show up once there is enough text, and enough overlapping evidence, for one strategy to
+actually beat another. [Concepts](/concepts/overview) covers what makes an eval set — and a
+corpus — big enough to trust.
+</Note>
+
+Next: read [Concepts](/concepts/overview) for how corpus, config and eval set fit together, or
+skip straight to [Installation](/installation) for what each optional extra unlocks.

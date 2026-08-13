@@ -1,0 +1,334 @@
+---
+title: "Loading Eval Sets"
+description: "Read and write eval sets as JSONL or CSV, and import BEIR and LegalBench-RAG benchmarks, field by field."
+---
+
+Everything on this page returns or accepts an [`EvalSet`](/evalsets/overview) — see that
+page first for what `EvalItem`, `GoldAnchor`, and `GoldSpan` actually hold.
+
+## The native JSONL format
+
+`write_jsonl` writes context-grid's own round-trip format: one header line, then one
+question per line.
+
+```python
+import contextgrid as cg
+
+anchor = cg.GoldAnchor(source_id="handbook.pdf", quote="Employees accrue 1.5 days of leave per month.")
+item = cg.EvalItem(
+    id="q1",
+    question="How much leave do employees accrue per month?",
+    anchors=(anchor,),
+    qtype=cg.QuestionType.FACTOID,
+)
+evalset = cg.EvalSet(id="handbook-quiz", items=(item,))
+path = cg.write_jsonl(evalset, "quiz.jsonl")
+print(open(path).read())
+```
+
+```text
+{"_evalset": {"id": "handbook-quiz", "version": 1, "source": "manual", "meta": {}}}
+{"id": "q1", "question": "How much leave do employees accrue per month?", "gold": [], "anchors": [{"source_id": "handbook.pdf", "quote": "Employees accrue 1.5 days of leave per month.", "grade": 2, "page_hint": null, "occurrence": 0}], "qtype": "factoid", "answer": null, "meta": {}}
+```
+
+`write_jsonl(evalset, path)` creates any missing parent directories for you.
+
+```python no-run: signature shown for reference, not a runnable statement
+write_jsonl(evalset: EvalSet, path: str | Path) -> Path
+```
+
+### `read_jsonl`
+
+```python no-run: signature shown for reference, not a runnable statement
+read_jsonl(path: str | Path) -> EvalSet
+```
+
+Reads that same shape back:
+
+```python
+es = cg.read_jsonl("quiz.jsonl")
+print(len(es), es.id, es.version, es.source)
+```
+
+```text
+1 handbook-quiz 1 manual
+```
+
+The header line is optional. `read_jsonl` also accepts a bare file of item lines with no
+`_evalset` header — a minimal file you can hand-write is just this:
+
+```jsonl
+{"id": "q1", "question": "What is the notice period for resignation?", "anchors": [{"source_id": "handbook.pdf", "quote": "Employees must give 30 days written notice."}]}
+```
+
+Only `id` and `question` are required on an item; `anchors`, `gold`, `qtype`, `answer`, and
+`meta` all have defaults. Write that line to disk and read it back:
+
+```python
+from pathlib import Path
+
+Path("minimal.jsonl").write_text(
+    '{"id": "q1", "question": "What is the notice period for resignation?", '
+    '"anchors": [{"source_id": "handbook.pdf", "quote": "Employees must give 30 days written notice."}]}\n'
+)
+
+es = cg.read_jsonl("minimal.jsonl")
+print(len(es), es.id, es.version, es.source, es.meta)
+```
+
+```text
+1 minimal 1 import {}
+```
+
+<Note>
+Without a header line, `EvalSet.id` falls back to the file's stem (`minimal` for
+`minimal.jsonl`) and `source` becomes `"import"`.
+</Note>
+
+## The CSV format
+
+CSV is meant for editing in a spreadsheet, not as the primary storage format — it can only
+round-trip one anchor per item (see below).
+
+### `write_csv`
+
+```python no-run: signature shown for reference, not a runnable statement
+write_csv(evalset: EvalSet, path: str | Path) -> Path
+```
+
+Columns: `id, question, source_id, quote, grade, page, qtype, answer`.
+
+```python
+path = cg.write_csv(evalset, "quiz.csv")
+print(open(path).read())
+```
+
+```text
+id,question,source_id,quote,grade,page,qtype,answer
+q1,How much leave do employees accrue per month?,handbook.pdf,Employees accrue 1.5 days of leave per month.,2,,factoid,
+```
+
+<Warning>
+Only `item.anchors[0]` — the first anchor — is written. An item with more than one anchor
+loses the rest on the way to CSV. `gold` (span-form evidence) isn't written at all; CSV only
+round-trips anchors.
+</Warning>
+
+### `read_csv`
+
+```python no-run: signature shown for reference, not a runnable statement
+read_csv(path: str | Path, *, evalset_id: str | None = None) -> EvalSet
+```
+
+Column names are matched case-insensitively, and several spellings work for each field:
+
+| Field | Accepted column names |
+|---|---|
+| item id | `id`, `question_id`, `qid` |
+| question | `question`, `query`, `q` |
+| source document | `source_id`, `document`, `doc`, `doc_id`, `file`, `filename` |
+| quote | `quote`, `evidence`, `answer_span`, `context`, `passage` |
+| answer | `answer`, `expected_answer`, `gold_answer` |
+| question type | `qtype`, `type`, `question_type`, `category` |
+| page | `page`, `page_hint`, `page_number` |
+| grade | `grade`, `relevance`, `rel` |
+
+A minimal file needs only a question column and, if you want evidence attached, both a
+quote column and a source column. Write this to `minimal2.csv` and read it back:
+
+```csv
+question,source_id,quote
+What is the notice period for resignation?,handbook.pdf,Employees must give 30 days written notice.
+How many sick days per year?,handbook.pdf,Employees receive 10 paid sick days per year.
+```
+
+```python
+from pathlib import Path
+
+Path("minimal2.csv").write_text(
+    "question,source_id,quote\n"
+    "What is the notice period for resignation?,handbook.pdf,Employees must give 30 days written notice.\n"
+    "How many sick days per year?,handbook.pdf,Employees receive 10 paid sick days per year.\n"
+)
+
+es = cg.read_csv("minimal2.csv")
+for it in es:
+    print(it.id, it.question)
+```
+
+```text
+q1 What is the notice period for resignation?
+q2 How many sick days per year?
+```
+
+With no `id` column, ids are assigned `q1`, `q2`, ... in row order — which means ids are
+**not stable** if you reorder the rows later.
+
+<Warning>
+A `quote` column with no matching `source_id` column produces items with **zero evidence**
+and no error — `read_csv` only builds a `GoldAnchor` when both columns are present and
+non-empty for that row:
+
+```python
+# no_source.csv has a `quote` column but no `source_id` column
+Path("no_source.csv").write_text(
+    "id,question,quote\n"
+    "q1,What is the notice period for resignation?,Employees must give 30 days written notice.\n"
+)
+
+es = cg.read_csv("no_source.csv")
+item = es.get("q1")
+print(item.anchors, item.is_answerable)
+```
+```text
+() False
+```
+</Warning>
+
+A missing question column is the one thing `read_csv` refuses outright:
+
+```python
+Path("bad.csv").write_text("foo,bar\n1,2\n")
+
+try:
+    cg.read_csv("bad.csv")  # columns: foo, bar
+except cg.EvalSetError as e:
+    print("EvalSetError:", e)
+```
+
+```text
+EvalSetError: bad.csv has no question column. Expected one of: question, query, q. Found: foo, bar
+```
+
+A row that's just missing an optional column (answer, qtype, ...) is not an error — that
+field is left `None` or the row gets no anchor, silently.
+
+## Importing benchmark formats
+
+### `read_beir`
+
+```python no-run: signature shown for reference, not a runnable statement
+read_beir(queries_path: str | Path, qrels_path: str | Path, *, evalset_id: str = "beir") -> EvalSet
+```
+
+Reads a BEIR `queries.jsonl` (one `{"_id", "text"}` per line) plus a TSV of judgements with
+columns `query-id`, `corpus-id`/document id, `score`. Only judgements with `score > 0` are
+kept; a query with no positive judgement is dropped entirely, not kept as unanswerable.
+
+```jsonl
+{"_id": "1", "text": "What is the notice period for resignation?"}
+```
+
+```text
+query-id	corpus-id	score
+1	handbook.pdf	1
+```
+
+Write those two files, then read them together:
+
+```python
+from pathlib import Path
+
+Path("beir_queries.jsonl").write_text(
+    '{"_id": "1", "text": "What is the notice period for resignation?"}\n'
+)
+Path("beir_qrels.tsv").write_text("query-id\tcorpus-id\tscore\n1\thandbook.pdf\t1\n")
+
+es = cg.read_beir("beir_queries.jsonl", "beir_qrels.tsv")
+print(len(es), es.id, es.source, es.meta)
+for it in es:
+    print(it.id, it.question, it.meta)
+```
+
+```text
+1 beir beir {'granularity': 'document', 'note': 'BEIR gold is document-level. It compares retrievers fairly and cannot compare chunkers fairly, because every chunk of a gold document counts as relevant regardless of whether it holds the evidence.'}
+1 What is the notice period for resignation? {'gold_documents': [('handbook.pdf', 1)]}
+```
+
+<Warning>
+BEIR gold lives in `item.meta["gold_documents"]` as a list of `(doc_id, grade)` tuples, not
+in `item.gold`. `evalset.meta["granularity"] == "document"` says why: every chunk of a gold
+document counts as relevant here, whether or not it actually holds the answer. Use BEIR sets
+to compare retrievers; don't use them to compare chunkers against each other — that's exactly
+the comparison document-level gold can't make fairly.
+</Warning>
+
+### `read_legalbench_rag`
+
+```python no-run: signature shown for reference, not a runnable statement
+read_legalbench_rag(path: str | Path, *, evalset_id: str = "legalbench-rag") -> EvalSet
+```
+
+Reads `{"tests": [...]}` or a bare `[...]` array. Each test needs a `query` and a `snippets`
+list of `{"file_path", "span": [start, end]}`. This is the one importer that produces
+resolved `gold` spans directly, because LegalBench-RAG ships character offsets, not quotes.
+
+```python
+import json
+payload = {
+    "tests": [{
+        "query": "What is the notice period for resignation?",
+        "answer": "30 days",
+        "snippets": [
+            {"file_path": "handbook.txt", "span": [120, 167]},
+            {"file_path": "handbook.txt"},  # missing span - dropped, not an error
+        ],
+    }]
+}
+json.dump(payload, open("lbrag.json", "w"))
+
+es = cg.read_legalbench_rag("lbrag.json")
+print(len(es), es.id, es.source, es.meta)
+for it in es:
+    print(it.id, it.question, it.answer, it.gold)
+```
+
+```text
+1 legalbench-rag legalbench-rag {'granularity': 'span', 'source_file': 'lbrag.json', 'tests_in_file': 1, 'tests_skipped': 0, 'snippets_skipped': {'had no `span`': 1}}
+lb0 What is the notice period for resignation? 30 days (GoldSpan(span=Span('handbook.txt', 120, 167), grade=2),)
+```
+
+Two kinds of bad snippet are treated differently:
+
+- **Missing `file_path` or `span`, or a `span` shorter than two elements** — dropped
+  quietly, counted in `evalset.meta["snippets_skipped"]` (by reason) and
+  `evalset.meta["tests_skipped"]` (tests with no `query` at all).
+- **Wrong type** — `span` as a string, `tests` as an object, a snippet that isn't an object
+  — raises `EvalSetError` naming the file and what it expected. A silently-wrong import
+  (treating `"117,202"` as characters 1 to 1) is worse than a hard failure here.
+
+Call `describe_skipped(evalset)` after loading to turn the skip counts into one readable line:
+
+```python
+from contextgrid.evalset.io import describe_skipped
+print(describe_skipped(es))
+```
+
+```text
+1 snippet skipped: 1 had no `span`.
+```
+
+`describe_skipped` reads straight from `evalset.meta`, so it can't say something different
+from what actually happened during the import.
+
+## Picking the reader by file extension
+
+```python
+from contextgrid.evalset.io import read_evalset
+
+es = read_evalset("quiz.jsonl")  # -> read_jsonl
+es = read_evalset("quiz.csv")    # -> read_csv
+```
+
+```python no-run: signature shown for reference, not a runnable statement
+read_evalset(path: str | Path) -> EvalSet
+```
+
+`read_evalset` dispatches purely on the file extension (`.csv` goes to `read_csv`,
+everything else goes to `read_jsonl`) — it does not look at the file's actual content. A
+`.csv` file that's really JSON, or the reverse, gets read with the wrong parser and fails
+with that parser's error rather than being auto-detected.
+
+Use `cg.read_jsonl`, `cg.read_csv`, `cg.read_beir`, and `cg.read_legalbench_rag` directly
+when you know your format; reach for `read_evalset` only when the extension is a reliable
+signal in your pipeline.

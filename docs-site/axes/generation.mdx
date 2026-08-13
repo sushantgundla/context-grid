@@ -1,0 +1,336 @@
+---
+title: "Generation"
+description: "The generation axis: the generators, what gets measured (faithfulness and the rest), what needs [judge], and the honest limits of an LLM judge."
+---
+
+Every other axis in this package is scored on whether the *right passages came back*. This one
+asks the question they were retrieved for: is the answer any good, and is it actually
+supported by what was retrieved? Those are different failures. A configuration can retrieve
+perfectly and still generate a confident falsehood, or retrieve badly and be saved by a model
+that says it doesn't know — conflating the two is how a retrieval problem gets misdiagnosed as
+a prompting problem.
+
+Retrieval stays the default view of this tool on purpose: generation noise swamps retrieval
+signal, so a sweep judged purely on answer quality mostly measures the generator, not the
+retriever. But a tool that never checks whether its retrieval gains survive to the answer is
+asking to be trusted about the one thing it never measured — that's the **lift** question:
+does +0.10 recall@5 turn into a better answer, or does the generator find it either way?
+
+Set it with `generator` on a [`Config`](/pipeline/build), or `grid.generator` in a
+[lab config](/lab/grid). `None` (the default) means no generation at all — no context
+assembly, no model call, no cost, exactly what every config meant before this axis existed.
+
+<Note>
+`Generator`, `LLMGenerator`, `ExtractiveGenerator`, `Answer`, `AnswerScore`,
+`GenerationReport`, `score_answer` and `lift` are all top-level (`cg.X`). Everything else on
+this page — `get_generator`, `available_generators`, `MODEL_BACKED`, `GenerationJudge`,
+`JudgedAnswer`, `JudgeError`, `available_generation_metrics` — needs its full path,
+`contextgrid.generate.X`.
+</Note>
+
+## The two generators
+
+```python
+>>> from contextgrid.generate import available_generators, MODEL_BACKED
+>>> available_generators()
+('extractive', 'llm')
+>>> MODEL_BACKED
+('llm',)
+```
+
+| name | needs a model | what it returns |
+|---|---|---|
+| `extractive` | no | the top-ranked passage, verbatim, trimmed to its first few sentences |
+| `llm` | yes | a generated answer, with `[1]`-style citations parsed out |
+
+### `extractive` — `contextgrid.generate.ExtractiveGenerator`
+
+Not a generator in any useful sense, and that's the point: it's the *ceiling retrieval alone
+can reach*. Scoring answer quality against it separates "the retriever found the evidence"
+from "the generator did something useful with it" — exactly the distinction the lift chart
+needs.
+
+<ParamField path="sentences" type="int" default="2">
+How many leading sentences of the top-ranked chunk to return.
+</ParamField>
+
+### `llm` — `contextgrid.generate.LLMGenerator`
+
+Answers with a model, using a prompt template that is itself sweepable — prompt changes
+routinely beat retrieval changes, worth knowing before a quarter goes into an embedding
+migration that a better prompt would have matched.
+
+<ParamField path="llm" type="LLM" default="—">
+Required, no default.
+</ParamField>
+<ParamField path="prompt" type="str" default="DEFAULT_PROMPT">
+Must contain `{context}` and `{question}`.
+</ParamField>
+<ParamField path="max_tokens" type="int" default="400">
+Cap on the answer length.
+</ParamField>
+
+`DEFAULT_PROMPT` tells the model to cite passages as `[1]`, `[2]`, ... and to say plainly when
+the passages don't contain the answer rather than guess:
+
+```python
+>>> from contextgrid.core.documents import Chunk
+>>> from contextgrid.core.span import Span
+>>> from contextgrid.assemble.context import ContextAssembler
+>>> from contextgrid.evalset.llm import RecordingLLM
+>>> from contextgrid.generate import LLMGenerator, ExtractiveGenerator
+>>> chunks = [Chunk(id="doc:0", span=Span("doc", 0, 51), text="Refunds are issued within thirty days of purchase.")]
+>>> ctx = ContextAssembler().assemble(chunks)
+>>> gen = LLMGenerator(llm=RecordingLLM(replies=["Refunds take thirty days [1]."]))
+>>> answer = gen.answer("How long do refunds take?", ctx)
+>>> answer.text, answer.citations
+('Refunds take thirty days [1].', (1,))
+```
+
+`llm` is not in the ordinary plugin registry — building it with no model would leave it with
+nothing to generate with, and a config that looks like it's testing an LLM generator while
+testing nothing is worse than an error:
+
+```python
+>>> from contextgrid.generate import get_generator
+>>> get_generator("llm")
+Traceback (most recent call last):
+    ...
+contextgrid.evalset.llm.LLMError: the 'llm' generator needs a model. Set `run.model` in your config, or use one of the model-free generators: extractive
+>>> get_generator(None) is None
+True
+```
+
+`get_generator(None)` returns `None` outright rather than an identity plugin — unlike
+`NoTransform`/`NoReranker` on the other axes, generation has nothing to be the identity *of*.
+
+## `Answer.is_abstention`
+
+Every `Answer` — from either generator — carries `.is_abstention`: whether the text matches a
+refusal phrase ("I don't know", "not enough information", "cannot be determined", ...).
+Deliberately broad, because a false positive costs one mislabelled abstention and a false
+negative hides the failure mode entirely.
+
+## Scoring an answer without a second model: `score_answer`
+
+```python no-run: signature shown for reference, not a runnable statement
+score_answer(item: EvalItem, answer: Answer, context: AssembledContext, gold_chunks: Sequence[Chunk] = ()) -> AnswerScore
+```
+
+Deliberately lexical. An LLM judge is more sensitive, but it puts a second model — with its
+own unmeasured biases — into a tool whose whole premise is that unmeasured assumptions are the
+problem. These checks are coarser, and they're checkable:
+
+- **`groundedness`** — fraction of the answer's content words that also appear in the context
+  it was given. Words in the answer but not the context are either invention or general
+  knowledge; both are reasons to trust the answer less.
+- **`citation_accuracy`** — fraction of cited passage numbers (`[1]`, `[2]`, ...) that were
+  actually in the context. `None` if the answer cited nothing.
+- **`evidence_overlap`** — overlap between the answer's words and the *gold* evidence's words,
+  when `gold_chunks` is passed.
+- **`abstained`** — `answer.is_abstention`.
+- **`should_have_abstained`** — true when `not item.is_resolved` (this parse has no gold to
+  answer from) or the context has no chunks at all.
+- **`abstention_correct`** — `abstained == should_have_abstained`, scored as a success either
+  way: a system that declines when the corpus genuinely can't support an answer is behaving
+  correctly, and marking that a zero teaches the wrong lesson.
+
+```python
+>>> from contextgrid.core.evalset import EvalItem, GoldSpan
+>>> from contextgrid.generate import score_answer, Answer, GenerationReport
+>>> item = EvalItem(id="q1", question="How long do refunds take?", gold=(GoldSpan(chunks[0].span),))
+>>> score = score_answer(item, answer, ctx)
+>>> round(score.groundedness, 2), score.citation_accuracy, score.abstention_correct
+(0.8, 1.0, True)
+```
+
+`GenerationReport` aggregates scores across an eval set. `.confident_when_it_should_not_be` is
+the failure worth naming: question ids the corpus couldn't support, which the model answered
+anyway — no retrieval metric shows this.
+
+```python
+>>> unanswerable = EvalItem(id="q2", question="What is the CEO's phone number?")  # no gold
+>>> s2 = score_answer(unanswerable, Answer(text="The passages do not contain the answer."), ctx)
+>>> overconfident = EvalItem(id="q3", question="What is the CEO's phone number?")  # no gold either
+>>> s3 = score_answer(overconfident, Answer(text="The CEO's number is 555-0100."), ctx)
+>>> report = GenerationReport(scores=[score, s2, s3], generator="llm")
+>>> report.metrics()
+{'groundedness': 0.26666666666666666, 'citation_accuracy': 1.0, 'evidence_overlap': 0.0, 'abstention_accuracy': 0.6666666666666666}
+>>> report.confident_when_it_should_not_be
+['q3']
+```
+
+## `lift`: did the retrieval gain survive to the answer?
+
+```python no-run: signature shown for reference, not a runnable statement
+lift(retrieval_score: float, answer_score: float, baseline_answer: float) -> str
+```
+
+```python
+>>> from contextgrid.generate import lift
+>>> lift(retrieval_score=0.62, answer_score=0.71, baseline_answer=0.70)
+'Retrieval scored 0.620 and answer quality rose +0.010. The retrieval gain survived to the answer.'
+>>> lift(retrieval_score=0.62, answer_score=0.60, baseline_answer=0.70)
+'Retrieval scored 0.620 and answer quality *fell* -0.100. Better retrieval that produces worse answers usually means more context, not better context -- check character precision before believing the retrieval number.'
+```
+
+Three outcomes: unchanged (`|gain| < 0.01`, the generator was finding the answer either way),
+risen (the retrieval gain survived), or fallen (better retrieval, worse answers — usually a
+sign of more context rather than better context).
+
+## Faithfulness and the rest: the DeepEval judge
+
+`score_answer` is lexical on purpose, but it can't tell you whether an answer is *faithful* to
+what was retrieved in any deeper sense, or whether it actually addresses the question. For
+that, `contextgrid.generate.GenerationJudge` scores answers with
+[DeepEval](https://github.com/confident-ai/deepeval).
+
+<Warning>
+Needs `pip install "context-grid[judge]"` (installs `deepeval>=4.0`). Without it, generation
+still runs and the lexical scores above still land in your results — the judge metrics are
+just absent, not an error.
+</Warning>
+
+```python
+>>> from contextgrid.generate import available_generation_metrics
+>>> available_generation_metrics()
+('answer_relevancy', 'contextual_recall', 'contextual_relevancy', 'faithfulness')
+```
+
+| metric | needs a reference answer | catches |
+|---|---|---|
+| `faithfulness` | no | the hallucination check — is every claim in the answer supported by what was retrieved. The only one usable on a corpus nobody has written answers for. |
+| `answer_relevancy` | no | does the answer address the question, rather than being true and beside the point |
+| `contextual_relevancy` | no | were the retrieved passages relevant to the question — a generation-time view of a *retrieval* failure |
+| `contextual_recall` | **yes** | did the retrieved passages contain what the reference answer needed |
+
+`GenerationJudge(llm=..., metrics=("faithfulness", "answer_relevancy"), threshold=0.5)` — those
+two metrics are the default. Asking for `contextual_recall` on a question with no reference
+answer doesn't score zero (that would misleadingly read as "the context contained nothing
+useful"); it's recorded in `JudgedAnswer.failed` and skipped:
+
+```python
+>>> class ScriptedJudge:
+...     name = "scripted"
+...     def __init__(self):
+...         self.calls = 0
+...     def complete(self, prompt, *, max_tokens=512):
+...         self.calls += 1
+...         return ('{"truths": ["Refunds take 30 days."], "claims": ["Refunds take 30 days."],'
+...                 ' "statements": ["Refunds take 30 days."],'
+...                 ' "verdicts": [{"verdict": "yes", "reason": "supported"}], "reason": "ok"}')
+>>> from contextgrid.generate import GenerationJudge
+>>> judge_llm = ScriptedJudge()
+>>> judge = GenerationJudge(llm=judge_llm, metrics=("faithfulness", "answer_relevancy"))
+>>> result = judge.score(
+...     query_id="q1",
+...     question="How long do refunds take?",
+...     answer="Refunds take thirty days.",
+...     contexts=["Refunds are issued within thirty days of purchase."],
+... )
+>>> result.scores
+{'faithfulness': 1.0, 'answer_relevancy': 1.0}
+>>> result.model_calls, judge_llm.calls
+(7, 7)
+```
+
+`result.model_calls` matches the judge's own call count exactly — `GenerationJudge` counts
+every call made scoring one answer, because a judge grading a thousand answers is a real
+expense this package refuses to leave off the cost chart.
+
+An unknown metric name is rejected at construction, not at scoring time:
+
+```python
+>>> GenerationJudge(llm=judge_llm, metrics=("nonsense",))
+Traceback (most recent call last):
+    ...
+contextgrid.generate.judge.JudgeError: unknown generation metric(s): nonsense. Available: answer_relevancy, contextual_recall, contextual_relevancy, faithfulness
+```
+
+A metric that raises mid-scoring — a judge refusing an awkward question, a malformed reply —
+is caught, recorded in `result.failed[name]`, and skipped. One bad question must not discard
+the other nine hundred answers the judge graded fine.
+
+### Automatic, through `run.model`
+
+You don't call `GenerationJudge` yourself in the normal path. `Runner.run_one` builds it for
+you whenever `run.model` is set and `deepeval` imports cleanly, and folds
+`faithfulness`/`answer_relevancy` into the same metrics dict every other axis reports into:
+
+```python
+>>> from contextgrid.core.documents import MediaType
+>>> from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor
+>>> from contextgrid.corpus import Corpus
+>>> from contextgrid.grid.runner import Runner
+>>> from contextgrid.pipeline import Config
+>>> doc = "Either party may terminate this agreement for convenience by giving thirty days written notice."
+>>> corpus = Corpus.from_texts({"contract.md": doc}, media_type=MediaType.MARKDOWN)
+>>> evalset = EvalSet(id="es", items=(
+...     EvalItem(
+...         id="q1",
+...         question="How much notice is needed to terminate for convenience?",
+...         anchors=(GoldAnchor(source_id="contract.md", quote="thirty days"),),
+...     ),
+... ))
+>>> judge_json = ('{"truths": ["Thirty days notice is required."], '
+...     '"claims": ["Thirty days notice is required."], '
+...     '"statements": ["Thirty days notice is required."], '
+...     '"verdicts": [{"verdict": "yes", "reason": "supported"}], "reason": "ok"}')
+>>> llm = RecordingLLM(replies=["Thirty days written notice is required [1]."], default=judge_json)
+>>> runner = Runner(corpus=corpus, headline="recall@5", llm=llm)
+>>> result = runner.run_one(Config(generator="llm"), evalset)
+>>> result.metrics["faithfulness"], result.metrics["answer_relevancy"]
+(1.0, 1.0)
+```
+
+The first scripted reply answers the question; every call after that — the judge's — gets the
+`default` reply, DeepEval's own trick for testing without a key.
+
+```yaml
+grid:
+  generator: [null, extractive, llm]
+
+run:
+  model: openai:gpt-4o-mini   # the generator, and — via GenerationJudge — the judge too
+```
+
+One name, one key: `run.model` is what supplies `LLMGenerator`, and the same instance
+(wrapped so its calls are counted separately) becomes the judge. DeepEval reaches for its own
+OpenAI configuration by default; left alone that's a second, unpriced model call in the middle
+of a tool whose whole argument is that cost belongs on the chart. `GenerationJudge` wraps
+whatever `run.model` already chose instead, so `run.budget_usd` still means what it says.
+
+<Tip>
+DeepEval reports usage analytics to PostHog by default. This package sets
+`DEEPEVAL_TELEMETRY_OPT_OUT=YES` before importing it, so turning on generation metrics doesn't
+also turn on telemetry you didn't ask for. `export DEEPEVAL_TELEMETRY_OPT_OUT=NO` yourself if
+you want it back.
+</Tip>
+
+## The honest limits of an LLM judge
+
+**Through the automatic `run.model` path, the judge is always the same model as the
+generator.** That's cheap and convenient, and it's a real risk: a model grading its own
+answers scores them generously, and the effect is largest on exactly the answers most worth
+doubting. Build `GenerationJudge(llm=...)` yourself with a different, ideally stronger model
+when that risk matters more than the extra key it costs.
+
+**It runs synchronously on purpose.** `async_mode` is always `False` inside `GenerationJudge`.
+DeepEval defaults to scoring concurrently, which is faster but makes the order of model calls
+non-deterministic — a sweep whose numbers move between identical runs is one nobody can trust
+to compare anything against.
+
+**`faithfulness` and `answer_relevancy` are prompt-and-parse metrics from a second model**,
+not a formal proof. They inherit whatever biases that judge model has, on top of whatever
+biases the generator being judged has. "DeepEval rather than four in-house prompts" is a
+real design choice: writing four prompts is the easy part, agreeing on what "faithful" *means*
+is the hard part, and DeepEval's definitions are ones you can look up and argue with
+independently of this package — but "published" is not "unbiased."
+
+**`contextual_recall` is the only one of the four that needs a written reference answer.**
+Most corpora don't have one; on those, `faithfulness` is the metric that still works, because
+it only asks whether the answer is supported by what was retrieved, not whether it matches
+some pre-written text.
+
+See [scoring metrics](/scoring/metrics) for how these fold into a leaderboard, and
+[rerankers](/axes/rerankers) for what builds the context this layer receives.
