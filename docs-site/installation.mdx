@@ -71,7 +71,7 @@ chunker libraries plus faiss/usearch.
 | `pgvector` | `[pgvector]` | The `pgvector` index, backed by a real Postgres server with the `vector` extension. | Light package (`psycopg`), but needs a running Postgres — there is no in-process fallback. |
 | `judge` | `[judge]` | Generation metrics — faithfulness, answer relevance and the rest — through `deepeval`, scored by whichever model your config already names. | Heavy. Pulls in its own model-evaluation stack. |
 | `agent` | `[agent]` | The `agno` parser and backend for `AgenticRetrieval`, plus `pypdf` for agno's own PDF reader. | Medium. Two packages. |
-| `dev` | `[dev]` | Everything above, plus `pytest`, `mypy`, `ruff` and the rest of the toolchain used to work on context-grid itself. | Heaviest. For contributing to or testing the package, not for using it. |
+| `dev` | `[dev]` | Most of the above, plus `pytest`, `mypy`, `ruff` and the rest of the toolchain used to work on context-grid itself. **Not** `docling`, `marker-pdf` or `psycopg` — see below. | Heaviest. For contributing to or testing the package, not for using it. |
 
 <Tip>
 `tei` (`TEIEmbedder`) and `tei-rerank` (`TEIReranker`) need no extra at all — they talk to a
@@ -93,6 +93,21 @@ worse than one that just refuses.
 
 So: install `parse-marker` on its own, in its own environment, when the `marker` parser is the
 one arm you are actually measuring — not alongside `parse-ml` in the same install.
+
+## What `[dev]` leaves out
+
+`pip install -e ".[dev]"` installs the toolchain and nine of the eleven feature extras, but
+three packages are not in it: `docling`, `marker-pdf` and `psycopg`.
+
+`marker-pdf` follows from the section above — it cannot share an environment with `docling`, so
+no single extra can contain both. `docling` and `psycopg` are simply absent from the list. If
+you are working on the layout parser, the `marker` parser or the `pgvector` index, install that
+extra yourself on top:
+
+```bash no-run: heavy downloads, and pgvector also needs a running Postgres
+pip install -e ".[dev]" "docling>=2.0"          # layout parsing
+pip install -e ".[dev]" "psycopg[binary]>=3.1"  # pgvector, plus a running Postgres
+```
 
 <Warning>
 Constructing `MarkerParser()` (or `cg.get_parser("marker")`) never fails, even without the

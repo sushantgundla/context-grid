@@ -193,10 +193,19 @@ run." and still exit `0` — a green build for a sweep that measured nothing. `r
 *nothing measured* as a failure and prints why on stderr, once as `error: no configurations
 were run, so nothing was measured` and again for each specific reason:
 
+A matrix whose only cell cannot be built — say `embedder: [null]` with `index: [dense]`, a dense
+index with nothing to search:
+
 ```text
 error: no configurations were run, so nothing was measured
-error: every combination of ingestion=hypothetical-questions, chunker=structural:32 was skipped as impossible: hypothetical-questions needs run.model set
+error: 1 combination(s) in this matrix cannot be built and were skipped -- a dense index with no embedder has nothing to search. The axes you wrote are almost certainly what you meant; this is just the product of them that is not
 ```
+
+<Note>
+Needing a model is **not** the same as being impossible. A plugin that calls a model with no
+`run.model` set still builds and still runs — it degrades, warns per chunk, and the sweep exits
+`0`. Only a combination that cannot be constructed at all is skipped.
+</Note>
 
 A sweep that runs *some* of its configurations before a `run.budget_seconds` cutoff still exits
 `0` — the leaderboard it printed is real, just partial, and a `warning: budget_reached: ...`
