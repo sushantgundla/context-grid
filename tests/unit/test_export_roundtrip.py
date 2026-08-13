@@ -160,7 +160,7 @@ def test_the_snippet_leaves_out_what_the_config_did_not_use() -> None:
     snippet = config_to_python(Config(chunker="structural:800"))
     assert "reranker" not in snippet
     assert "generator" not in snippet
-    assert "chunker='structural:800'" in snippet
+    assert 'chunker="structural:800"' in snippet
 
 
 def test_the_snippet_names_the_whole_pipeline_in_a_comment() -> None:

@@ -331,8 +331,16 @@ def test_the_exported_python_actually_runs(tmp_path: Path) -> None:
     """The difference between an export somebody uses and one they read once and retype."""
     snippet = config_to_python(Config(reranker="lexical", candidates=25))
     compile(snippet, "exported.py", "exec")  # a syntax error here would ship silently
-    assert "reranker='lexical'" in snippet
+    assert 'reranker="lexical"' in snippet
     assert "candidates=25" in snippet
+
+
+def test_the_exported_python_quotes_the_way_the_rest_of_the_file_does() -> None:
+    """A file that single-quotes its values and double-quotes its own literals disagrees with
+    itself, and with the formatter almost every project runs over the file it just pasted."""
+    snippet = config_to_python(Config(chunker="recursive:96"), corpus="/tmp")
+    assert 'chunker="recursive:96"' in snippet
+    assert "'" not in snippet
 
 
 def test_a_config_without_a_reranker_does_not_export_one() -> None:

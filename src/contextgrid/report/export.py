@@ -105,6 +105,19 @@ def winning_config_to_yaml(
     return "\n".join(lines) + "\n"
 
 
+def _as_literal(value: object) -> str:
+    """A Python literal for the exported snippet, double-quoting strings.
+
+    `repr()` would do the job, but it single-quotes, and the snippet's own hardcoded strings
+    (`"your question here"`) are double-quoted -- so an exported file disagreed with itself, and
+    disagreed with the formatter almost every project runs over the file it just pasted. Only the
+    quote character changes; `json.dumps` escapes the same cases `repr` does.
+    """
+    if isinstance(value, str):
+        return json.dumps(value)
+    return repr(value)
+
+
 def config_to_python(config: Config, *, corpus: str | Path | None = None) -> str:
     """Runnable Python that rebuilds this configuration.
 
@@ -136,7 +149,7 @@ def config_to_python(config: Config, *, corpus: str | Path | None = None) -> str
     # Anything left out is provably at its default, so the constructor puts it back. That is
     # the only omission rule this function has; there is no name in it to forget to update.
     settings = [
-        f"    {name}={getattr(config, name)!r},"
+        f"    {name}={_as_literal(getattr(config, name))},"
         for name in _config_field_names()
         if getattr(config, name) != getattr(defaults, name)
     ]
@@ -163,7 +176,7 @@ import contextgrid as cg
 # Any field not named below is at its default; `cg.Config()` puts it back.
 config = cg.Config({arguments})
 
-{note}corpus = cg.Corpus.from_dir({documents!r})
+{note}corpus = cg.Corpus.from_dir({_as_literal(documents)})
 pipeline = cg.build(config, corpus)
 
 for chunk_id in pipeline.search("your question here"):
