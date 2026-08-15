@@ -1,0 +1,110 @@
+name: Publish
+
+# Publishing is deliberately not automatic on a push to main. A release is a decision, and the
+# thing that records the decision is a tag.
+#
+#   git tag v0.9.0 && git push origin v0.9.0
+#
+# `workflow_dispatch` publishes to TestPyPI only, so the whole path -- build, check, upload,
+# install, import -- can be exercised without burning a version number on the real index. PyPI
+# never lets a version be re-uploaded, not even after a delete.
+#
+# No API token is stored anywhere. Both jobs authenticate with Trusted Publishing (OIDC), which
+# needs a one-time setup on each index: add a pending publisher for this repository, naming the
+# workflow file `publish.yml` and the environment below.
+#   https://pypi.org/manage/account/publishing/
+#   https://test.pypi.org/manage/account/publishing/
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+
+      # A tag that does not match the version in pyproject.toml means one of the two is wrong,
+      # and finding out which after the upload is too late.
+      - name: Tag must match the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "tag $tag does not match pyproject.toml version $version" >&2
+            exit 1
+          fi
+
+      - name: Check metadata renders
+        run: python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    # Manual runs go here and no further.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Proof that what was uploaded can be installed and imported, from the index, in an
+  # environment that has never seen the source tree. A green publish job only proves the
+  # upload succeeded.
+  smoke:
+    needs: pypi
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install from PyPI and use it
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in 1 2 3 4 5; do
+            pip install "context-grid==$version" && break
+            echo "not on the index yet, waiting" && sleep 30
+          done
+          python -c "import contextgrid as cg; print(cg.__version__)"
+          contextgrid --version

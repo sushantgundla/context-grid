@@ -6,7 +6,7 @@ documents, and get back ranked, reproducible results scored on quality, latency 
 
 > **Status: v0.9.0, alpha.** All ten axes are shipped and real — see
 > [what the numbers actually say](#what-the-numbers-actually-say) below. RAPTOR and GraphRAG
-> are deliberately not built yet (see [docs/roadmap.md](docs/roadmap.md)). Not yet on PyPI —
+> are deliberately not built yet (see [docs/roadmap.md](https://github.com/sushantgundla/context-grid/blob/main/docs/roadmap.md)). Not yet on PyPI —
 > install from source, below.
 
 ---
@@ -62,7 +62,7 @@ wrote 6 files to /you/are/here/results
 That's the whole loop: `init` writes a config listing only the plugins your install can
 actually run, `check` catches a typo'd axis or a missing path before anything expensive
 starts, `run` sweeps and writes a leaderboard, a manifest, and a re-runnable copy of the
-winning config. Full walkthrough: [docs/guide/getting-started.md](docs/guide/getting-started.md).
+winning config. Full walkthrough: [docs/guide/getting-started.md](https://github.com/sushantgundla/context-grid/blob/main/docs/guide/getting-started.md).
 
 ### The library, for people who want it in code
 
@@ -118,8 +118,8 @@ markdown · recursive:512 · tei:bge-base-en-v1.5,api_base=http://127.0.0.1:8080
 (Run against a stand-in server speaking TEI's real `/embed` wire protocol, so the code path —
 prefixing, batching, the actual network call — is genuine; only the weights behind port 8080
 are fake. Point `api_base` at a real server and nothing else changes.) More in
-[docs/dimensions/embedders.md](docs/dimensions/embedders.md) and
-[docs/recipes/local-only.md](docs/recipes/local-only.md).
+[docs/dimensions/embedders.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/embedders.md) and
+[docs/recipes/local-only.md](https://github.com/sushantgundla/context-grid/blob/main/docs/recipes/local-only.md).
 
 ## The ten axes
 
@@ -129,23 +129,23 @@ impossible and skipped rather than attempted.
 
 | Axis | Config key | What it decides | Docs |
 |---|---|---|---|
-| Ingestion | `ingestion` | What's indexed versus what's returned — `plain` makes them the same chunk; `parent-document`, `sentence-window` and five others deliberately don't | [dimensions/ingestion.md](docs/dimensions/ingestion.md) |
-| Parser | `parser` | What reads the document — the axis nothing else in the field measures | [dimensions/parsers.md](docs/dimensions/parsers.md) |
-| Chunker | `chunker` | How the text is cut up | [dimensions/chunkers.md](docs/dimensions/chunkers.md) |
-| Embedder | `embedder` | What turns text into vectors, or `null` for none (BM25) | [dimensions/embedders.md](docs/dimensions/embedders.md) |
-| Index | `index` | How the search is done — exact, approximate, sparse, hybrid | [dimensions/indexes.md](docs/dimensions/indexes.md) |
-| Transform | `transform` | Rewriting the question before searching with it | [dimensions/transforms.md](docs/dimensions/transforms.md) |
-| Retrieval | `retrieval` | How the index is used — one search, split, widened, or agentic | [dimensions/retrieval.md](docs/dimensions/retrieval.md) |
-| Reranker | `reranker` | Reordering what came back | [dimensions/rerankers.md](docs/dimensions/rerankers.md) |
-| Candidates | `candidates` | How deep the reranker looks before cutting to `k` — most of a reranker's effect lives here, not in which one you pick | [dimensions/rerankers.md](docs/dimensions/rerankers.md) |
-| Generator | `generator` | Turning the retrieved passages into an answer, or `null` for no generation at all | [dimensions/generation.md](docs/dimensions/generation.md) |
+| Ingestion | `ingestion` | What's indexed versus what's returned — `plain` makes them the same chunk; `parent-document`, `sentence-window` and five others deliberately don't | [dimensions/ingestion.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/ingestion.md) |
+| Parser | `parser` | What reads the document — the axis nothing else in the field measures | [dimensions/parsers.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/parsers.md) |
+| Chunker | `chunker` | How the text is cut up | [dimensions/chunkers.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/chunkers.md) |
+| Embedder | `embedder` | What turns text into vectors, or `null` for none (BM25) | [dimensions/embedders.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/embedders.md) |
+| Index | `index` | How the search is done — exact, approximate, sparse, hybrid | [dimensions/indexes.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/indexes.md) |
+| Transform | `transform` | Rewriting the question before searching with it | [dimensions/transforms.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/transforms.md) |
+| Retrieval | `retrieval` | How the index is used — one search, split, widened, or agentic | [dimensions/retrieval.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/retrieval.md) |
+| Reranker | `reranker` | Reordering what came back | [dimensions/rerankers.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/rerankers.md) |
+| Candidates | `candidates` | How deep the reranker looks before cutting to `k` — most of a reranker's effect lives here, not in which one you pick | [dimensions/rerankers.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/rerankers.md) |
+| Generator | `generator` | Turning the retrieved passages into an answer, or `null` for no generation at all | [dimensions/generation.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/generation.md) |
 
 Generation is an axis like the rest — `contextgrid init` writes it into `grid:` and
 `contextgrid check` counts it in the product — but it is switched off by default. `null` stops
 the sweep at retrieval, at no extra cost; `extractive` returns the top passage verbatim, and
 `llm` costs a model call per question. Retrieval stays the default view because generation
 noise swamps retrieval signal; see
-[dimensions/generation.md](docs/dimensions/generation.md).
+[dimensions/generation.md](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/generation.md).
 
 ## The idea that makes it work
 
@@ -168,7 +168,7 @@ chunker B     [ 0–800 ][ 800–1600 ]                → gold sits inside one
 Gold is resolved to whichever chunks a configuration happened to produce, at scoring time. The
 eval set is written once and stays correct across every configuration it ever scores — including
 across a change of *parser*, if the gold is written as a quoted anchor rather than a raw span.
-See [docs/scoring/spans-and-anchors.md](docs/scoring/spans-and-anchors.md) for the two forms and
+See [docs/scoring/spans-and-anchors.md](https://github.com/sushantgundla/context-grid/blob/main/docs/scoring/spans-and-anchors.md) for the two forms and
 why both exist.
 
 ### Why not IoU
@@ -188,7 +188,7 @@ stays available for when punishing chunk bloat is the point.
 ## What the numbers actually say
 
 Real findings from building the ten axes out, recorded in full in
-[docs/adoption-backlog.md](docs/adoption-backlog.md):
+[docs/adoption-backlog.md](https://github.com/sushantgundla/context-grid/blob/main/docs/adoption-backlog.md):
 
 - **`parent-document` scored 0.863 against plain chunking's 0.616** on the demo corpus at
   96-token chunks — a +0.247 gain for zero model calls, just by indexing a small chunk and
@@ -228,14 +228,14 @@ Ten extras, plus `dev` for the test suite. There is no `[all]`.
 cannot share an environment — they want incompatible `transformers` and `pillow` versions, and
 the set pip resolves to installs cleanly and then breaks `docling` at *runtime*. Install
 `[parse-marker]` on its own, in its own environment, when `marker` is the arm you're measuring.
-[install.md](docs/reference/install.md#why-marker-is-its-own-extra-not-part-of-parse-ml) has
+[install.md](https://github.com/sushantgundla/context-grid/blob/main/docs/reference/install.md#why-marker-is-its-own-extra-not-part-of-parse-ml) has
 the whole story.
 
 `[embed]` is also not what its name suggests: it installs `tiktoken` for exact token counting,
 not an embedding model. The `litellm` embedder is under `[llm]`, and `tei`/`tei-rerank` need no
 extra at all (they talk plain HTTP to a server you run separately). A missing extra raises an
 error naming the exact install command, never a bare `ImportError`. Full matrix, sizes, and
-what each one unlocks: [docs/reference/install.md](docs/reference/install.md).
+what each one unlocks: [docs/reference/install.md](https://github.com/sushantgundla/context-grid/blob/main/docs/reference/install.md).
 
 ## Checking it rather than trusting it
 
@@ -254,7 +254,7 @@ a deliberately plain configuration and compares against the published number. Th
 check the *scorer*, not to win the benchmark.
 
 The benchmark isn't vendored — it is large and not ours to redistribute — so
-[docs/guide/cli.md](docs/guide/cli.md#validate) documents the JSON shape it expects, with a
+[docs/guide/cli.md](https://github.com/sushantgundla/context-grid/blob/main/docs/guide/cli.md#validate) documents the JSON shape it expects, with a
 two-question example you can hand-write against your own documents to see the command work
 before going to find the real thing.
 
@@ -269,20 +269,20 @@ docker compose run --rm contextgrid sweep /data/documents /data/evalset.jsonl --
 
 ## Documentation
 
-- [docs/guide/](docs/guide/) — install, your first sweep, the full config reference, every CLI
+- [docs/guide/](https://github.com/sushantgundla/context-grid/blob/main/docs/guide/) — install, your first sweep, the full config reference, every CLI
   command, and how to write an eval set
-- [docs/dimensions/](docs/dimensions/) — the ten axes, what each arm actually does, and how to
+- [docs/dimensions/](https://github.com/sushantgundla/context-grid/blob/main/docs/dimensions/) — the ten axes, what each arm actually does, and how to
   write a spec string
-- [docs/scoring/](docs/scoring/) — spans and anchors, metrics, the significance tests, the
+- [docs/scoring/](https://github.com/sushantgundla/context-grid/blob/main/docs/scoring/) — spans and anchors, metrics, the significance tests, the
   0–100 composite, failure diagnosis
-- [docs/reference/](docs/reference/) — install sizes, plugin catalogue, caching, cost model,
+- [docs/reference/](https://github.com/sushantgundla/context-grid/blob/main/docs/reference/) — install sizes, plugin catalogue, caching, cost model,
   report formats
-- [docs/internals/](docs/internals/) — architecture, plugin protocols, the registry, the
+- [docs/internals/](https://github.com/sushantgundla/context-grid/blob/main/docs/internals/) — architecture, plugin protocols, the registry, the
   conformance suites, how to add a plugin
-- [docs/recipes/](docs/recipes/) — worked, real-output examples: choosing a chunker, choosing
+- [docs/recipes/](https://github.com/sushantgundla/context-grid/blob/main/docs/recipes/) — worked, real-output examples: choosing a chunker, choosing
   an embedder with or without an eval set, whether agentic retrieval is worth its cost,
   reproducing a run from its manifest
-- [docs/roadmap.md](docs/roadmap.md) and [docs/adoption-backlog.md](docs/adoption-backlog.md) —
+- [docs/roadmap.md](https://github.com/sushantgundla/context-grid/blob/main/docs/roadmap.md) and [docs/adoption-backlog.md](https://github.com/sushantgundla/context-grid/blob/main/docs/adoption-backlog.md) —
   where this is going, and the research behind every library adopted so far
 
 ## Develop
@@ -333,9 +333,9 @@ groundedness (is the answer in the context, or invented?), citation accuracy, an
 **abstention** — when the evidence is absent, does the system say so instead of guessing?
 That last one is almost never measured, and a system that confidently answers questions its
 corpus cannot support is worse than one that scores lower and declines. With
-[`deepeval`](docs/reference/install.md) installed and `run.model` set, faithfulness and
+[`deepeval`](https://github.com/sushantgundla/context-grid/blob/main/docs/reference/install.md) installed and `run.model` set, faithfulness and
 answer-relevancy join it and roll up into the 0–100 composite — see
-[docs/scoring/composite.md](docs/scoring/composite.md).
+[docs/scoring/composite.md](https://github.com/sushantgundla/context-grid/blob/main/docs/scoring/composite.md).
 
 ## Licence
 

@@ -8,14 +8,17 @@ version = "0.9.0"
 description = "A lab for grounding pipelines: sweep parser x chunker x embedder x index x reranker on your own documents, scored on quality, latency and cost."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Sushant Gundla" }]
 keywords = ["rag", "retrieval", "evaluation", "benchmark", "embeddings", "chunking", "llm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    # No `License :: OSI Approved :: MIT License` classifier: PEP 639 replaced it with the
+    # `license = "MIT"` expression above, and carrying both is how a build ends up declaring
+    # the licence twice and disagreeing with itself.
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -23,6 +26,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
+
+# `Typing :: Typed` above is a promise, and `py.typed` is what keeps it. Without that marker
+# file inside the package, PEP 561 tells every type checker to ignore the annotations in an
+# installed copy -- so the classifier would be advertising a guarantee that nobody downstream
+# could actually collect on.
 
 # The core stays dependency-free on purpose. Everything heavy lives behind an extra,
 # so `pip install context-grid` never drags in torch, CUDA or a PDF engine.
@@ -133,6 +141,21 @@ Issues = "https://github.com/sushantgundla/context-grid/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/contextgrid"]
+
+# The sdist is a source distribution, not a copy of the working tree. Tests and docs stay in --
+# they are what makes a source release worth downloading. Everything below is either an agent
+# harness, a working note, or a build artefact, and none of it belongs in something people
+# `pip download`.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.claude",
+    "/.github",
+    "/data",
+    "/data/.gitkeep",
+    "/docs-e2e-report*.md",
+    "/docker-compose.yml",
+    "/Dockerfile",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
