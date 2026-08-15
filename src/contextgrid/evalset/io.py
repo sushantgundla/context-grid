@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from contextgrid.core.errors import EvalSetError, SpanError
-from contextgrid.core.evalset import EvalItem, EvalSet, GoldAnchor, GoldSpan
+from contextgrid.core.evalset import CSV_ALIASES, EvalItem, EvalSet, GoldAnchor, GoldSpan
 from contextgrid.core.span import Span
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,12 @@ def read_jsonl(path: str | Path) -> EvalSet:
                 )
             identity = dict(header)
             continue
-        items.append(EvalItem.from_dict(record))
+        try:
+            items.append(EvalItem.from_dict(record))
+        except EvalSetError as exc:
+            # The record knows what is wrong with itself; only the reader knows where it is.
+            named = f" (item {record['id']!r})" if isinstance(record.get("id"), str) else ""
+            raise EvalSetError(f"{source_path}:{number}{named}: {exc}") from exc
 
     return EvalSet(
         id=identity.get("id", source_path.stem),
@@ -187,16 +192,9 @@ def read_jsonl(path: str | Path) -> EvalSet:
 # ---------------------------------------------------------------------------
 
 #: Column names accepted for each field, so a spreadsheet does not have to be reformatted.
-_CSV_ALIASES: dict[str, tuple[str, ...]] = {
-    "id": ("id", "question_id", "qid"),
-    "question": ("question", "query", "q"),
-    "source_id": ("source_id", "document", "doc", "doc_id", "file", "filename"),
-    "quote": ("quote", "evidence", "answer_span", "context", "passage"),
-    "answer": ("answer", "expected_answer", "gold_answer"),
-    "qtype": ("qtype", "type", "question_type", "category"),
-    "page": ("page", "page_hint", "page_number"),
-    "grade": ("grade", "relevance", "rel"),
-}
+#: Defined in `core.evalset` because the JSON readers need to recognise these names too, in
+#: order to say that an alias belongs to the other format rather than simply refusing it.
+_CSV_ALIASES = CSV_ALIASES
 
 
 def read_csv(path: str | Path, *, evalset_id: str | None = None) -> EvalSet:

@@ -33,6 +33,47 @@ from contextgrid.core.span import Span, total_length
 Qrels = dict[str, dict[str, int]]
 Run = dict[str, dict[str, float]]
 
+#: Column names `read_csv` accepts for each field, so a spreadsheet does not have to be
+#: reformatted before it can be used.
+#:
+#: It lives here rather than beside the CSV reader because the JSON side needs it too -- not to
+#: accept the aliases, which it does not, but to recognise one when it sees it. A reader who
+#: followed the CSV documentation and then hand-wrote JSONL will reach for `doc_id`, and being
+#: told "that name is real, in the other format" is the difference between a fixed file and a
+#: guess.
+CSV_ALIASES: dict[str, tuple[str, ...]] = {
+    "id": ("id", "question_id", "qid"),
+    "question": ("question", "query", "q"),
+    "source_id": ("source_id", "document", "doc", "doc_id", "file", "filename"),
+    "quote": ("quote", "evidence", "answer_span", "context", "passage"),
+    "answer": ("answer", "expected_answer", "gold_answer"),
+    "qtype": ("qtype", "type", "question_type", "category"),
+    "page": ("page", "page_hint", "page_number"),
+    "grade": ("grade", "relevance", "rel"),
+}
+
+
+def _required(data: Mapping[str, Any], key: str, what: str) -> Any:
+    """`data[key]`, or an `EvalSetError` that says what is missing and what was there instead.
+
+    A bare `KeyError` reaches the CLI as `error: 'source_id'` -- four characters in quotes,
+    naming no file, no record and no expectation. This is the same lookup with the context a
+    person needs to fix their file.
+    """
+    if key in data:
+        return data[key]
+
+    alias = next((name for name in CSV_ALIASES.get(key, ()) if name != key and name in data), None)
+    if alias is not None:
+        raise EvalSetError(
+            f"every {what} needs a `{key}`, and this one has `{alias}` instead. `{alias}` is a "
+            f"real name for that field -- but only as a CSV column, where `read_csv` accepts "
+            f"several spellings. JSON records take `{key}` and nothing else. Rename it."
+        )
+
+    present = ", ".join(f"`{name}`" for name in sorted(data)) or "no keys at all"
+    raise EvalSetError(f"every {what} needs a `{key}`. This one has {present}.")
+
 
 class QuestionType:
     """The question categories the tool slices metrics by.
@@ -87,8 +128,8 @@ class GoldAnchor:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> GoldAnchor:
         return cls(
-            source_id=str(data["source_id"]),
-            quote=str(data["quote"]),
+            source_id=str(_required(data, "source_id", "gold anchor")),
+            quote=str(_required(data, "quote", "gold anchor")),
             grade=int(data.get("grade", 2)),
             page_hint=data.get("page_hint"),
             occurrence=int(data.get("occurrence", 0)),
@@ -221,8 +262,8 @@ class EvalItem:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> EvalItem:
         return cls(
-            id=str(data["id"]),
-            question=str(data["question"]),
+            id=str(_required(data, "id", "eval item")),
+            question=str(_required(data, "question", "eval item")),
             gold=tuple(GoldSpan.from_dict(g) for g in data.get("gold", ())),
             anchors=tuple(GoldAnchor.from_dict(a) for a in data.get("anchors", ())),
             qtype=data.get("qtype"),
