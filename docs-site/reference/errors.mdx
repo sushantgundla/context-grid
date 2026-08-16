@@ -54,7 +54,7 @@ These are importable directly: `from contextgrid import SpanError` etc.
 | Exception | Also inherits | Raised when |
 |---|---|---|
 | `ContextGridError` | `Exception` | Base class. Never raised directly except for a handful of internal invariant checks. |
-| `MissingExtraError` | `ImportError` | An optional dependency for a plugin is not installed. |
+| `MissingExtraError` | `ImportError` | An optional dependency for a plugin is not installed — `faiss`, `usearch`, `psycopg`, `docling` and the rest. This is the one to catch around any plugin behind an extra. |
 | `UnknownPluginError` | `KeyError` | A spec string names a parser/chunker/embedder/etc. that is not registered. |
 | `SpanError` | `ValueError` | A `Span` is malformed (`end < start`, negative `start`), or two spans were compared in a way that makes no sense. |
 | `DocumentError` | `ValueError` | A `Document`, `ParsedDocument` or source file is inconsistent — missing bytes, a block referencing text outside the document. |

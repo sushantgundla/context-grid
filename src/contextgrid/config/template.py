@@ -85,7 +85,8 @@ run:
 
   # Extra metrics to compute alongside the six built-ins (recall, precision, hit_rate,
   # mrr, map, ndcg) and whatever `headline` names -- one value or a list, same as any
-  # axis. Only useful once you've registered a custom `Metric`; see extending.md.
+  # axis. Only useful once you've registered a custom `Metric` --
+  # https://context-grid.mintlify.site/concepts/plugins
   # metrics: [weighted_recall]
 
   # Stop rather than run forever. Leave both out for no limit. A sweep containing a

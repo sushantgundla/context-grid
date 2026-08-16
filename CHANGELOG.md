@@ -8,6 +8,39 @@ called out here when it does.
 
 Nothing yet.
 
+## [0.9.1] — 2026-08-17
+
+Everything here was found by installing 0.9.0 from PyPI into a container and using it with no
+access to the source — the way anyone else meets it. The package worked; these are the places it
+knew the right answer and did not hand it over.
+
+### Fixed
+
+- **A missing optional dependency now raises `MissingExtraError`.** `faiss`, `usearch` and
+  `psycopg` all raised `IndexBuildError`, which inherits `ValueError` — so the
+  `except MissingExtraError` the documentation hands out, and the `except ImportError` it says
+  also works, both missed it. The messages were already right; the type was not. Only `faiss` was
+  reported, but the same bug was in the other two and all three are fixed.
+- **`anchor_normalised` now reaches the terminal.** When a quote matches only after whitespace is
+  collapsed — the normal case for hard-wrapped Markdown — the CLI said nothing, because the
+  warning was `INFO` and `INFO` is filtered out whenever a run produced results. The hard anchor
+  failures printed loudly beside it, so silence read as "your evidence matched literally". It is
+  now `CAUTION`, which is what it always was in substance.
+- **`contextgrid evalset` no longer calls a question "answerable".** It never reads a corpus, so
+  it cannot know whether an anchor resolves; it reported "14 questions (14 answerable)" for a set
+  containing evidence that appears in no document. It now says "N with evidence, unchecked against
+  a corpus". `contextgrid run` is where evidence meets documents, and it still says so there.
+- **`contextgrid init` no longer cites a page that does not exist.** The generated config pointed
+  at `extending.md`; the real page is `concepts/plugins`. A dead reference in a generated file is
+  the worst kind, because it gets copied forward. The `map` metric's description had the same
+  problem and lost its stale pointer too.
+
+### Changed
+
+- The `Documentation` URL in the package metadata points at
+  [context-grid.mintlify.site](https://context-grid.mintlify.site) rather than the contributor
+  docs on GitHub.
+
 ## [0.9.0] — 2026-08-17
 
 First public release. Everything below is the state at the point the project went open source
@@ -58,5 +91,6 @@ RAPTOR and GraphRAG. Deliberately, not accidentally — see `docs/roadmap.md`.
   the documentation followed as a stranger would. 40-odd disagreements between the docs and the
   tool were found that way and fixed. It is the most honest thing in the repository.
 
-[Unreleased]: https://github.com/sushantgundla/context-grid/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/sushantgundla/context-grid/compare/v0.9.1...HEAD
 [0.9.0]: https://github.com/sushantgundla/context-grid/releases/tag/v0.9.0
+[0.9.1]: https://github.com/sushantgundla/context-grid/releases/tag/v0.9.1

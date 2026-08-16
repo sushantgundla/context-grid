@@ -34,6 +34,7 @@ from typing import Any, ClassVar
 import numpy as np
 
 from contextgrid.core.documents import Chunk
+from contextgrid.core.errors import MissingExtraError
 from contextgrid.embed.base import Vectors, normalise
 from contextgrid.index.base import Scored
 from contextgrid.index.dense import IndexBuildError
@@ -112,11 +113,8 @@ class PgVectorIndex:
     def _connect(self) -> Any:
         try:
             import psycopg
-        except ImportError as error:  # pragma: no cover - exercised by the extras test
-            raise IndexBuildError(
-                "the pgvector index needs psycopg. Install with: "
-                "pip install 'context-grid[pgvector]'"
-            ) from error
+        except ImportError as error:
+            raise MissingExtraError("the pgvector index", "pgvector", package="psycopg") from error
 
         try:
             connection = psycopg.connect(self._resolved_dsn(), autocommit=True)

@@ -290,7 +290,13 @@ class AnchorResolver:
                 WarningCode.ANCHOR_NORMALISED,
                 f"the evidence for {item.id!r} was found only after collapsing whitespace, "
                 f"so {parsed.parser!r} reflowed it: {quote}",
-                severity=Severity.INFO,
+                # CAUTION, not INFO, and the reason is where INFO ends up rather than what it
+                # means. The CLI drops INFO warnings whenever a run produced results -- which is
+                # always, for this one -- so at INFO a command-line user was never told. The
+                # hard anchor failures printed loudly right beside it, which made the silence
+                # read as "your evidence matched literally" when it had in fact been reflowed
+                # to fit. Markdown hard-wraps, so this is the common case, not the exotic one.
+                severity=Severity.CAUTION,
                 stage="anchor",
                 subject=item.id,
                 parser=parsed.parser,

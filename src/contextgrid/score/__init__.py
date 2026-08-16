@@ -26,9 +26,7 @@ METRICS.register("hit_rate", doc="1.0 when anything relevant is in the top k, el
     HitRateMetric
 )
 METRICS.register("mrr", doc="1 / the position of the first relevant result.")(MRRMetric)
-METRICS.register("map", doc="Mean average precision, trec_eval's convention (see metrics.md).")(
-    MAPMetric
-)
+METRICS.register("map", doc="Mean average precision, trec_eval's convention.")(MAPMetric)
 METRICS.register("ndcg", doc="Graded nDCG against the best possible ordering.")(NDCGMetric)
 
 

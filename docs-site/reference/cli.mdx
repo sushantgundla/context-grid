@@ -172,7 +172,9 @@ Suppress the `[i/total] <config.label>` progress lines that print to stderr as e
 configuration finishes. The leaderboard, summary and cache line on stdout are unaffected.
 </ParamField>
 
-The `[i/total]` progress lines and every `warning:` line go to stderr; the leaderboard, the
+The `[i/total]` progress lines and every `warning:` line go to stderr — including
+`anchor_normalised`, which fires when your evidence matched only after whitespace was collapsed,
+because Markdown hard-wraps and a quote copied out of it usually spans a newline. The leaderboard, the
 plain-English summary sentence, and the `cache:` line go to stdout — so `contextgrid run
 contextgrid.yaml > leaderboard.txt` captures just the results, and `2>` catches just the noise.
 

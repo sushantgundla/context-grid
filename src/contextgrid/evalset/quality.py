@@ -79,8 +79,15 @@ class EvalSetQuality:
         return difference >= self.detectable_difference
 
     def summary(self) -> str:
+        # "with evidence", not "answerable". Nothing here has seen a corpus: this counts the
+        # questions that carry an anchor, and says nothing about whether that anchor's quote can
+        # actually be found in any document. A stranger read "14 answerable" and reasonably took
+        # it to mean 14 questions could be scored, while one of them quoted a sentence that
+        # appears nowhere at all. The word the tool uses for *scorable* had been lent to a
+        # weaker claim. `contextgrid run` is where evidence meets documents, and it says so
+        # there with `anchor_not_found`.
         parts = [
-            f"{self.size} questions ({self.answerable} answerable)",
+            f"{self.size} questions ({self.answerable} with evidence, unchecked against a corpus)",
             f"{self.reviewed_fraction:.0%} reviewed",
             f"detects differences of {self.detectable_difference:.2f} and above",
         ]

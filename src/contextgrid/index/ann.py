@@ -30,6 +30,7 @@ from typing import Any, ClassVar
 import numpy as np
 
 from contextgrid.core.documents import Chunk
+from contextgrid.core.errors import MissingExtraError
 from contextgrid.embed.base import Vectors, normalise
 from contextgrid.index.base import Scored
 from contextgrid.index.dense import IndexBuildError
@@ -147,10 +148,13 @@ class _ANNIndex:
 def _faiss() -> Any:
     try:
         import faiss
-    except ImportError as error:  # pragma: no cover - exercised by the extras test
-        raise IndexBuildError(
-            "faiss indexes need faiss-cpu. Install with: pip install 'context-grid[index]'"
-        ) from error
+    except ImportError as error:
+        # `MissingExtraError`, not `IndexBuildError`. The message was always right; the type was
+        # not. `IndexBuildError` is a `ValueError`, so the `except MissingExtraError` the docs
+        # hand out -- and the `except ImportError` they say also works -- both missed this,
+        # which is the worst way to be wrong: the user reads a perfect message, writes the
+        # handler the documentation told them to write, and it never fires.
+        raise MissingExtraError("faiss indexes", "index", package="faiss-cpu") from error
     return faiss
 
 
@@ -431,10 +435,8 @@ class USearchIndex(_ANNIndex):
     def _build_backend(self, matrix: Vectors) -> Any:
         try:
             from usearch.index import Index as USearch
-        except ImportError as error:  # pragma: no cover - exercised by the extras test
-            raise IndexBuildError(
-                "usearch indexes need usearch. Install with: pip install 'context-grid[index]'"
-            ) from error
+        except ImportError as error:
+            raise MissingExtraError("usearch indexes", "index", package="usearch") from error
 
         index = USearch(
             ndim=int(matrix.shape[1]),
