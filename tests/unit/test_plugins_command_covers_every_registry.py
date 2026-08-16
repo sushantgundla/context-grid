@@ -81,7 +81,7 @@ def test_every_family_can_be_asked_for_by_name(
 def test_every_registered_plugin_appears_in_the_full_listing(
     family: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """"List everything registered" -- so every name in every registry, with its description."""
+    """ "List everything registered" -- so every name in every registry, with its description."""
     assert main(["plugins"]) == 0
     printed = capsys.readouterr().out
 

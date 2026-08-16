@@ -349,9 +349,7 @@ def _evalset_problems(config: ExperimentConfig) -> list[str]:
         return [str(error)]
 
     if not evalset.items:
-        return [
-            f"{config.evalset} has no questions in it, so a sweep over it would score nothing"
-        ]
+        return [f"{config.evalset} has no questions in it, so a sweep over it would score nothing"]
     return []
 
 

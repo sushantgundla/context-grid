@@ -113,7 +113,11 @@ dev = [
     # Pinned to a floor rather than left open: mypy 2.x tightened numpy shape checking,
     # and an older local mypy silently passes code that CI rejects.
     "mypy>=2.3",
-    "ruff>=0.5",
+    # Pinned exactly, not floored. `ruff format` output changes between releases, so a floor
+    # means CI can reformat code that a contributor's older ruff called clean -- which is a red
+    # build nobody can reproduce locally. Raise this deliberately, and run `ruff format .` in the
+    # same commit.
+    "ruff==0.16.3",
     "pymupdf>=1.24",
     "pdfplumber>=0.11",
     "ranx>=0.3.20",
@@ -182,6 +186,19 @@ exclude_lines = [
 line-length = 100
 src = ["src", "tests"]
 target-version = "py310"
+
+# `ruff check .` and `ruff format --check .` run from the repository root in CI, so without this
+# they walk everything -- and two directories here are not the package.
+#
+# `.claude` is an agent harness, not shipped code. Its scripts are deliberately written to keep
+# working when contextgrid itself is broken, and holding them to the package's line length gained
+# nothing and cost a red build on every push.
+#
+# `docs` and `docs-site` are excluded from *formatting*, which is the part that matters: recent
+# ruff reformats Python inside Markdown code blocks, and the examples in those pages are
+# byte-for-byte transcripts of real runs, checked against the tool by the drives in `docs/drives`.
+# A formatter rewriting them would silently break the one property that makes them trustworthy.
+extend-exclude = [".claude", "docs", "docs-site"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PT", "SIM", "RUF"]
