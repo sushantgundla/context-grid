@@ -8,7 +8,7 @@ called out here when it does.
 
 Nothing yet.
 
-## [0.9.0] — unreleased
+## [0.9.0] — 2026-08-17
 
 First public release. Everything below is the state at the point the project went open source
 and to PyPI, rather than a diff against a previous version — there isn't one.

@@ -3,14 +3,18 @@
   <img alt="context-grid" src="https://raw.githubusercontent.com/sushantgundla/context-grid/main/docs-site/images/banner.png" width="420">
 </picture>
 
+[![PyPI](https://img.shields.io/pypi/v/context-grid)](https://pypi.org/project/context-grid/)
+[![Python](https://img.shields.io/pypi/pyversions/context-grid)](https://pypi.org/project/context-grid/)
+[![CI](https://github.com/sushantgundla/context-grid/actions/workflows/ci.yml/badge.svg)](https://github.com/sushantgundla/context-grid/actions/workflows/ci.yml)
+[![Licence](https://img.shields.io/pypi/l/context-grid)](https://github.com/sushantgundla/context-grid/blob/main/LICENSE)
+
 A lab for grounding pipelines. Write one YAML file, sweep **ingestion × parser × chunker ×
 embedder × index × transform × retrieval × reranker × candidates × generator** on your own
 documents, and get back ranked, reproducible results scored on quality, latency and cost.
 
 > **Status: v0.9.0, alpha.** All ten axes are shipped and real — see
 > [what the numbers actually say](#what-the-numbers-actually-say) below. RAPTOR and GraphRAG
-> are deliberately not built yet (see [docs/roadmap.md](https://github.com/sushantgundla/context-grid/blob/main/docs/roadmap.md)). Not yet on PyPI —
-> install from source, below.
+> are deliberately not built yet (see [docs/roadmap.md](https://github.com/sushantgundla/context-grid/blob/main/docs/roadmap.md)).
 
 ---
 
@@ -25,12 +29,8 @@ question.
 
 ## Quickstart
 
-Not yet on PyPI. Install from source:
-
 ```bash
-git clone https://github.com/sushantgundla/context-grid
-cd context-grid
-pip install -e .
+pip install context-grid
 ```
 
 The core installs with just `numpy` and `pyyaml` — nothing that drags in CUDA. Real parsers,
