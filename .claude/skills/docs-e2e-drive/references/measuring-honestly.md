@@ -101,7 +101,7 @@ When more than one drive runs at once, each takes a lane and writes to its own r
 Two drives covering the same surface waste effort; two drives reading each other's reports stop
 being independent.
 
-Do not read another drive's report, and do not read `docs-e2e-report*.md` from an earlier round.
+Do not read another drive's report, and do not read `docs/drives/drive-N.md` from an earlier round.
 Knowing where the last drive looked is precisely the knowledge that stops you looking elsewhere.
 
 Expect transient failures from other sessions mid-edit — a doctest that fails once and passes a

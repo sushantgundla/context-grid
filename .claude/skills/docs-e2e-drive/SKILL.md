@@ -21,7 +21,7 @@ is a separate job, in a separate session.
 If you catch yourself thinking "let me just check the source to see what it expects" — that
 thought is the finding. Write it down instead.
 
-Do not read earlier reports (`docs-e2e-report*.md`) either. Knowing where the last drive looked
+Do not read earlier reports (`docs/drives/`) either. Knowing where the last drive looked
 is what stops you looking elsewhere.
 
 ## The scenario
@@ -103,7 +103,7 @@ documents, and two pages that contradict each other.
 
 ## The report
 
-Write to `docs-e2e-report.md` in the repo root, or `docs-e2e-report-N.md` when an earlier one
+Write to `docs/drives/drive-N.md`, taking the next free number when earlier ones
 exists — never overwrite another drive's findings.
 
 Structure:

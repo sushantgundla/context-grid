@@ -1,0 +1,71 @@
+name: Bug report
+description: Something the tool does that it should not, or does not do that it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The most useful bug report this project gets is "a documented example did not do what the
+        page said". If that is yours, quote the page and what it actually printed.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        The config file or the Python that triggers it. Small is better than realistic — a
+        two-document corpus that shows the bug beats a real one that also shows it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: The full output
+      description: >
+        The whole error, not just the last line. If it is a wrong number rather than an error,
+        paste the leaderboard or the value you got.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`contextgrid --version`"
+      placeholder: "context-grid 0.9.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python and OS
+      placeholder: "3.12 on macOS 15"
+    validations:
+      required: true
+
+  - type: input
+    id: extras
+    attributes:
+      label: Extras installed
+      description: Which optional extras, if any. `pip list` is fine if you are not sure.
+      placeholder: "chunk, index"
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: >
+        Things worth saying: whether it happens every time, whether clearing the cache changes
+        it, whether an older version worked.

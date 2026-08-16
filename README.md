@@ -287,6 +287,9 @@ docker compose run --rm contextgrid sweep /data/documents /data/evalset.jsonl --
 
 ## Develop
 
+Full guide in [CONTRIBUTING.md](https://github.com/sushantgundla/context-grid/blob/main/CONTRIBUTING.md).
+The short version:
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
@@ -337,6 +340,19 @@ corpus cannot support is worse than one that scores lower and declines. With
 answer-relevancy join it and roll up into the 0–100 composite — see
 [docs/scoring/composite.md](https://github.com/sushantgundla/context-grid/blob/main/docs/scoring/composite.md).
 
+## Contributing
+
+Bug reports, plugins and — especially — "this page says X and the tool does Y" are all welcome.
+See [CONTRIBUTING.md](https://github.com/sushantgundla/context-grid/blob/main/CONTRIBUTING.md),
+the [code of conduct](https://github.com/sushantgundla/context-grid/blob/main/CODE_OF_CONDUCT.md),
+and [SECURITY.md](https://github.com/sushantgundla/context-grid/blob/main/SECURITY.md) for
+reporting a vulnerability privately.
+
+[docs/drives/](https://github.com/sushantgundla/context-grid/tree/main/docs/drives) is the record
+of five sessions where the built package was installed clean and the documentation followed as a
+stranger would, with every disagreement written down. It is the fastest way to see what this
+project counts as a defect.
+
 ## Licence
 
-MIT
+MIT — see [LICENSE](https://github.com/sushantgundla/context-grid/blob/main/LICENSE).

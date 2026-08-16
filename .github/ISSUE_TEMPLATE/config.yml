@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/sushantgundla/context-grid/security/advisories/new
+    about: Report privately. Please do not open a public issue for a vulnerability.
+  - name: Documentation
+    url: https://github.com/sushantgundla/context-grid/tree/main/docs-site
+    about: The user guide — installation, the Lab, every axis, eval sets and scoring.

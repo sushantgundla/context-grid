@@ -152,7 +152,7 @@ exclude = [
     "/.github",
     "/data",
     "/data/.gitkeep",
-    "/docs-e2e-report*.md",
+    "/docs/drives",
     "/docker-compose.yml",
     "/Dockerfile",
 ]

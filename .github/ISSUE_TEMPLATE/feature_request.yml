@@ -1,0 +1,53 @@
+name: Feature request
+description: A plugin, an axis, a metric, or something the tool should be able to measure.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to find out
+      description: >
+        Start with the question you cannot answer today, not the feature. "I want to know whether
+        X beats Y on my contracts" tells me more than "add X".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of thing is it
+      options:
+        - A new plugin on an existing axis (parser, chunker, embedder, index, reranker, ...)
+        - A new axis
+        - A metric or a scoring change
+        - Reporting, export or the CLI
+        - The Python API
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurable
+    attributes:
+      label: How would we know it works
+      description: >
+        Everything here has to be checkable. If this is a plugin, what would it be compared
+        against, and on what corpus? If it is a metric, what does it catch that the current ones
+        miss?
+
+  - type: checkboxes
+    id: offsets
+    attributes:
+      label: The offsets guarantee
+      description: >
+        Every chunk must know which characters of which source document it came from. A plugin
+        that cannot say where its text came from cannot be compared fairly against one that can.
+      options:
+        - label: This can report exact source offsets, or I have said below why it cannot.

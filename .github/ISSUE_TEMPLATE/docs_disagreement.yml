@@ -1,0 +1,45 @@
+name: The docs and the tool disagree
+description: A documented example, default, error message or number that is not what the tool does.
+labels: ["docs"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project treats a wrong page as a defect, not a typo. Roughly a fifth of these get
+        fixed by changing the tool rather than the page, because the documented behaviour turned
+        out to be the better one.
+
+  - type: input
+    id: page
+    attributes:
+      label: Which page
+      description: The URL, or the file path and line.
+      placeholder: "docs-site/axes/chunkers.mdx:152"
+    validations:
+      required: true
+
+  - type: textarea
+    id: says
+    attributes:
+      label: What the page says
+      description: Quote it.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: does
+    attributes:
+      label: What actually happens
+      description: The command you ran and the real output.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "context-grid 0.9.0"
+    validations:
+      required: true
