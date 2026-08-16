@@ -1,9 +1,13 @@
 ---
-name: pypi-drive
-description: Tests the published context-grid package the way a stranger meets it — installs it from PyPI into a Docker container and drives it using only the documentation site, with no access to this source tree. Then verifies every finding before anything is changed, and sends the same agent back to fix what survives. Use when asked to test the published package, test the PyPI release, check the released version, drive the package as a real user, verify a release, or test a subset of features against the docs.
+name: live-e2e
+description: End-to-end test of the LIVE released package, not the working tree — installs context-grid from PyPI into a Docker container and drives it using only the published documentation site, with no access to this source. Verifies every finding before anything is changed, then sends the same agent back to fix what survives. Use when asked to test the live package, test what shipped, test the real release end to end, run a live e2e, check the published version, drive the package as a real user, verify a release, or test a subset of features against the docs.
 ---
 
-# Drive the published package
+# Live end-to-end: test what shipped
+
+> **Sibling skill.** `docs-e2e-drive` tests the documentation against the **local** checkout.
+> This one tests the **released** package from PyPI. Same discipline, different subject — and
+> this is the only one that can catch a packaging bug, because it is the only one that installs.
 
 Test what people actually install, not what is in the working tree. They are different things,
 and the gap between them is where the embarrassing bugs live.
