@@ -1,4 +1,7 @@
-# context-grid
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/sushantgundla/context-grid/main/docs-site/images/banner-dark.png">
+  <img alt="context-grid" src="https://raw.githubusercontent.com/sushantgundla/context-grid/main/docs-site/images/banner.png" width="420">
+</picture>
 
 A lab for grounding pipelines. Write one YAML file, sweep **ingestion × parser × chunker ×
 embedder × index × transform × retrieval × reranker × candidates × generator** on your own

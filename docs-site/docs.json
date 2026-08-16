@@ -2,6 +2,12 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
   "name": "context-grid",
+  "logo": {
+    "light": "/images/logo-light.svg",
+    "dark": "/images/logo-dark.svg",
+    "href": "/"
+  },
+  "favicon": "/favicon.svg",
   "colors": {
     "primary": "#0D9488",
     "light": "#14B8A6",
