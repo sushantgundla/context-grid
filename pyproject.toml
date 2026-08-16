@@ -208,7 +208,19 @@ ignore = ["A003"]
 "tests/*" = ["PT011"]
 
 [tool.mypy]
-python_version = "3.10"
+# No `python_version` here, and that is deliberate rather than an omission.
+#
+# It used to say `python_version = "3.10"`, which told mypy to parse *everything* as 3.10 --
+# including third-party stubs. numpy's `__init__.pyi` now uses PEP 695 `type` statements, which
+# are 3.12 syntax, so mypy refused to parse numpy at all and CI died with
+# `numpy/__init__.pyi:737: error: Type statement is only supported in Python 3.12 and greater`.
+# The package's own code was never the problem, and pinning numpy to dodge it would trade a real
+# dependency upgrade for a config line.
+#
+# The 3.10 guarantee is not lost, it moved to the two places that can actually enforce it: the CI
+# matrix runs mypy under 3.10, 3.11, 3.12 and 3.13, so the 3.10 job checks 3.10 semantics with a
+# 3.10 interpreter; and `scripts/check-oldest-numpy.sh` passes `--python-version 3.10` explicitly
+# against the oldest numpy that Python 3.10 can install, which is the case a matrix job cannot see.
 strict = true
 warn_unreachable = true
 files = ["src/contextgrid"]

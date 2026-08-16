@@ -19,5 +19,9 @@ if [ ! -d "$ENV_DIR" ]; then
     "numpy==$NUMPY_VERSION" "mypy>=2.3" pymupdf pdfplumber pyyaml types-PyYAML
 fi
 
+# `--python-version` is passed here rather than set in pyproject, because setting it project-wide
+# makes mypy parse third-party stubs as 3.10 too -- and numpy's stubs now use 3.12-only syntax,
+# which took CI down. Here it is correct and contained: this script exists precisely to ask "does
+# this code type-check as 3.10, against the oldest numpy 3.10 can install?"
 echo "mypy $("$ENV_DIR/bin/mypy" --version | cut -d' ' -f2) / numpy $NUMPY_VERSION / target py3.10"
-exec "$ENV_DIR/bin/mypy" --config-file pyproject.toml
+exec "$ENV_DIR/bin/mypy" --config-file pyproject.toml --python-version 3.10

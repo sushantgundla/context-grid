@@ -163,20 +163,28 @@ def test_check_opens_the_eval_set_and_none_of_the_documents(
     about what the code looks like: the eval set yes, `contract.md` and `api.md` no.
     """
     import builtins
-    import io
 
     opened: list[str] = []
-    real_open = io.open
+    real_builtin_open = builtins.open
+    real_path_open = Path.open
 
     def recording_open(file: Any, *args: Any, **kwargs: Any) -> Any:
         opened.append(str(file))
-        return real_open(file, *args, **kwargs)
+        return real_builtin_open(file, *args, **kwargs)
+
+    def recording_path_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        opened.append(str(self))
+        return real_path_open(self, *args, **kwargs)
 
     (workspace / "questions.jsonl").write_text(f"{HEADER}\n{ITEM}\n", encoding="utf-8")
     config = config_for(workspace, "./questions.jsonl")
-    # Both names, because they are separate references to one function: `Path.open` and
-    # `Path.read_text` reach it as `io.open`, and everything else as `builtins.open`.
-    monkeypatch.setattr(io, "open", recording_open)
+    # Patch `Path.open` rather than `io.open`, because how `pathlib` reaches the underlying
+    # opener is a private detail that changed between the versions this package supports. On
+    # 3.11+ `Path.read_text` calls `io.open` at call time, so patching `io.open` catches it; on
+    # 3.10 `pathlib` binds its opener once at import, so a later patch of `io.open` never fires
+    # and this test recorded nothing at all -- it passed on three interpreters and failed on the
+    # oldest. `Path.open` is the public door every one of those versions goes through.
+    monkeypatch.setattr(Path, "open", recording_path_open)
     monkeypatch.setattr(builtins, "open", recording_open)
 
     assert main(["check", str(config)]) == 0
