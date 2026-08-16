@@ -99,12 +99,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # Twelve attempts with a 30s gap, not five. 0.9.1 uploaded fine and this job still failed:
+      # the 3.10 runner's mirror had the release, the 3.13 runner's did not, and 2.5 minutes was
+      # not enough for PyPI's CDN to agree with itself. A red X on a release that actually
+      # succeeded is worse than a slow green one -- it teaches you to ignore the check.
       - name: Install from PyPI and use it
         run: |
           version="${GITHUB_REF_NAME#v}"
-          for attempt in 1 2 3 4 5; do
-            pip install "context-grid==$version" && break
-            echo "not on the index yet, waiting" && sleep 30
+          installed=""
+          for attempt in $(seq 1 12); do
+            if pip install "context-grid==$version"; then installed=yes; break; fi
+            echo "attempt $attempt: not on this mirror yet, waiting 30s"
+            sleep 30
           done
+          if [ -z "$installed" ]; then
+            echo "::error::context-grid==$version did not become installable within 6 minutes" >&2
+            exit 1
+          fi
           python -c "import contextgrid as cg; print(cg.__version__)"
           contextgrid --version
