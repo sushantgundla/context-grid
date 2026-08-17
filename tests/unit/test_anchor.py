@@ -356,8 +356,10 @@ def test_a_parser_that_loses_evidence_is_summarised_at_the_set_level() -> None:
     _, log = AnchorResolver().resolve(evalset, {"contract": parse(CLEAN, parser="lossy")})
 
     summary = log.of_code(WarningCode.ANCHOR_NOT_FOUND)[-1]
-    assert "lost 1 of 2" in summary.message
-    assert summary.detail == {"lost": 1, "total": 2}
+    assert "could not locate 1 of 2" in summary.message
+    assert summary.detail == {"lost": 1, "out_of_range": 0, "total": 2}
+    # The count is a fact; who to blame for it is not. See `_aggregate_message`.
+    assert "a fact about the parser, not the eval set" not in summary.message
 
 
 def test_resolving_a_set_keeps_its_identity() -> None:

@@ -42,7 +42,14 @@ class MatchStrategy(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class AnchorMatch:
-    """Where one anchor ended up in one parse, and how sure we are about it."""
+    """Where one anchor ended up in one parse, and how sure we are about it.
+
+    `candidates` is how many times the quote was located, and it is filled in whether or not
+    a span came back. That is the whole point: a failure with `candidates == 0` is evidence
+    the parse does not contain, and a failure with `candidates > 0` is evidence it does
+    contain, under an `occurrence` that names a repetition which is not there. The two used
+    to arrive downstream as the same `None` and were reported with the same sentence.
+    """
 
     anchor: GoldAnchor
     span: Span | None
@@ -52,6 +59,11 @@ class AnchorMatch:
     @property
     def found(self) -> bool:
         return self.span is not None
+
+    @property
+    def occurrence_out_of_range(self) -> bool:
+        """The quote is in the text; `anchor.occurrence` counts past the last copy of it."""
+        return self.span is None and self.candidates > 0
 
     @property
     def is_verbatim(self) -> bool:
@@ -93,18 +105,31 @@ class AnchorResolver:
     # -- one anchor ----------------------------------------------------------
 
     def locate(self, anchor: GoldAnchor, parsed: ParsedDocument) -> AnchorMatch:
-        """Find one anchor in one parse."""
+        """Find one anchor in one parse.
+
+        Every strategy reports how many copies of the quote it saw, even when none of them
+        was the one asked for. A failure then carries the count, so the caller can tell
+        "this parse does not contain the evidence" from "it contains two copies and the
+        anchor asked for the eighth".
+        """
         quote = anchor.quote.strip()
         text = parsed.text
         if not quote or not text:
             return AnchorMatch(anchor, None, MatchStrategy.NOT_FOUND)
 
-        exact = self._find_exact(quote, text, anchor, parsed)
+        #: The most copies any strategy managed to see. Taken across strategies rather than
+        #: from the last one tried, because a quote found twice by exact match and not at all
+        #: by the normalised pass was still found twice.
+        seen = 0
+
+        exact, exact_seen = self._find_exact(quote, text, anchor, parsed)
+        seen = max(seen, exact_seen)
         if exact is not None:
             return exact
 
         if self.allow_normalised:
-            normalised = self._find_normalised(quote, text, anchor, parsed)
+            normalised, normalised_seen = self._find_normalised(quote, text, anchor, parsed)
+            seen = max(seen, normalised_seen)
             if normalised is not None:
                 return normalised
 
@@ -113,11 +138,12 @@ class AnchorResolver:
             if bounded is not None:
                 return bounded
 
-        return AnchorMatch(anchor, None, MatchStrategy.NOT_FOUND)
+        return AnchorMatch(anchor, None, MatchStrategy.NOT_FOUND, candidates=seen)
 
     def _find_exact(
         self, quote: str, text: str, anchor: GoldAnchor, parsed: ParsedDocument
-    ) -> AnchorMatch | None:
+    ) -> tuple[AnchorMatch | None, int]:
+        """The match, and how many copies of the quote were there to choose from."""
         haystack, needle = self._case(text), self._case(quote)
         spans = [
             Span(parsed.id, start, start + len(quote))
@@ -125,17 +151,17 @@ class AnchorResolver:
         ]
         chosen = self._choose(spans, anchor, parsed)
         if chosen is None:
-            return None
-        return AnchorMatch(anchor, chosen, MatchStrategy.EXACT, candidates=len(spans))
+            return None, len(spans)
+        return AnchorMatch(anchor, chosen, MatchStrategy.EXACT, candidates=len(spans)), len(spans)
 
     def _find_normalised(
         self, quote: str, text: str, anchor: GoldAnchor, parsed: ParsedDocument
-    ) -> AnchorMatch | None:
+    ) -> tuple[AnchorMatch | None, int]:
         flat_text, positions = collapse_whitespace(text)
         flat_quote, _ = collapse_whitespace(quote)
         flat_quote = flat_quote.strip()
         if not flat_quote:
-            return None
+            return None, 0
 
         haystack, needle = self._case(flat_text), self._case(flat_quote)
         spans: list[Span] = []
@@ -145,8 +171,11 @@ class AnchorResolver:
 
         chosen = self._choose(spans, anchor, parsed)
         if chosen is None:
-            return None
-        return AnchorMatch(anchor, chosen, MatchStrategy.NORMALISED, candidates=len(spans))
+            return None, len(spans)
+        return (
+            AnchorMatch(anchor, chosen, MatchStrategy.NORMALISED, candidates=len(spans)),
+            len(spans),
+        )
 
     def _find_bounded(self, quote: str, text: str, anchor: GoldAnchor) -> AnchorMatch | None:
         """Match on the opening and closing words, tolerating damage in between."""
@@ -246,19 +275,21 @@ class AnchorResolver:
             items.append(resolved)
             log.extend(item_log)
 
-        lost = len(log.of_code(WarningCode.ANCHOR_NOT_FOUND))
-        if lost:
+        failures = log.of_code(WarningCode.ANCHOR_NOT_FOUND)
+        if failures:
             parser = next(iter(parses.values())).parser if parses else "unknown"
+            absent = sum(1 for w in failures if w.detail.get("reason") == _NOT_PRESENT)
+            misindexed = sum(1 for w in failures if w.detail.get("reason") == _OUT_OF_RANGE)
             log.add(
                 WarningCode.ANCHOR_NOT_FOUND,
-                f"parser {parser!r} lost {lost} of {_anchor_count(evalset)} pieces of "
-                "evidence entirely. Those questions cannot be answered under this parse, "
-                "whatever the retriever does -- which is a fact about the parser, not the "
-                "eval set",
+                _aggregate_message(
+                    parser, absent=absent, misindexed=misindexed, total=_anchor_count(evalset)
+                ),
                 severity=Severity.CAUTION,
                 stage="anchor",
                 subject=parser,
-                lost=lost,
+                lost=absent,
+                out_of_range=misindexed,
                 total=_anchor_count(evalset),
             )
 
@@ -273,6 +304,30 @@ class AnchorResolver:
     ) -> None:
         quote = _abbreviate(match.anchor.quote)
 
+        if match.occurrence_out_of_range:
+            # "does not appear" was wrong, and wrong in the direction that costs the most
+            # time: it sent somebody to check whether the parser had mangled a passage that
+            # the parser had in fact read perfectly. The quote is there; the index is not.
+            # `/evalsets/overview` says only that `occurrence` "picks which repetition of
+            # `quote` is meant", so the count and the highest usable index both belong here.
+            copies = match.candidates
+            how_often = "once" if copies == 1 else f"{copies} times"
+            log.add(
+                WarningCode.ANCHOR_NOT_FOUND,
+                f"the evidence for {item.id!r} appears {how_often} in {parsed.parser!r}'s "
+                f"reading of {match.anchor.source_id!r}, but the anchor asks for occurrence "
+                f"{match.anchor.occurrence}, which is out of range: they are numbered from 0, "
+                f"so the last one is {copies - 1}. Nothing was scored for it: {quote}",
+                severity=Severity.CAUTION,
+                stage="anchor",
+                subject=item.id,
+                parser=parsed.parser,
+                reason=_OUT_OF_RANGE,
+                occurrence=match.anchor.occurrence,
+                found=copies,
+            )
+            return
+
         if not match.found:
             log.add(
                 WarningCode.ANCHOR_NOT_FOUND,
@@ -282,6 +337,7 @@ class AnchorResolver:
                 stage="anchor",
                 subject=item.id,
                 parser=parsed.parser,
+                reason=_NOT_PRESENT,
             )
             return
 
@@ -366,6 +422,60 @@ def _all_occurrences(haystack: str, needle: str) -> list[int]:
         found.append(cursor)
         cursor = haystack.find(needle, cursor + 1)
     return found
+
+
+#: Why one anchor produced no gold, recorded on the warning's `detail` so the summary can
+#: count the two apart instead of adding them together.
+_NOT_PRESENT = "not_present"
+_OUT_OF_RANGE = "occurrence_out_of_range"
+
+
+def _aggregate_message(parser: str, *, absent: int, misindexed: int, total: int) -> str:
+    """One line for a whole eval set, claiming only what the counts can support.
+
+    The old wording ended "which is a fact about the parser, not the eval set". It is not.
+    The same warning fires for a quote nobody wrote into the document, for a quote naming the
+    wrong `source_id`, and for an `occurrence` past the last copy -- and the resolver cannot
+    tell an invented quote from a mangled table, because in both cases the text simply is not
+    there. So the sentence that can be defended is the one about the measurement: these
+    questions cannot be scored. Who to blame is left open where it is open, and named where
+    the code genuinely knows it -- an out-of-range index is proof the text was found.
+    """
+    sentences: list[str] = []
+
+    if absent:
+        sentences.append(
+            f"parser {parser!r} could not locate {absent} of {total} {_pieces(total)} of "
+            "evidence. Those questions cannot be answered under this parse, whatever the "
+            "retriever does"
+        )
+        sentences.append(
+            "Why is not something this can tell: either the parser lost the text, or the eval "
+            "set quotes something that is not in the document it names. Check one of the "
+            "quotes against the file before blaming either"
+        )
+
+    # "a further N" once the sentence above has already said how many there were in total,
+    # "N of total" when this is the only sentence in the message.
+    if misindexed:
+        count = (
+            f"a further {misindexed} {_pieces(misindexed)}"
+            if absent
+            else f"{misindexed} of {total} {_pieces(total)}"
+        )
+        sentences.append(
+            f"{parser!r} did find {count} of evidence and skipped "
+            f"{'them' if misindexed > 1 else 'it'} anyway: the `occurrence` on "
+            f"{'those anchors counts' if misindexed > 1 else 'that anchor counts'} past the "
+            "last copy of the quote in the document. That part is an eval set fix, not a "
+            "parser problem, and those questions score nothing until it is made"
+        )
+
+    return ". ".join(sentences)
+
+
+def _pieces(count: int) -> str:
+    return "piece" if count == 1 else "pieces"
 
 
 def _anchor_count(evalset: EvalSet) -> int:

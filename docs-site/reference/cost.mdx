@@ -79,12 +79,14 @@ breakdown = model.estimate(
 print(breakdown)
 print("total for 1,000 queries:", breakdown.total_at(1000))
 print("spent so far, 500 queries in:", breakdown.spent_now(500))
+print("charged to a budget, 500 queries in:", breakdown.metered_now(500))
 ```
 
 ```
-CostBreakdown(index_usd=0.01125, query_usd_per_1k=0.00024, index_tokens=500000, query_tokens_per_query=12, compute_seconds=45, metered=True, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
+CostBreakdown(index_usd=0.01125, query_usd_per_1k=0.00024, index_tokens=500000, query_tokens_per_query=12, compute_seconds=45, metered=True, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0, machine_usd=0.00125)
 total for 1,000 queries: 0.01149
 spent so far, 500 queries in: 0.01137
+charged to a budget, 500 queries in: 0.01012
 ```
 
 <ParamField path="machine_usd_per_hour" type="float" default="0.0">
@@ -111,11 +113,20 @@ print(local)
 ```
 
 ```
-CostBreakdown(index_usd=0.00125, query_usd_per_1k=0.0, index_tokens=500000, query_tokens_per_query=12, compute_seconds=45, metered=False, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
+CostBreakdown(index_usd=0.00125, query_usd_per_1k=0.0, index_tokens=500000, query_tokens_per_query=12, compute_seconds=45, metered=False, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0, machine_usd=0.00125)
 ```
 
-`index_usd` here is pure machine time (`45 seconds × $0.10/hour`); `query_usd_per_1k` is
-zero, because a local model has no per-token charge to pass on to a query.
+`index_usd` here is pure machine time (`45 seconds × $0.10/hour`), which is why `machine_usd`
+holds the same figure — it is the machine share **already inside** `index_usd`, broken out
+rather than added. `query_usd_per_1k` is zero, because a local model has no per-token charge to
+pass on to a query.
+
+<Note>
+`machine_usd` is the one number here that is not repeatable: it is `compute_seconds` priced by
+the hour, and a warm cache cuts the seconds. That is why `budget_usd` is charged
+`metered_now()` rather than `spent_now()` — see [Running a Sweep](/lab/running). The bill is
+still the bill; a *limit* just cannot be built on a number that moves.
+</Note>
 
 ### Where zero means "unknown"
 
@@ -132,7 +143,7 @@ print(model.warnings.to_list())
 ```
 
 ```
-[{'code': 'budget_reached', 'message': "no published price for 'some-unknown-hosted-model', so it is costed at zero. Any cost comparison involving it understates what it charges", 'severity': 'caution', 'stage': 'cost', 'subject': 'some-unknown-hosted-model', 'detail': {}}]
+[{'code': 'model_not_priced', 'message': "no published price for 'some-unknown-hosted-model', so it is costed at zero. Any cost comparison involving it understates what it charges", 'severity': 'caution', 'stage': 'cost', 'subject': 'some-unknown-hosted-model', 'detail': {}}]
 ```
 
 Read that warning before trusting a `$0.0000` column on a leaderboard for a model you do not
@@ -154,18 +165,24 @@ serve gets chosen anyway.
 <ResponseField name="evaluation_usd" type="float">What this configuration actually spent, right now, to produce these numbers — generation plus judge calls during evaluation. Not part of `total_at()`, because a judge runs once during evaluation and never again in production.</ResponseField>
 <ResponseField name="generation_tokens" type="int">Total tokens the generator consumed across the eval run.</ResponseField>
 <ResponseField name="judge_tokens" type="int">Total tokens the judge consumed scoring the answers.</ResponseField>
+<ResponseField name="machine_usd" type="float">The machine-time share of `index_usd` — `compute_seconds` priced through `machine_usd_per_hour`. **Already inside `index_usd`**: broken out, not added. It is the only figure here that changes between identical runs, because a warm cache cuts the seconds.</ResponseField>
 
-Two methods read those fields into a single figure, and they answer different questions:
+Three methods read those fields into a single figure, and they answer different questions:
 
 ```python no-run: the formula, with `queries` standing in for a number you choose
-breakdown.total_at(queries)   # index_usd + (query_usd_per_1k + generation_usd_per_1k) * queries / 1000
-breakdown.spent_now(queries)  # index_usd + query_usd_per_1k * queries / 1000 + evaluation_usd
+breakdown.total_at(queries)    # index_usd + (query_usd_per_1k + generation_usd_per_1k) * queries / 1000
+breakdown.spent_now(queries)   # index_usd + query_usd_per_1k * queries / 1000 + evaluation_usd
+breakdown.metered_now(queries) # spent_now(queries) - machine_usd
 ```
 
 `total_at` is a **forecast**: what building the index and serving `queries` more questions
 would cost going forward, at the generator's serving rate. `spent_now` is a **bill**: money
 already spent right now, including the one-off judge calls that `total_at` deliberately
 excludes since they never recur once the pipeline is in production.
+
+`metered_now` is the bill without machine time, and it is what `budget_usd` is charged. A limit
+has to stop in the same place twice; machine time does not, so a budget that counted it bought
+two configurations on one run and four on the next out of the same money.
 
 ## `estimate_cost`: pricing a sweep before it runs
 
@@ -190,7 +207,7 @@ print(estimate_cost(grid, corpus))
 ```
 
 ```
-{'configurations': 2, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 2', 'approximate_index_tokens': 21, 'estimated_usd': 0.0}
+{'configurations': 2, 'mode': 'ofat', 'shape': '1 × 1 × 2 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 2', 'approximate_index_tokens': 21, 'estimated_usd': 0.0, 'machine_usd_per_hour': 0.0}
 ```
 
 <Warning>
@@ -198,6 +215,10 @@ print(estimate_cost(grid, corpus))
 pass — the point is speed, not precision. On a tiny two-file fixture like the one above it
 rounds `estimated_usd` down to `0.0`; on a real corpus expect it to be in the right order of
 magnitude and no more.
+
+`estimated_usd` prices **tokens** only. `machine_usd_per_hour` is echoed back rather than
+applied, because machine cost is seconds times a rate and nothing can predict the seconds
+before the sweep runs — it is measured per configuration instead, as `machine_usd`.
 </Warning>
 
 ## What is measured, what is estimated

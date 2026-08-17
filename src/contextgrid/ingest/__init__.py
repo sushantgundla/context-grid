@@ -71,10 +71,36 @@ INGESTERS.register(
 
 
 def get_ingester(spec: str | IngestionStrategy | None) -> IngestionStrategy:
-    """Resolve a strategy from a spec, or pass one through. `None` means plain chunking."""
+    """Resolve a strategy from a spec, or pass one through. `None` means plain chunking.
+
+    No `llm` parameter, deliberately, and unlike `get_retriever` and `get_transform`: a strategy
+    is handed its model through `IngestionContext` when `ingest()` is called, so building one
+    with no model in sight is legitimate and is what every example on `/axes/ingestion` does.
+    The refusal for a paid strategy with no model lives where the model is actually known --
+    `pipeline.build`, and `contextgrid check` before it.
+    """
     if spec is None:
         return PlainIngestion()
     return INGESTERS.create(spec) if isinstance(spec, str) else spec
+
+
+def model_free_ingesters() -> tuple[str, ...]:
+    """The strategies that never call a model, for "use one of these instead".
+
+    Read off `uses_model` on each registered class rather than a hand-kept list, exactly as
+    `retrieve.model_free_retrievers` does: a list typed out here goes stale the day a fifth paid
+    strategy is registered, and cannot see one that arrived at runtime through `plugins:`.
+    Loading a registration imports the class and never builds one.
+    """
+    free: list[str] = []
+    for name in INGESTERS.names():
+        try:
+            factory = INGESTERS.registration(name).load()
+        except Exception:  # pragma: no cover - an uninstallable plugin is neither, usefully
+            continue
+        if not getattr(factory, "uses_model", False):
+            free.append(name)
+    return tuple(free)
 
 
 __all__ = [
@@ -92,4 +118,5 @@ __all__ = [
     "SentenceWindowIngestion",
     "SummaryIngestion",
     "get_ingester",
+    "model_free_ingesters",
 ]

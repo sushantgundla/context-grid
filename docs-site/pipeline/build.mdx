@@ -207,6 +207,81 @@ and adds a `PARSER_FALLBACK` warning to `pipeline.warnings` instead, naming whic
 skipped. Check `pipeline.warnings.entries` (or `pipeline.warnings.summary()`) after a build
 you're not sure about.
 
+## Text files have to be UTF-8
+
+The `text` and `markdown` parsers read UTF-8 and nothing else. A file that isn't UTF-8 is
+**not** decoded approximately — it's skipped, exactly like a file whose media type the parser
+declines, with a `PARSER_FALLBACK` warning naming it and saying what it looks like instead:
+
+```python
+from pathlib import Path
+import contextgrid as cg
+
+Path("docs").mkdir(exist_ok=True)
+Path("docs/good.md").write_text("# Returns\n\nRefunds take five days.\n")
+Path("docs/latin1.md").write_bytes("Café orders are final\n".encode("latin-1"))
+Path("docs/b.md").write_bytes(bytes(range(256)) * 16)
+
+pipeline = cg.build(
+    cg.Config(parser="markdown", chunker="recursive:256", embedder="tfidf", index="dense"),
+    cg.Corpus.from_dir("docs"),
+)
+for w in pipeline.warnings:
+    print(w.code.value, "-", w.message)
+print(sorted({c.doc_id for c in pipeline.chunks}))
+```
+
+```
+parser_fallback - 'b.md' is not UTF-8 text -- invalid start byte at byte 128 -- so it is not in this index at all. Nothing in it can be retrieved. It looks like a binary file with a text extension -- most of its bytes are not text at all. Check what it really is, and drop it from the corpus or give it the right extension so a parser that reads that format can be chosen.
+parser_fallback - 'latin1.md' is not UTF-8 text -- invalid continuation byte at byte 3 -- so it is not in this index at all. Nothing in it can be retrieved. It looks like text in another encoding, most likely Latin-1 or Windows-1252. Convert it and run again: iconv -f windows-1252 -t utf-8 latin1.md
+['good.md']
+```
+
+Losing a document is bad. Indexing a broken one is worse, and much harder to notice: decoding
+Latin-1 bytes as UTF-8 turns `Café` into `Caf�`, which gets embedded, retrieved and scored
+like any other text. The only symptom used to be an `anchor_not_found` warning naming the
+*parser* — so people changed parsers, twice, and never suspected the file.
+
+<Note>
+A leading UTF-8 byte order mark is dropped before parsing and never appears in
+`document.text` or in any offset. Without that, the first line of a BOM'd file reads as
+`﻿# Returns`, which is not a heading, and the document's first heading disappears from
+every `heading_path` — silently, and Windows editors write a BOM by default.
+</Note>
+
+If every file in the corpus fails to decode, the `CorpusError` above carries these warnings
+forward rather than guessing at the parser:
+
+```
+the 'markdown' parser read no text from 1 file in corpus 'docs' (b.md), so none of them are in
+this index at all and nothing can be retrieved. These files are text/markdown. Usually the
+parser does not read the file types in this corpus -- check 'markdown' against them -- or the
+files have no text layer and need OCR first. What the parse actually reported: 'b.md' is not
+UTF-8 text -- invalid start byte at byte 128 -- ...
+```
+
+## Unreadable files
+
+`Corpus.from_dir` and `Corpus.from_files` raise `CorpusError` when a matched file cannot be
+opened at all — a file the current user has no permission to read is the usual case:
+
+```python
+try:
+    cg.Corpus.from_dir("./docs")
+except cg.CorpusError as e:
+    print(e)
+```
+
+```
+docs/n.md could not be read: Permission denied. Every file the corpus patterns match has to be
+readable by the user running contextgrid -- fix its permissions, or narrow the corpus so it is
+not matched: `Corpus.from_dir(path, patterns=[...])`.
+```
+
+The original `PermissionError` is kept as the exception's `__cause__`, so nothing is lost —
+but the type you catch is the documented one from [Errors](/reference/errors), not a bare OS
+exception.
+
 ## Build vs. the Lab
 
 Reach for `cg.build()` directly when you want one configuration and nothing else — a script,

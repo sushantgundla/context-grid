@@ -12,11 +12,14 @@ adoption path that matters: nobody adopts a tool, they adopt an argument that ca
 from __future__ import annotations
 
 import json
+import warnings
+from collections.abc import Sequence
 from dataclasses import fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from contextgrid.core.warnings import Severity
+from contextgrid.core.errors import ContextGridError
+from contextgrid.core.warnings import Severity, WarningCode
 from contextgrid.grid.matrix import AXIS_ORDER
 from contextgrid.pipeline import Config
 from contextgrid.report.manifest import Manifest
@@ -349,7 +352,9 @@ def results_to_markdown(
     reportable = [
         warning
         for warning in results.warnings.entries
-        if warning.severity is not Severity.INFO or not results.runs
+        if warning.severity is not Severity.INFO
+        or not results.runs
+        or warning.code in _ALWAYS_REPORTED
     ]
     if reportable:
         lines += ["## Warnings", ""]
@@ -376,6 +381,92 @@ def results_to_markdown(
     return "\n".join(lines)
 
 
+#: Every filename a bundle can consist of, across both writers -- `write_bundle` here and
+#: `contextgrid.config.write_report`, which is the path `contextgrid run` takes.
+#:
+#: This list is the definition of "the bundle", and it exists because a directory is the unit
+#: a user reads. Anything not named here is somebody else's file and is never touched.
+BUNDLE_FILES: tuple[str, ...] = (
+    "report.md",
+    "results.json",
+    "winning-config.yaml",
+    "use_winning_config.py",
+    "manifest.json",
+    #: Only `write_report` copies this one, and it is the experiment that produced the
+    #: numbers -- so a stale copy misdescribes the run just as badly as a stale config does.
+    "experiment.yaml",
+)
+
+
+def clear_bundle(directory: str | Path) -> list[Path]:
+    """Delete a previous run's bundle files from `directory`, and say which ones went.
+
+    A second run into a directory that already held one used to leave whatever it did not
+    happen to rewrite. A run with `formats: [json]` over a full bundle exited 0, said "wrote 3
+    files", and left `manifest.json` from the new run sitting beside `winning-config.yaml`,
+    `report.md` and `use_winning_config.py` from the old one. The yaml then described a sweep
+    the manifest said had not happened, and `use_winning_config.py` handed somebody the
+    *previous* experiment's pipeline to re-run.
+
+    Three fixes were on the table and this is the one that holds in every case.
+
+    *Refuse to write into a non-empty directory* turns the ordinary iterate loop -- run,
+    look, change one axis, run again -- into an error, and pushes people towards `rm -rf`,
+    which is far more dangerous than anything here. It is also unreliable exactly where the
+    mixing is worst: telling "a different run" from "the same run again" needs a manifest, and
+    a sweep with no winner does not write one.
+
+    *Write every format every time* does not fix it. `winning-config.yaml` and
+    `use_winning_config.py` are skipped when there is no winner, whatever `formats` says, so
+    the previous run's copies survive regardless -- and it would override a `formats:` setting
+    the user chose, to work around an unrelated bug.
+
+    Clearing is bounded and it is barely more destructive than what already happened: every
+    one of these files was going to be overwritten anyway in the all-formats case. The only
+    thing that changes is the files this run decided *not* to write, and those are precisely
+    the stale ones. A directory can then only ever describe one run.
+
+    The trade-off worth naming: a run that dies between clearing and writing leaves less
+    behind than it found. A bundle mixing two experiments is the worse of the two, because it
+    looks complete.
+    """
+    root = Path(directory).expanduser()
+    if not root.is_dir():
+        return []
+
+    removed: list[Path] = []
+    for name in BUNDLE_FILES:
+        target = root / name
+        # `is_file`, not `exists`: a directory somebody made called `report.md` is not this
+        # writer's to delete, and neither is a symlink pointing out of the bundle.
+        if target.is_file() and not target.is_symlink():
+            target.unlink()
+            removed.append(target)
+    return removed
+
+
+def warn_about_stale(removed: Sequence[Path], written: Sequence[Path]) -> None:
+    """Name the previous run's files that this one cleared and did not replace.
+
+    Only those. A re-run that rewrites everything it removed is the normal loop and must stay
+    silent, or the warning becomes noise and stops being read. What is worth saying out loud
+    is that the directory used to hold files this run does not produce -- because that is the
+    case where somebody would otherwise have gone on reading them.
+    """
+    survivors = {path.name for path in written}
+    stale = sorted(path.name for path in removed if path.name not in survivors)
+    if not stale:
+        return
+
+    warnings.warn(
+        f"removed {', '.join(stale)} from this directory: they were left by an earlier run "
+        "and this one does not write them, so keeping them would leave one directory "
+        "describing two different experiments.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 def write_bundle(
     results: Results,
     directory: str | Path,
@@ -395,10 +486,35 @@ def write_bundle(
     you can hand back to `contextgrid run`. Without it there is no corpus path to write, so the
     file falls back to the flat listing of pipeline fields, which is a record and not a config.
     Pass `evalset` too and the re-run can be scored as well as executed.
+
+    **The manifest.** Pass one and it is written as `manifest.json`. Pass `corpus` and
+    `evalset` without one and it is built from them, because everything `build_manifest` needs
+    is already in this call: the winning `Config`, the documents and the questions. That is
+    what makes the bundle self-contained, and it is what `contextgrid diff` reads -- it is
+    documented as comparing "two `manifest.json` files from earlier bundled runs", and a
+    bundle that never wrote one left that command with no input.
+
+    The manifest it builds is the same manifest `contextgrid sweep --bundle` builds, to the
+    hash, so the two routes cannot describe one run two ways. With neither a manifest nor the
+    two paths there is nothing to build one *from* -- and inventing a corpus hash is worse
+    than omitting one, because `diff` would then compare two fabrications and report that
+    nothing had changed. In that case the other files are still written.
+
+    **Writing twice into one directory.** Any bundle file an earlier run left is deleted
+    first, so the directory afterwards holds this run and only this run. See `clear_bundle`
+    for why that beats refusing to write and why it beats writing every format regardless.
+    Anything in the directory that is not one of `BUNDLE_FILES` is left exactly as it was.
     """
     root = Path(directory).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+
+    # Before anything is written, and deliberately so: a bundle is read as one directory, and
+    # a file this run does not produce is a file from some other run.
+    removed = clear_bundle(root)
+
+    if manifest is None:
+        manifest = _manifest_from_paths(results, metric=metric, corpus=corpus, evalset=evalset)
 
     report = root / "report.md"
     report.write_text(
@@ -440,6 +556,7 @@ def write_bundle(
     if manifest is not None:
         written.append(manifest.save(root / "manifest.json"))
 
+    warn_about_stale(removed, written)
     return written
 
 
@@ -447,6 +564,21 @@ def write_bundle(
 # helpers
 # ---------------------------------------------------------------------------
 
+
+#: Warning codes the written report shows whatever their severity, and whether or not the
+#: sweep produced runs.
+#:
+#: `impossible_combination` is INFO -- the run is sound, nothing about the numbers is in doubt
+#: -- and the INFO filter above therefore dropped it from every report of a sweep that ran.
+#: But it is the record of the grid being *smaller than the one that was asked for*, and a
+#: reader of `report.md` on its own had no way to learn that combinations had been skipped.
+#: The CLI already pulls this code by name regardless of severity (`_why_nothing_ran`), so the
+#: terminal said it and the file did not. Same class of bug as `anchor_normalised` in 0.9.1: a
+#: warning that reached one output and not the one beside it.
+#:
+#: Severity is deliberately left alone. INFO is the right reading of this warning; where it
+#: gets *shown* is the thing that was wrong.
+_ALWAYS_REPORTED = frozenset({WarningCode.IMPOSSIBLE_COMBINATION})
 
 #: What `ExperimentConfig.name` holds when the config was built in memory rather than read from
 #: a file. It names nothing, so a title built from it is worse than no title at all.
@@ -512,6 +644,43 @@ def _header(manifest: Manifest | None) -> list[str]:
             "#",
         ]
     return lines
+
+
+def _manifest_from_paths(
+    results: Results,
+    *,
+    metric: str,
+    corpus: str | Path | None,
+    evalset: str | Path | None,
+) -> Manifest | None:
+    """A manifest for this bundle, or `None` when there is nothing honest to build one from.
+
+    Three things have to be there: a winning configuration, the documents and the questions.
+    They are exactly the three `contextgrid sweep --bundle` passes to `build_manifest`, and
+    the resolution policy and seeds are left at their defaults for the same reason it leaves
+    them -- so a bundle written by hand and a bundle written by the CLI hash identically for
+    the same run.
+
+    Reading the corpus off disk assumes it still holds what the sweep read, which is the
+    assumption `winning-config.yaml` in the same directory already makes when it names that
+    directory as the thing to re-run. If the path has since moved, the manifest is dropped
+    rather than guessed at: the rest of the bundle is worth more than a wrong hash.
+    """
+    winner = results.best(metric)
+    if winner is None or corpus is None or evalset is None:
+        return None
+
+    from contextgrid.corpus import Corpus
+    from contextgrid.evalset.io import read_evalset
+    from contextgrid.report.manifest import build_manifest
+
+    try:
+        documents = Corpus.from_dir(corpus)
+        questions = read_evalset(evalset)
+    except (OSError, ValueError, ContextGridError):
+        return None
+
+    return build_manifest(winner.config, documents, questions)
 
 
 def _experiment_from_paths(

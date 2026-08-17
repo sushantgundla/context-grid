@@ -31,7 +31,7 @@ print(cg.available_metrics())
 | Registry name | What it measures |
 |---|---|
 | `recall` | fraction of relevant chunks that made it into the top k. `0.0` if the question has no relevant chunks. |
-| `precision` | relevant chunks in the top k, divided by `k` itself — not by how many chunks the run actually returned. A run that only returns 3 chunks still divides by `k=10`. |
+| `precision` | distinct relevant chunks in the top k, divided by `k` itself — not by how many chunks the run actually returned. A run that only returns 3 chunks still divides by `k=10`. |
 | `hit_rate` | `1.0` if at least one relevant chunk is in the top k, else `0.0`. |
 | `mrr` | `1 / position` of the first relevant chunk in the top k, else `0.0`. |
 | `map` | mean average precision. |
@@ -42,6 +42,40 @@ print(cg.available_metrics())
 `min(len(relevant), k)`. A question with 20 relevant chunks caps at `0.25` at `k=5` no matter
 how perfect your top 5 is. This is intentional, not a bug, but it is the most common "why does
 my MAP look low" surprise.
+</Warning>
+
+### A chunk id counts once, however often it is repeated
+
+`run[question_id]` is a list of **distinct** chunk ids. Every metric here treats it as one: a
+chunk that appears twice is one chunk that was retrieved and one slot that was wasted, not two
+retrievals. `c1, c1, x` at `k=3` scores exactly what `c1, y, x` scores.
+
+Without that rule the arithmetic breaks its own scale — `recall@3` of `1.5` on a scale whose
+top is `1.0` — and a retriever scores *better* for the bug of returning the same chunk three
+times.
+
+<Warning>
+`evaluate()` and `per_query()` go further and **refuse** a run whose ranking repeats a chunk id
+for a question they were going to score, raising `ValueError` that names the question and the
+repeated ids:
+
+```python
+import contextgrid as cg
+
+try:
+    cg.evaluate({"qa": {"c1": 2, "c2": 2}}, {"qa": ["c1", "c1", "c1", "c2"]}, ks=[3])
+except ValueError as e:
+    print(e)
+# the run for query 'qa' returns the same chunk id more than once: 'c1'. A ranking is a list
+# of distinct chunks, and scoring one with repeats in it would report a retriever's bug as a
+# score. De-duplicate the ranking, keeping each chunk at its best position.
+```
+
+Rejected rather than quietly repaired, and rejected rather than clamped to `1.0`. A repaired
+number goes on a leaderboard looking reasonable and leaves the broken retriever in place. If
+you are merging two runs yourself, de-duplicate first — keep each chunk at its best position.
+
+A ranking for a question the `qrels` never judged is never averaged, so it is never checked.
 </Warning>
 
 You can pull a single metric out of the registry directly:
@@ -76,6 +110,19 @@ So `"recall@5"`, `"ndcg@10"`, and so on are **result labels that `evaluate()` bu
 strings you feed back into `get_metric` or the registry. Keep that straight: the registry name
 is always bare (`"recall"`); the `@k` suffix only exists on the way out.
 
+Every `k` must be at least `1`. `0` and negative values raise `ValueError` rather than being
+scored — `ranked[:-1]` is a perfectly valid Python slice meaning "all but the last", which is
+not a cut-off anybody asked for:
+
+```python
+try:
+    cg.evaluate({"q1": {"c1": 2}}, {"q1": ["c1"]}, ks=[-1], metrics=["recall"])
+except ValueError as e:
+    print(e)
+# cut-off k must be at least 1, got -1. A k of 0 or below is not a smaller top-k, it is a
+# slice that means something else.
+```
+
 ## `evaluate()` — score a whole run
 
 ```python no-run: signature shown for reference, not a runnable statement
@@ -100,9 +147,29 @@ print(scores)
 # {'recall@1': 0.0, 'recall@3': 0.75, 'ndcg@1': 0.0, 'ndcg@3': 0.5552773433538603}
 ```
 
-Only question ids present (and non-empty) in `qrels` get averaged over. A question that's in
-`qrels` but that `run` never answered for scores `0.0` for that question — that's a real
-retrieval failure, not something `evaluate()` quietly excludes.
+Only questions with **at least one chunk judged relevant** (grade above `0`) get averaged over.
+A question that's in `qrels` but that `run` never answered for scores `0.0` for that question —
+that's a real retrieval failure, not something `evaluate()` quietly excludes.
+
+### `{}` and `{"c1": 0}` are the same thing and score the same
+
+Both spell "nothing here is relevant to this question", so both are left out of the mean:
+
+```python
+run_two = {"q1": ["x"], "q2": ["c9"]}
+print(cg.evaluate({"q1": {"c1": 0}, "q2": {"c9": 2}}, run_two, ks=[3], metrics=["recall"]))
+print(cg.evaluate({"q1": {},        "q2": {"c9": 2}}, run_two, ks=[3], metrics=["recall"]))
+# {'recall@3': 1.0}
+# {'recall@3': 1.0}
+```
+
+These used to disagree — the grade-0 spelling was scored as a question that scored zero and
+halved the mean, the empty one was excluded. A resolver writing a grade-0 row for every
+question it couldn't resolve would have silently halved every number in a sweep. `per_query()`
+and `mean_rank_of_first_relevant()` follow the same rule.
+
+If *nothing* in the `qrels` has a relevant chunk, `evaluate()` returns an empty dict — there
+was nothing to measure, and an empty result says that where a `0.0` would not.
 
 <Warning>
 `metrics` defaults to the six built-ins by name, not to "whatever's currently registered" — a
@@ -158,9 +225,10 @@ print(pq)
 ```
 
 This is the shape [Is the Winner Real?](/scoring/significance) needs — a `{question_id: score}`
-dict per configuration, which its paired tests line up by question id. Only questions with
-non-empty judgements in `qrels` are included; an unregistered `metric` raises `ValueError`, same
-as `evaluate()`.
+dict per configuration, which its paired tests line up by question id. Only questions with at
+least one relevant chunk in `qrels` are included — same rule as `evaluate()`. An unregistered
+`metric`, a `k` below `1`, and a ranking with a repeated chunk id all raise `ValueError` here
+too.
 
 ## Character-level scores: catching context waste
 
@@ -208,3 +276,148 @@ print(cg.retrieved_character_count([big_chunk, small_chunk]))
 print(cg.gold_coverage_by_chunk(item, [big_chunk, small_chunk]))
 # {'c1': 1.0, 'c2': 1.0}  -- both chunks individually hold 100% of this gold span
 ```
+
+## Three more scoring functions that aren't on this page's main list
+
+`cg.coverage_fraction`, `cg.recall_against_exact` and `cg.score_answer` (with its result type
+`cg.AnswerScore`) are all top-level exports that score *something*, so people reasonably come
+looking for them here. They are documented in full on the page that owns the thing they measure
+— spans, approximate indexes and generated answers respectively. Definitions, ranges and a
+worked example for each are below so you don't have to go and find out whether it's the one you
+want.
+
+None of them is a `METRICS` plugin: they don't take `(judgements, ranked, k)`, they can't be
+named in `evaluate(metrics=...)`, and they don't appear in `available_metrics()`.
+
+### `coverage_fraction(target, others) -> float`
+
+How much of one span is covered by a set of other spans, as a fraction in `[0, 1]`. Overlaps
+between the `others` count once. This is the character-level machinery under `character_recall`
+above, exposed on its own — see [Spans and Offsets](/concepts/spans-and-offsets).
+
+`0.0` when `target` is empty, and spans in a different document contribute nothing.
+
+```python
+import contextgrid as cg
+
+gold = cg.Span("refund.md", 100, 200)          # 100 characters of evidence
+first = cg.Span("refund.md", 80, 150)          # covers 100-150
+second = cg.Span("refund.md", 150, 190)        # covers 150-190
+
+print(cg.coverage_fraction(gold, [first, second]))
+# 0.9   -- 90 of the gold's 100 characters; 190-200 was never retrieved
+print(cg.coverage_fraction(gold, [first]))
+# 0.5
+print(cg.coverage_fraction(gold, [cg.Span("other.md", 100, 200)]))
+# 0.0   -- same offsets, different document
+```
+
+The gold span split across two chunks is the case it exists for: neither chunk alone holds
+enough to clear a per-chunk threshold, and together they hold 90% of the answer.
+
+### `recall_against_exact(approximate, exact, k) -> float`
+
+What fraction of exact search's top k an approximate index also found — the number that turns
+"quantization feels fine" into a decision. Both arguments are lists of `Scored`, which is not a
+top-level name. Full context in [Indexes](/axes/indexes).
+
+```python
+from contextgrid.index.base import Scored
+
+exact = [Scored("c1", 0.9), Scored("c2", 0.8), Scored("c3", 0.7)]
+approx = [Scored("c1", 0.9), Scored("c9", 0.75), Scored("c3", 0.7)]
+
+print(cg.recall_against_exact(approx, exact, k=3))
+# 0.6666666666666666   -- 2 of exact's 3 survived
+print(cg.recall_against_exact(approx, exact, k=1))
+# 1.0                  -- the top hit is the same one
+```
+
+<Warning>
+An empty `exact` list returns `1.0`, not `0.0` and not an error. It reads as "perfect recall"
+when what actually happened is "there was nothing to compare against" — check that your exact
+run returned something before you believe the number.
+
+```python
+print(cg.recall_against_exact(approx, [], k=3))
+# 1.0
+```
+</Warning>
+
+### `score_answer(item, answer, context, gold_chunks=()) -> AnswerScore`
+
+Judges one generated answer without calling a second model. Deliberately lexical — it compares
+word sets, so it is coarse and checkable rather than sensitive and unaudited. Full treatment on
+[Answering](/pipeline/answer) and [Generation](/axes/generation).
+
+`AnswerScore` carries six fields and one property:
+
+| Field | Range | What it means |
+|---|---|---|
+| `item_id` | — | the `EvalItem.id` this scored |
+| `groundedness` | `[0, 1]` | fraction of the answer's words that appear in the context it was given. Low means invented or recalled from training. |
+| `citation_accuracy` | `[0, 1]` or `None` | fraction of cited passage numbers that were actually in the context. `None` when the answer cited nothing. |
+| `evidence_overlap` | `[0, 1]` | fraction of the *gold* chunks' words the answer used. `0.0` unless you pass `gold_chunks`. |
+| `abstained` | bool | the answer declined rather than guessed |
+| `should_have_abstained` | bool | there was nothing to answer from — no resolved gold, or no chunks in the context |
+| `warnings` | list of str | plain-English notes about what looked wrong |
+| `.abstention_correct` | bool | `abstained == should_have_abstained`. A correct refusal scores as a success. |
+
+```python
+item = cg.EvalItem(
+    id="q1",
+    question="What is the refund window?",
+    gold=(cg.GoldSpan(cg.Span("refund.md", 0, 46)),),
+)
+gold_chunk = cg.Chunk(
+    id="g1",
+    span=cg.Span("refund.md", 0, 46),
+    text="Refunds are available within 30 days of purchase.",
+)
+context = cg.AssembledContext(
+    text="Refunds are available within 30 days of purchase.",
+    chunks=(gold_chunk,),
+    tokens=12,
+)
+
+good = cg.Answer(text="Refunds are available within 30 days.", citations=(1,))
+print(cg.score_answer(item, good, context, gold_chunks=[gold_chunk]))
+```
+
+```
+AnswerScore(item_id='q1', groundedness=1.0, citation_accuracy=1.0, evidence_overlap=0.75, abstained=False, should_have_abstained=False, warnings=[])
+```
+
+Every word of the answer came from the context (`groundedness=1.0`), the one citation was real
+(`citation_accuracy=1.0`), and it used three quarters of the gold chunk's words.
+
+An answer that invented its content and cited a passage that was never there:
+
+```python
+invented = cg.Answer(text="Contact the vendor by fax immediately.", citations=(1, 4))
+score = cg.score_answer(item, invented, context, gold_chunks=[gold_chunk])
+print(score.groundedness, score.citation_accuracy)
+for w in score.warnings:
+    print("-", w)
+```
+
+```
+0.0 0.5
+- only 0% of the answer's words appear in the context it was given, so most of it came from somewhere else
+- cited passage(s) that were not in the context: [4]
+```
+
+And a refusal when there was genuinely nothing to answer from, which is a success:
+
+```python
+empty = cg.AssembledContext(text="", chunks=(), tokens=0)
+declined = cg.score_answer(item, cg.Answer(text="The passages do not contain the answer."), empty)
+print(declined.abstained, declined.should_have_abstained, declined.abstention_correct)
+# True True True
+```
+
+<Note>
+`should_have_abstained` uses `EvalItem.is_resolved`, not `is_answerable`. An item whose anchor
+exists but which *this parse* lost has no evidence to answer from, so declining is right and is
+scored as right. `is_answerable` would be `True` for that item and would mark the refusal wrong.
+</Note>

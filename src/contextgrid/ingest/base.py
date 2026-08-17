@@ -45,6 +45,45 @@ class IngestionError(ContextGridError, ValueError):
     """A source could not be ingested."""
 
 
+def needs_a_model(strategy: object) -> bool:
+    """Whether this strategy will refuse for want of a model when nothing supplies one.
+
+    True only for a paid strategy whose spec named no model of its own. `contextual` alone is
+    the case this exists for; `contextual:model=anthropic:claude-3-5-haiku` is somebody naming
+    a provider deliberately, and refusing that would break a documented spec to fix a bug it
+    never had -- the same line `retrieve.get_retriever` draws for `agentic:gpt-4o-mini`.
+
+    Asked by `contextgrid check`, which has a config in front of it and can refuse before a
+    document is read, and it has to agree with `_GeneratedIngestion._llm`, which is where the
+    refusal actually happens.
+    """
+    if not getattr(strategy, "uses_model", False):
+        return False
+    from contextgrid.ingest.generated import DEFAULT_MODEL
+
+    return getattr(strategy, "model", None) in (None, DEFAULT_MODEL)
+
+
+def needs_model_error(name: str) -> Exception:
+    """The one message a model-backed ingestion strategy raises when it was handed no model.
+
+    Written once, in the shape `retrieve.base.needs_model_error` already uses, so the three
+    places that can refuse -- `contextgrid check`, `contextgrid run`, and `pipeline.build` on
+    the `cg.Lab` path -- cannot drift into three wordings for one problem. The list of
+    alternatives is read off the registry rather than typed out.
+
+    It names `run.model`, because a config file is how most people reach this axis, and an
+    error naming a Python argument they never pass is an error they cannot act on.
+    """
+    from contextgrid.evalset.llm import LLMError
+    from contextgrid.ingest import model_free_ingesters
+
+    return LLMError(
+        f"the {name!r} ingestion strategy needs a model. Set `run.model` in your config, or "
+        f"use one of the model-free strategies: {', '.join(model_free_ingesters())}"
+    )
+
+
 @dataclass(slots=True)
 class Ingested:
     """The two sides of an index, and the map between them.

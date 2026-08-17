@@ -176,6 +176,15 @@ class CostBreakdown:
     evaluation_usd: float = 0.0
     generation_tokens: int = 0
     judge_tokens: int = 0
+    #: The machine-time share of `index_usd`, in dollars: `compute_seconds` priced through
+    #: `machine_usd_per_hour`. **Already inside `index_usd`** -- it is broken out, not added.
+    #:
+    #: Broken out because it is the one number here that is not repeatable. Everything else is
+    #: a count of tokens, which is the same on every run; this is wall-clock, which halves when
+    #: a cache is warm. `/reference/caching` says never to compare `compute_seconds` between
+    #: runs, and until it could be identified it could not be left out of the one place that
+    #: comparison does real damage -- see `metered_now`.
+    machine_usd: float = 0.0
 
     def total_at(self, queries: int) -> float:
         """Total cost of building the index and serving `queries` queries.
@@ -202,6 +211,24 @@ class CostBreakdown:
         """
         return self.index_usd + self.query_usd_per_1k * (queries / 1000) + self.evaluation_usd
 
+    def metered_now(self, queries: int) -> float:
+        """The same bill without the machine time: what a spending limit can be held to.
+
+        `spent_now` is the honest total and stays that way. It is also not repeatable, and a
+        *limit* has to be. `machine_usd` is `compute_seconds` priced by the hour, and
+        `compute_seconds` falls by whatever a warm cache saved -- `/reference/caching` says in
+        so many words never to compare it between runs.
+
+        `budget_usd` compared it anyway, once per configuration, and so the same limit over the
+        same matrix stopped after two configurations, then four, then two again: a warm cache
+        bought extra runs out of the same money. What is left here is token spend, which is a
+        count of the same tokens every time, so a budget over it stops in the same place twice.
+
+        `budget_seconds` is wall-clock on purpose and will always wobble a little. This is the
+        one that had no business wobbling.
+        """
+        return self.spent_now(queries) - self.machine_usd
+
     def as_dict(self) -> dict[str, float | bool | int]:
         return {
             "index_usd": self.index_usd,
@@ -214,6 +241,7 @@ class CostBreakdown:
             "evaluation_usd": self.evaluation_usd,
             "generation_tokens": self.generation_tokens,
             "judge_tokens": self.judge_tokens,
+            "machine_usd": self.machine_usd,
         }
 
 
@@ -249,8 +277,12 @@ class CostModel:
         if found is not None:
             return found
 
+        # `MODEL_NOT_PRICED`, not `BUDGET_REACHED`. This is a fact about a price list, nothing
+        # has been reached, and `/lab/running` hands out `w.code.name == "BUDGET_REACHED"` as
+        # the way to detect a sweep that stopped -- a filter that used to catch this too and
+        # report a stop that never happened.
         self.warnings.add(
-            WarningCode.BUDGET_REACHED,
+            WarningCode.MODEL_NOT_PRICED,
             f"no published price for {name!r}, so it is costed at zero. Any cost comparison "
             "involving it understates what it charges",
             severity=Severity.CAUTION,
@@ -308,6 +340,7 @@ class CostModel:
                 evaluation_usd=evaluation_usd,
                 generation_tokens=generation_tokens,
                 judge_tokens=judge_tokens,
+                machine_usd=machine_usd,
             )
 
         rate = pricing.embed_per_million / 1_000_000
@@ -322,6 +355,7 @@ class CostModel:
             evaluation_usd=evaluation_usd,
             generation_tokens=generation_tokens,
             judge_tokens=judge_tokens,
+            machine_usd=machine_usd,
         )
 
     def _generation_usd(self, model: str | object | None, usage: Usage | None) -> float:

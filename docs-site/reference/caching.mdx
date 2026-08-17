@@ -105,6 +105,35 @@ A `DiskCache` entry that cannot be read back — a partial write, or a value pic
 different `CACHE_FORMAT` — is treated as a miss and deleted, never as a hard failure.
 Recomputing is cheap; crashing on someone's stale cache directory is not.
 
+## Sharing one cache directory between processes
+
+Two `contextgrid run` processes can point at the same output directory, and therefore at the
+same `.contextgrid-cache`, at the same time. That is supported, and it is the point of a
+`DiskCache` — one process's parse is the other's hit.
+
+Each write goes to a temporary file unique to the writer and is then moved into place with an
+atomic rename, so a reader never sees a half-written entry and two writers never collide. When
+both processes compute the same entry, both write it and the last one wins; that is harmless,
+because the key is a hash of the inputs and the value they wrote is the same value.
+
+<Warning>
+Earlier versions gave every writer the same temporary file name, `<key>.tmp`. Two runs
+starting together against a **cold** cache raced on it, and the loser's rename found nothing:
+
+```
+error: [Errno 2] No such file or directory:
+'.contextgrid-cache/1c/69/1c69….tmp' -> '.contextgrid-cache/1c/69/1c69….pkl'
+```
+
+That killed the whole sweep, and only ever on a cold cache — on a warm one nobody writes, so
+the two processes both finished cleanly and the problem stayed hidden. Upgrade if you run
+sweeps in parallel.
+</Warning>
+
+Nothing here is a lock. Two processes computing the same missing entry at the same time will
+both compute it — wasted work, not wrong results. Run them one after the other if you want the
+second to reuse the first's.
+
 ## What invalidates a cache entry
 
 Anything that changes the key invalidates the entry it used to point at:

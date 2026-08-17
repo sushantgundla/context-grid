@@ -216,7 +216,10 @@ def test_evidence_this_parse_lost_is_reported_as_a_parse_failure() -> None:
     assert warning.code is WarningCode.GOLD_SPAN_UNREACHABLE
     assert warning.severity is Severity.CAUTION
     assert "none of it was located in this parse" in warning.message
-    assert "measurement of the parser, not of the retriever" in warning.message
+    # Not "a measurement of the parser": this fires for an invented quote and an out-of-range
+    # `occurrence` too. Only the claim about the retriever is one the code can support.
+    assert "Nothing here is a measurement of the retriever" in warning.message
+    assert "measurement of the parser" not in warning.message
 
 
 # ---------------------------------------------------------------------------

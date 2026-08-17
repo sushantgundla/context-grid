@@ -106,9 +106,12 @@ matters.
 
 Two exclusion rules that change what a mean actually means:
 
-- **A query with no relevant chunks (`qrels[qid]` empty) is left out of the average
-  entirely**, not scored as zero. It can't be got right or wrong, and including it as a
-  zero would drag the mean down for a reason that has nothing to do with the retriever.
+- **A query with no chunk graded above 0 is left out of the average entirely**, not scored
+  as zero. It can't be got right or wrong, and including it as a zero would drag the mean
+  down for a reason that has nothing to do with the retriever. The test is the grades, not
+  the presence of the key: `{}` and `{"c1": 0}` are both "no relevant chunks" and both
+  excluded, where the rule used to read `qrels[qid]` empty and counted the second as a
+  question the retriever had failed.
 - **A query present in `qrels` but missing from `run` scores zero.** That's a real
   failure — the configuration never answered it — so it counts against the mean.
 

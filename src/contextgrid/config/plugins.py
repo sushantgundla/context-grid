@@ -199,6 +199,46 @@ def extra_missing_for(registration: Registration) -> MissingExtraError | None:
     )
 
 
+def model_missing_for(spec: str, llm: object | None) -> Exception | None:
+    """The error a model-backed ingestion strategy deserves for want of a model, or None.
+
+    Three of the four axes that can call a model refuse to be built without one, and say so in
+    the same sentence: `transform: hyde`, `retrieval: agentic` and `generator: llm` all fail
+    `contextgrid check` naming `run.model` and listing the model-free alternatives. Ingestion
+    was the fourth and did not. `ingestion: contextual` validated, ran, failed its model call
+    once per chunk, fell back to indexing each chunk as written, and produced a leaderboard row
+    labelled `contextual` that had made no model call at all -- a result somebody would act on.
+
+    Ingestion cannot refuse in its own constructor the way the other three do: the model
+    reaches a strategy through `IngestionContext` at ingest time, not through the factory, so
+    `get_ingester("contextual")` is a legitimate call with no model in sight. So the question is
+    asked here instead, where a configuration is being validated and the answer is knowable:
+    this config names a paid strategy, and this config sets no model.
+
+    Returns the error rather than raising it, for the same reason `missing_extra` does -- the
+    caller is checking a whole matrix and wants every problem at once.
+
+    The message itself comes from `ingest.base.needs_model_error`, which `pipeline.build` also
+    raises. `check` and `run` refuse from here, before a document is read; the `cg.Lab` path
+    has no config to inspect and refuses there. Two places, one sentence.
+    """
+    if llm is not None:
+        return None
+
+    from contextgrid.ingest import get_ingester
+    from contextgrid.ingest.base import needs_a_model, needs_model_error
+
+    try:
+        strategy = get_ingester(spec)
+    except Exception:
+        # An unknown or malformed spec is reported by whatever builds it, in better words.
+        return None
+    if not needs_a_model(strategy):
+        return None
+
+    return needs_model_error(strategy.name)
+
+
 def _dependency_present(package: str) -> bool:
     """Is this third-party package installed? Asked without importing it.
 

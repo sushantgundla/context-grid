@@ -68,7 +68,7 @@ litellm:some-made-up-model-xyz      -> embed=$0.0/M metered=False
 The last one triggers a real warning, not a silent zero:
 
 ```
-{'code': 'budget_reached', 'message': "no published price for 'some-made-up-model-xyz', so it
+{'code': 'model_not_priced', 'message': "no published price for 'some-made-up-model-xyz', so it
 is costed at zero. Any cost comparison involving it understates what it charges", 'severity':
 'caution', 'stage': 'cost', 'subject': 'some-made-up-model-xyz', 'detail': {}}
 ```
@@ -149,13 +149,15 @@ hosted = cm.estimate(embedder='litellm:text-embedding-3-small', index_tokens=1_0
 print('hosted (openai small), 5s:', hosted)
 print('total at 1000 queries:', hosted.total_at(1000))
 "
-local (tei), 120s at $0.10/hr: CostBreakdown(index_usd=0.0033333333333333335, query_usd_per_1k=0.0, index_tokens=1000000, query_tokens_per_query=20, compute_seconds=120, metered=False, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
+local (tei), 120s at $0.10/hr: CostBreakdown(index_usd=0.0033333333333333335, query_usd_per_1k=0.0, index_tokens=1000000, query_tokens_per_query=20, compute_seconds=120, metered=False, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0, machine_usd=0.0033333333333333335)
 total at 1000 queries: 0.0033333333333333335
-hosted (openai small), 5s: CostBreakdown(index_usd=0.02013888888888889, query_usd_per_1k=0.0004, index_tokens=1000000, query_tokens_per_query=20, compute_seconds=5, metered=True, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0)
+hosted (openai small), 5s: CostBreakdown(index_usd=0.02013888888888889, query_usd_per_1k=0.0004, index_tokens=1000000, query_tokens_per_query=20, compute_seconds=5, metered=True, generation_usd_per_1k=0.0, evaluation_usd=0.0, generation_tokens=0, judge_tokens=0, machine_usd=0.0001388888888888889)
 total at 1000 queries: 0.02053888888888889
 ```
 
-The last four fields are zero here because this is a retrieval-only estimate.
+`machine_usd` is the machine share already inside `index_usd`, broken out rather than added --
+for the local row the two are the same figure. The four generation fields are zero here because
+this is a retrieval-only estimate.
 `generation_usd_per_1k` and `generation_tokens` fill in when a `generator` is on the grid;
 `evaluation_usd` and `judge_tokens` when the DeepEval-backed generation metrics run. They are
 kept separate from `query_usd_per_1k` so that "what retrieval costs" and "what answering costs"

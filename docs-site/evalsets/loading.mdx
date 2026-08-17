@@ -88,7 +88,12 @@ Without a header line, `EvalSet.id` falls back to the file's stem (`minimal` for
 ## The CSV format
 
 CSV is meant for editing in a spreadsheet, not as the primary storage format — it can only
-round-trip one anchor per item (see below).
+round-trip one anchor per item (see below). Everything else on that anchor survives, including
+`occurrence`, and so does the item's `meta`.
+
+A `meta` cell that isn't JSON — a note somebody typed while the file was open in a spreadsheet
+— is read as `{}` rather than raising, so one stray cell can't take down a file of good
+questions.
 
 ### `write_csv`
 
@@ -96,7 +101,7 @@ round-trip one anchor per item (see below).
 write_csv(evalset: EvalSet, path: str | Path) -> Path
 ```
 
-Columns: `id, question, source_id, quote, grade, page, qtype, answer`.
+Columns: `id, question, source_id, quote, grade, page, occurrence, qtype, answer, meta`.
 
 ```python
 path = cg.write_csv(evalset, "quiz.csv")
@@ -104,14 +109,24 @@ print(open(path).read())
 ```
 
 ```text
-id,question,source_id,quote,grade,page,qtype,answer
-q1,How much leave do employees accrue per month?,handbook.pdf,Employees accrue 1.5 days of leave per month.,2,,factoid,
+id,question,source_id,quote,grade,page,occurrence,qtype,answer,meta
+q1,How much leave do employees accrue per month?,handbook.pdf,Employees accrue 1.5 days of leave per month.,2,,0,factoid,,
 ```
 
+`meta` is written as JSON in a single cell — ugly in a spreadsheet, but it round-trips, and
+`meta.reviewed` is what `assess()` counts for its "% reviewed" figure. (JSON has no tuples:
+a `("a", 1)` inside `meta` comes back as `["a", 1]`.)
+
 <Warning>
-Only `item.anchors[0]` — the first anchor — is written. An item with more than one anchor
-loses the rest on the way to CSV. `gold` (span-form evidence) isn't written at all; CSV only
-round-trips anchors.
+Two things still don't fit the format, and `write_csv` now raises a `UserWarning` naming the
+questions affected rather than dropping them silently:
+
+- Only `item.anchors[0]` — the first anchor — is written. An item with more than one anchor
+  loses the rest on the way to CSV.
+- `gold` (span-form evidence) has no column at all. The anchors are written, so re-resolving
+  against a parse gets the spans back; an item carrying *only* `gold` loses its evidence.
+
+Use `cg.write_jsonl` for anything that has to survive intact.
 </Warning>
 
 ### `read_csv`
@@ -132,6 +147,8 @@ Column names are matched case-insensitively, and several spellings work for each
 | question type | `qtype`, `type`, `question_type`, `category` |
 | page | `page`, `page_hint`, `page_number` |
 | grade | `grade`, `relevance`, `rel` |
+| occurrence | `occurrence`, `occurrence_index`, `nth` |
+| meta | `meta`, `metadata` |
 
 A minimal file needs only a question column and, if you want evidence attached, both a
 quote column and a source column. Write this to `minimal2.csv` and read it back:

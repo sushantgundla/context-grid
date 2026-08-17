@@ -96,7 +96,7 @@ class Corpus:
                 id=str(item.relative_to(root)),
                 media_type=MediaType.from_suffix(item.suffix),
                 path=str(item),
-                raw=item.read_bytes(),
+                raw=_read_bytes(item),
             )
             for item in ordered
         )
@@ -115,7 +115,7 @@ class Corpus:
                     id=item.name,
                     media_type=MediaType.from_suffix(item.suffix),
                     path=str(item),
-                    raw=item.read_bytes(),
+                    raw=_read_bytes(item),
                 )
             )
         return cls(files=tuple(files), name=name)
@@ -194,6 +194,25 @@ _HIDDEN_RULE = (
     f"({', '.join(sorted(_SKIP_DIRECTORIES))}), are always skipped -- the corpus "
     "directory you named is never skipped, only what sits below it."
 )
+
+
+def _read_bytes(path: Path) -> bytes:
+    """Read one corpus file, or say what stopped it in an exception people can catch.
+
+    `read_bytes` raises `PermissionError`, `IsADirectoryError` and the rest of `OSError`.
+    None of those are `ContextGridError`, so the `except cg.CorpusError` that `/reference/errors`
+    tells users to write never fired and a full traceback came out of the documented public
+    API instead. The CLI has always caught this cleanly; only the Python path leaked.
+    """
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise CorpusError(
+            f"{path} could not be read: {error.strerror or error}. Every file the corpus "
+            "patterns match has to be readable by the user running contextgrid -- fix its "
+            "permissions, or narrow the corpus so it is not matched: "
+            "`Corpus.from_dir(path, patterns=[...])`."
+        ) from error
 
 
 def _why_nothing_matched(root: Path, matched: set[Path], *, recursive: bool) -> str:

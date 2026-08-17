@@ -200,7 +200,8 @@ def test_evidence_a_parser_cannot_produce_is_reported_at_the_set_level() -> None
     _, log = AnchorResolver().resolve(evalset(), {"contract-pdf": piped})
 
     summary = log.of_code(WarningCode.ANCHOR_NOT_FOUND)[-1]
-    assert "lost 1 of 2" in summary.message
+    assert "could not locate 1 of 2" in summary.message
+    assert summary.detail["lost"] == 1
 
 
 def test_an_unknown_table_format_says_what_is_allowed() -> None:

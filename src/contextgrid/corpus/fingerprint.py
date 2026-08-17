@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from contextgrid.core.documents import BlockKind, ParsedDocument
+from contextgrid.core.warnings import WarningCode
 from contextgrid.corpus.loader import Corpus, CorpusError
 
 #: Above this share of characters sitting in tables, table handling dominates everything.
@@ -211,8 +212,29 @@ def require_parsed_text(
         f"{corpus.name!r} ({listed}{more}), so none of them are in this index at all and "
         f"nothing can be retrieved. These files are {kinds}. Usually the parser does not "
         f"read the file types in this corpus -- check {parser!r} against them -- or the "
-        "files have no text layer and need OCR first."
+        f"files have no text layer and need OCR first.{_already_explained(documents)}"
     )
+
+
+def _already_explained(documents: Sequence[ParsedDocument]) -> str:
+    """Carry forward the parse's own reason, when it had one.
+
+    The guesses above are good ones for the case they were written for -- a PDF parser
+    pointed at Markdown -- and quite wrong for a file that is not text at all. The parse
+    already knows and says so; raising here would otherwise throw that warning away and
+    leave the user checking a parser that was never the problem.
+    """
+    said = [
+        warning.message
+        for parsed in documents
+        for warning in parsed.warnings
+        if warning.code is WarningCode.PARSER_FALLBACK
+    ]
+    if not said:
+        return ""
+    shown = "; ".join(said[:3])
+    rest = "" if len(said) <= 3 else f" (and {len(said) - 3} more like it)"
+    return f" What the parse actually reported: {shown}{rest}"
 
 
 def fingerprint_sources(corpus: Corpus) -> CorpusFingerprint:

@@ -6,7 +6,8 @@ useful: documentation corpora are the most common real input, and a heading-awar
 parse is what makes structural chunking possible.
 
 Both keep the decoded file text exactly as it is, so every block's text is a literal slice
-of the document and `offsets_exact` is honestly true.
+of the document and `offsets_exact` is honestly true. Decoding those bytes is `parse.decode`'s
+job, and it is the one place a BOM is dropped and a file that is not UTF-8 is refused.
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ from contextgrid.core.documents import (
     ParsedDocument,
     SourceFile,
 )
-from contextgrid.core.errors import DocumentError
 from contextgrid.core.span import Span
 from contextgrid.core.warnings import Severity, WarningCode, WarningLog
+from contextgrid.parse.decode import decode_source
 
 _PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
 _ATX_HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
@@ -36,12 +37,22 @@ _QUOTE = re.compile(r"^[ \t]*>")
 _TABLE_ROW = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
 
 
-def _decode(source: SourceFile) -> str:
-    if source.raw is None:
-        raise DocumentError(
-            f"source file {source.id!r} has no bytes loaded. Read the file before parsing it."
-        )
-    return source.text()
+def _note_empty(source: SourceFile, text: str, warnings: WarningLog) -> None:
+    """Say a readable file held no text -- but only when it really was readable.
+
+    A file that failed to decode already carries a `PARSER_FALLBACK` warning explaining why.
+    Adding `EMPTY_TEXT_LAYER` on top of it would name a second, wrong cause: an empty text
+    layer is what a scanned PDF has, and it sends the user looking for OCR.
+    """
+    if text.strip() or warnings:
+        return
+    warnings.add(
+        WarningCode.EMPTY_TEXT_LAYER,
+        f"{source.id!r} contains no text",
+        severity=Severity.CAUTION,
+        stage="parse",
+        subject=source.id,
+    )
 
 
 def _document(source: SourceFile, text: str) -> Document:
@@ -63,8 +74,7 @@ class TextParser:
         return media_type in {MediaType.TEXT, MediaType.MARKDOWN, MediaType.UNKNOWN}
 
     def parse(self, source: SourceFile) -> ParsedDocument:
-        text = _decode(source)
-        warnings = WarningLog()
+        text, warnings = decode_source(source)
         blocks: list[Block] = []
 
         for start, end in _paragraph_ranges(text):
@@ -76,14 +86,7 @@ class TextParser:
                 )
             )
 
-        if not text.strip():
-            warnings.add(
-                WarningCode.EMPTY_TEXT_LAYER,
-                f"{source.id!r} contains no text",
-                severity=Severity.CAUTION,
-                stage="parse",
-                subject=source.id,
-            )
+        _note_empty(source, text, warnings)
 
         return ParsedDocument(
             document=_document(source, text),
@@ -111,21 +114,13 @@ class MarkdownParser:
         return media_type in {MediaType.MARKDOWN, MediaType.TEXT, MediaType.UNKNOWN}
 
     def parse(self, source: SourceFile) -> ParsedDocument:
-        text = _decode(source)
-        warnings = WarningLog()
+        text, warnings = decode_source(source)
         blocks = [
             Block(span=Span(source.id, start, end), text=text[start:end], kind=kind, level=level)
             for start, end, kind, level in _markdown_regions(text)
         ]
 
-        if not text.strip():
-            warnings.add(
-                WarningCode.EMPTY_TEXT_LAYER,
-                f"{source.id!r} contains no text",
-                severity=Severity.CAUTION,
-                stage="parse",
-                subject=source.id,
-            )
+        _note_empty(source, text, warnings)
 
         return ParsedDocument(
             document=_document(source, text),

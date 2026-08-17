@@ -244,17 +244,51 @@ share the `recursive:512` chunker's parse and embeddings, the other four share `
 The 100% on the second run is because nothing changed at all: same corpus, same matrix, same
 cache instance still warm in memory.
 
-<Warning>
-`cg.DiskCache(root=...)` exists to keep that reuse across separate Python processes, and its
-own docstring says so. Verified against a fresh, empty cache directory, though,
-`cg.Lab(corpus, cache=cg.DiskCache(root="./somewhere"))` does **not** end up using it: a
-`DiskCache` with nothing written to it yet is falsy (`len(cache) == 0`), and `Lab.__init__`
-picks a cache with `cache or MemoryCache()` — so an empty `DiskCache`, which is what every
-first run starts with, is silently swapped out for an in-memory one instead. Nothing is ever
-written to disk through this path as a result, on any process, because the directory never
-stops being empty. Building a `Runner` directly with `cache=` (see [`contextgrid.grid.Runner`](/reference/api))
-does not have this problem — only `Lab`'s constructor does.
-</Warning>
+### Keeping the reuse across processes
+
+A `MemoryCache` dies with the process. Pass a `cg.DiskCache` instead and the same sweep,
+re-run tomorrow from a fresh interpreter, is a hit end to end:
+
+```python
+from pathlib import Path
+
+cache = cg.DiskCache(root=Path("./.cg-cache"))
+lab = cg.Lab(corpus=corpus, cache=cache)
+lab.grid(
+    chunker=["recursive:512", "recursive:16"],
+    index=["dense", "bm25"],
+    reranker=[None, "lexical"],
+)
+results = lab.run(evalset, mode="factorial")
+print(results.cache_summary)
+print(len(cache), "entries on disk")
+```
+
+First process, against an empty cache directory:
+
+```text
+106 of 132 lookups reused (80%), chunk 48/64, embed 2/4, parse 56/64
+26 entries on disk
+```
+
+Second process, same script, same directory:
+
+```text
+132 of 132 lookups reused (100%), chunk 64/64, embed 4/4, parse 64/64
+26 entries on disk
+```
+
+The 80% is prefix sharing inside the first sweep. The 100% is the second process reading what
+the first one wrote. Two of these can also run at the same time — see
+[Caching](/reference/caching) for what is and is not safe when they share a directory.
+
+<Note>
+Earlier versions dropped the `DiskCache` you passed and used a `MemoryCache` instead, because
+an empty `DiskCache` is falsy and `Lab.__init__` chose with `cache or MemoryCache()`. Every
+first run starts empty, so nothing was ever written and the directory never stopped being
+empty. If you are on a version where `len(cache)` stays `0` after a sweep, that is this bug and
+the fix is to upgrade.
+</Note>
 
 ## Bounding a sweep: `budget_seconds` and `budget_usd`
 
@@ -280,8 +314,36 @@ for w in results.warnings:
 
 ```text
 1 of 8 configurations ran
-stopped after 1 of 8 configurations: the 0.0001s budget ran out. The leaderboard below is partial
+stopped after 1 of 8 configurations: the 0.0001s budget ran out. The leaderboard is partial
 ```
+
+`BUDGET_REACHED` means exactly one thing — this sweep stopped, or could not start. Two other
+facts used to share the code and no longer do, so the filter above catches neither:
+`MODEL_NOT_PRICED` (a model with no published price, costed at zero) and `NO_COST_CEILING` (a
+model-calling plugin running with no budget at all, and `budget_usd` not covering machine time).
+
+You do not have to read warnings to find out. `results.is_partial` is the flag, `results.planned`
+is how many configurations were meant to run, `results.stopped` is why it stopped, and
+`results.partial_note()` is the sentence — which `contextgrid run` prints on **stdout** above the
+leaderboard, and `build_manifest(..., notes=results.manifest_note())` writes into a bundle:
+
+```python
+if results.is_partial:
+    print(results.partial_note())
+```
+
+```text
+This leaderboard is partial: 1 of 8 configurations ran -- the 0.0001s budget ran out. The rest were never measured, so nothing here says how they would have scored.
+```
+
+<Note>
+`budget_usd` counts **token spend only**. Machine time — `compute_seconds` priced through
+`machine_usd_per_hour` — is measured and reported per configuration on `RunResult.cost.machine_usd`,
+and is deliberately not charged against the budget: it falls whenever a cache is warm, so a limit
+counting it stopped after two configurations on one run and four on the next out of the same
+money. Use `budget_seconds` to bound wall-clock. A sweep that sets both a machine rate and
+`budget_usd` gets a `NO_COST_CEILING` warning saying so.
+</Note>
 
 ## Watching it run: `on_progress`
 

@@ -205,7 +205,7 @@ one and the section looks like this:
 - Corpus: `deadbeefdead` (12 files)
 - Eval set: `support-tickets` v3 (`abc123abc123`)
 - Resolution: coverage at 0.5
-- context-grid 0.9.2 on Python 3.13.0
+- context-grid 0.9.3 on Python 3.13.0
 
 Two runs with the same manifest hash must produce identical numbers.
 ```
@@ -357,7 +357,17 @@ def write_bundle(
 ```
 
 Writes `report.md`, `results.json`, and — if there's a winner — `winning-config.yaml` and
-`use_winning_config.py`, plus `manifest.json` if a manifest was passed. This is what
+`use_winning_config.py`, plus `manifest.json` if a manifest was passed or can be built from
+`corpus` and `evalset`.
+
+Any of those files left by an *earlier* run into the same directory is deleted first, so one
+directory can only ever describe one run — `clear_bundle(directory)` is the function, and
+`BUNDLE_FILES` is the exact list it will touch. Nothing else in the directory is affected. A
+file that gets cleared and not rewritten is named in a `UserWarning`, because that is the case
+where somebody would otherwise keep reading the previous experiment's config. `write_report()`
+— the path `contextgrid run` takes — does the same thing from the same list.
+
+This is what
 `contextgrid sweep --bundle ./out` calls after a real sweep (`_sweep()` in
 `src/contextgrid/cli/__main__.py`), printing `wrote N files to ./out` when it's done.
 

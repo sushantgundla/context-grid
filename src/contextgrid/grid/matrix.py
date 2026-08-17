@@ -89,6 +89,14 @@ class Matrix:
                 )
         if self.k < 1:
             raise MatrixError(f"k must be at least 1, got {self.k}")
+        # Depth is a count of things to fetch, exactly as `k` is, and it was the one axis that
+        # could hold nonsense all the way to a leaderboard: `candidates: -3` validated, ran, and
+        # printed `... . lexical@-3` as a row label. The value is clamped to at least `k` before
+        # anything is searched, so the number never did any harm -- it just told the reader a
+        # depth had been measured that nobody had asked for and nothing had used.
+        for depth in self.candidates:
+            if depth < 1:
+                raise MatrixError(f"candidates must be at least 1, got {depth}")
 
     # -- shape ---------------------------------------------------------------
 
@@ -211,11 +219,22 @@ class Matrix:
 
     def stage_configs(self, axis: str, base: Config) -> list[Config]:
         """The configurations for one stage of a staged sweep: one axis, everything else fixed."""
+        configs, _ = self.stage_configs_with_report(axis, base)
+        return configs
+
+    def stage_configs_with_report(
+        self, axis: str, base: Config
+    ) -> tuple[list[Config], DedupeReport]:
+        """The same, and where every combination that is not among them went.
+
+        Staged freezes a different baseline in front of each stage, so a value can be folded
+        away in one stage and survive in the next -- `widened` is plain search until a reranker
+        is frozen ahead of it. The report is per stage for that reason.
+        """
         if axis not in AXIS_ORDER:
             raise MatrixError(f"unknown axis {axis!r}. Axes are: {', '.join(AXIS_ORDER)}")
         values = getattr(self, axis)
-        configs, _ = deduplicate([base.with_(**{axis: value}) for value in values])
-        return configs
+        return deduplicate_with_report([base.with_(**{axis: value}) for value in values])
 
     def __iter__(self) -> Iterator[Config]:
         return iter(self.expand())
@@ -395,6 +414,22 @@ class DedupeReport:
     #: Only reachable by repeating a value on one axis, but counted so the four numbers always
     #: account for each other.
     repeated: int
+    #: Rows that *ran*, under a configuration other than the one written -- one sentence each,
+    #: saying what was asked for and what it became. Not a count, and not part of the accounting
+    #: above: nothing was removed, so the numbers would not change either way.
+    #:
+    #: Here because the counts only describe a row that met another row. A `widened` arm with no
+    #: plain arm beside it is folded onto plain search and then kept, so it was `kept`,
+    #: `collapsed` was zero, the label lost the strategy, the manifest recorded `retrieval:
+    #: null` -- and the one thing nobody was told is that the arm they asked for never ran.
+    rewrites: tuple[str, ...] = ()
+    #: Kept configuration -> the retrieval arm it was written as, for the rows that were folded
+    #: onto plain search. What lets the runner label the row with both names.
+    #:
+    #: Keyed by the *normalised* configuration, which is equal to the plain-search row it may
+    #: have collapsed onto -- so where a sweep names both arms, the single row that runs is
+    #: marked as standing for both. That is what it is.
+    folded: dict[Config, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         accounted = self.kept + self.impossible + self.collapsed + self.repeated
@@ -453,6 +488,8 @@ def deduplicate_with_report(configs: Sequence[Config]) -> tuple[list[Config], De
     impossible = 0
     collapsed = 0
     repeated = 0
+    rewrites: list[str] = []
+    folded: dict[Config, str] = {}
 
     for config in configs:
         if not is_runnable(config):
@@ -460,6 +497,17 @@ def deduplicate_with_report(configs: Sequence[Config]) -> tuple[list[Config], De
             continue
         normalised = canonicalise(config)
         rewritten = normalised != config
+
+        # Said once per distinct fold rather than once per row: a factorial sweep offers the
+        # same `widened` arm against every parser, and the fact is about the strategy.
+        note = _rewrite_note(config, normalised)
+        if note is not None:
+            if note not in rewrites:
+                rewrites.append(note)
+            # Kept per row as well as per sweep: the warning tells the reader once, and this is
+            # what puts the arm's name on the row it turned into.
+            folded.setdefault(normalised, str(config.retrieval))
+
         if normalised in seen:
             if rewritten or seen[normalised]:
                 collapsed += 1
@@ -475,6 +523,34 @@ def deduplicate_with_report(configs: Sequence[Config]) -> tuple[list[Config], De
         impossible=impossible,
         collapsed=collapsed,
         repeated=repeated,
+        rewrites=tuple(rewrites),
+        folded=folded,
+    )
+
+
+def _rewrite_note(written: Config, normalised: Config) -> str | None:
+    """A sentence for a rewrite a reader could not otherwise see, or None.
+
+    Only one rewrite qualifies today, and the test for the others is what makes that the right
+    number. `plain`, `transform: none` and `reranker: none` all normalise onto a spelling that
+    means the same thing, so the row still says what it is. `bm25 + tfidf` loses an embedder the
+    index was never going to look at. `candidates` without a reranker resets a depth that
+    nothing downstream reads. None of those changes which search runs, or what a label means.
+
+    `widened` does. It is a named strategy on the retrieval axis that becomes plain search, and
+    the row it produces is labelled, manifested and read as plain search -- so a sweep naming
+    both arms reports a tie between one configuration and itself, and a sweep naming only
+    `widened` reports a strategy that never ran.
+    """
+    if written.retrieval is None or normalised.retrieval is not None:
+        return None
+    return (
+        f"the {written.retrieval!r} arm ran as plain search. With no reranker, no transform and "
+        "no ingestion behind it, and an exact index, asking for more candidates and handing "
+        "back the top k returns exactly what plain search returns -- so it was not run twice. "
+        "Its row is labelled without the strategy: nothing here measures `widened`. Put a "
+        "reranker, a transform or an ingestion strategy behind it, or use an approximate "
+        "index, and it becomes a real arm again"
     )
 
 

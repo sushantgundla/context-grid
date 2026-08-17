@@ -74,7 +74,14 @@ class Lab:
         reach barely half the plugins the YAML could, and nothing said so.
         """
         self.corpus = _as_corpus(corpus)
-        self.cache = cache or MemoryCache()
+        # `cache or MemoryCache()` looked equivalent and was not. `DiskCache.__len__` counts
+        # the entries on disk, so a cache directory that has not been written to yet is
+        # falsy -- and that is every first run, on every machine. The `DiskCache` was
+        # silently dropped, nothing was written, the directory stayed empty, and so the next
+        # process dropped it too. `cg.Lab(corpus, cache=cg.DiskCache(root=...))` therefore
+        # never reused anything across processes at all, which is the only reason to pass
+        # one. Only `None` means "no cache was chosen"; an empty cache is still a choice.
+        self.cache = MemoryCache() if cache is None else cache
         self.cost_model = CostModel(machine_usd_per_hour=machine_usd_per_hour)
         self.seed = seed
         self._matrix = Matrix()

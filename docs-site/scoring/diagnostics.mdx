@@ -97,11 +97,13 @@ q6 fp1_missing_content | no chunk in this index holds the evidence for this ques
 For every item with ground truth, `diagnose()` looks at `qrels.get(item.id, {})` and
 `run.get(item.id, ())`:
 
-- **No relevant chunk anywhere in `run`** → `FP1 MISSING_CONTENT`. The detail text tells you
-  which fix to reach for: `item.anchors` present but `item.gold` empty means the quote never
-  resolved to a span (**parse-loss** — `q5` above, fix the parser); `item.gold` present but no
-  chunk in the index holds it (**chunk-loss** — `q6` above, fix the chunker or the index). Same
-  failure point, different root cause, different fix.
+- **Nothing in `qrels[item.id]` is relevant** — the index holds no chunk carrying this
+  question's evidence → `FP1 MISSING_CONTENT`. The detail text tells you which fix to reach
+  for: `item.anchors` present but `item.gold` empty means the quote never resolved to a span
+  (**parse-loss** — `q5` above, fix the parser); `item.gold` present but no chunk in the index
+  holds it (**chunk-loss** — `q6` above, fix the chunker or the index). Same failure point,
+  different root cause, different fix.
+- **A relevant chunk exists but `run` never returned it** → `FP3 NOT_IN_CONTEXT`. See below.
 - **A relevant chunk is at rank ≤ `k`:** if *every* relevant chunk for that item made the top
   `k`, that's `NONE` — success (`q1`). If *some but not all* did, that's `FP7 INCOMPLETE`
   (`q2`) — the evidence straddles a boundary the retriever can't reassemble on its own.
@@ -114,6 +116,32 @@ For every item with ground truth, `diagnose()` looks at `qrels.get(item.id, {})`
 `deep_k=100` is the line between FP2 ("rank too low, a reranker can likely fix this") and FP3
 ("not in context at all") — it's a judgment call baked into the default, not something derived
 from your data. Pass a different `deep_k` if 100 doesn't fit your `k` values.
+
+### Evidence in the index that the run never returned is FP3, not FP1
+
+The two FP1 causes are both about evidence that never made it *into* the index. If `qrels`
+names a chunk holding the evidence, the parser and the chunker both did their jobs — the
+retriever simply didn't return it, at any depth you looked:
+
+```python
+one = cg.EvalSet(id="one", items=(
+    cg.EvalItem(id="d", question="d", gold=(cg.GoldSpan(cg.Span("doc1", 0, 50)),)),
+))
+missed = cg.diagnose(one, {"d": {"gold": 2}}, {"d": ["x" + str(i) for i in range(20)]},
+                     k=5, deep_k=100).diagnoses[0]
+print(missed.failure.value, "|", missed.detail)
+# fp3_not_in_context | the evidence is in the index but was not among the 20 results this run returned
+```
+
+It sits with the past-`deep_k` case because the fix is the same one: more candidates. "Never
+seen at any depth we looked" is the far end of "ranked too low", not a different problem.
+
+<Note>
+This was a real bug up to 0.9.2. The case was labelled `FP1 MISSING_CONTENT` while its own
+`detail` said the evidence was in the index — and because `FailureReport.summary()` prints the
+**remedy** rather than the detail, the half readers actually saw was the one telling them to go
+and fix a parser that had done nothing wrong.
+</Note>
 
 ## Items with no ground truth are excluded, not scored as FP1
 
@@ -208,7 +236,7 @@ the point of running `cluster()` before you start debugging item by item.
 | `FP1 MISSING_CONTENT` (parse-loss) | anchor present, but the quote never resolved to a span | the parser — see [Parsers](/axes/parsers) |
 | `FP1 MISSING_CONTENT` (chunk-loss) | gold span exists, but no chunk in this index holds it | the chunker — see [Chunkers](/axes/chunkers) |
 | `FP2 MISSED_TOP_RANKED` | evidence retrieved, ranked between `k` and `deep_k` | a reranker — see [Rerankers](/axes/rerankers) |
-| `FP3 NOT_IN_CONTEXT` | evidence ranked below `deep_k` | a bigger `k`, or a different retrieval strategy — see [Retrieval](/axes/retrieval) |
+| `FP3 NOT_IN_CONTEXT` | evidence ranked below `deep_k`, or never returned at all | a bigger `k`, or a different retrieval strategy — see [Retrieval](/axes/retrieval) |
 | `FP7 INCOMPLETE` | some but not all relevant chunks made the top `k` | chunk size or overlap, or a strategy that can return more than one chunk per document |
 
 `diagnose()` only takes you this far — from a low score to a specific stage. Whether that stage

@@ -62,6 +62,13 @@ class RunResult:
     #: confidence interval on a leaderboard row is reproducible from the manifest rather than
     #: from a hidden zero -- the same bug `Results.seed` exists to close for significance.
     seed: int = 0
+    #: The retrieval arm this row was *written* as, when the matrix folded it onto plain search.
+    #:
+    #: Provenance about a row rather than a setting on a pipeline, which is why it lives here
+    #: and not on `Config`: every field of `Config` has to be an axis that survives a round trip
+    #: through `winning-config.yaml`, and this one could not be set from a config file or
+    #: honoured on a re-run. It exists so the row a person reads says which arm it stands for.
+    folded_from: str | None = None
 
     def interval(self, *, confidence: float = 0.95, seed: int | None = None) -> Interval | None:
         """A confidence interval on the headline metric.
@@ -76,6 +83,15 @@ class RunResult:
 
     @property
     def label(self) -> str:
+        """What this row is called, including the arm it stands for.
+
+        `simple`, `decomposed` and `relevance-feedback` all put themselves in a label, so a
+        folded `widened` that says nothing reads as a row that measured plain search on
+        purpose -- and in a sweep naming both arms, as a measured tie between two rows that are
+        one run. The suffix names what was asked for and what it ran as, both.
+        """
+        if self.folded_from:
+            return f"{self.config.label} [~{self.folded_from} ran as plain search]"
         return self.config.label
 
     @property
@@ -140,6 +156,16 @@ class Results:
     warnings: WarningLog = field(default_factory=WarningLog)
     cache_summary: str = ""
     mode: str = "ofat"
+    #: How many configurations this sweep set out to run. Equal to `len(runs)` unless something
+    #: stopped it.
+    planned: int = 0
+    #: Why the sweep stopped early, or `None` when it finished the matrix.
+    #:
+    #: The pair exists because a truncated leaderboard looked exactly like a finished one. A
+    #: sweep stopped after 11 of 18 printed a header saying "18 to run", eleven rows, "across
+    #: 11 configurations", and exited 0 -- with the only correction on stderr, which is the
+    #: stream `/reference/cli` tells people to throw away when they capture a leaderboard.
+    stopped: str | None = None
     #: The seed the run was configured with. Every resampling here defaults to it, so a
     #: significance verdict is reproducible from the manifest rather than from a hidden zero.
     seed: int = 0
@@ -156,6 +182,55 @@ class Results:
             if run.label == label:
                 return run
         return None
+
+    # -- did this sweep finish? ----------------------------------------------
+
+    @property
+    def is_partial(self) -> bool:
+        """True when fewer configurations ran than were planned.
+
+        Read off both facts rather than off `stopped` alone, so a sweep that lost rows any
+        other way is still not mistaken for a complete one.
+        """
+        return bool(self.runs) and (self.stopped is not None or len(self.runs) < self.planned)
+
+    def partial_note(self) -> str:
+        """One sentence saying the leaderboard is a fraction of the matrix, or `""`.
+
+        No direction word in it -- no "below", no "above". The same sentence is printed over
+        the leaderboard on a console and under it in `report.md`, and the old wording ("the
+        leaderboard below is partial") was wrong in the second place every time.
+        """
+        if not self.is_partial:
+            return ""
+        reason = f" -- {self.stopped}" if self.stopped else ""
+        return (
+            f"This leaderboard is partial: {len(self.runs)} of {self.planned} configurations "
+            f"ran{reason}. The rest were never measured, so nothing here says how they "
+            "would have scored."
+        )
+
+    def manifest_note(self) -> str:
+        """What `build_manifest(notes=...)` should carry for this sweep.
+
+        A bundle is what somebody keeps and reads six months later, and an eleven-row
+        leaderboard beside a manifest that looks complete is indistinguishable from a finished
+        experiment. Prefixed `PARTIAL RUN` so it is greppable and so it reads as a warning at a
+        glance rather than as prose.
+        """
+        notes: list[str] = []
+        if self.is_partial:
+            notes.append(
+                f"PARTIAL RUN: {len(self.runs)} of {self.planned} configurations ran"
+                f"{f' -- {self.stopped}' if self.stopped else ''}. This bundle does not "
+                "describe the whole matrix."
+            )
+        # The folded arms, so a bundle records which strategy the winning row was written as.
+        # `Config.as_dict()` cannot carry it -- every field there has to be a real axis -- and
+        # `retrieval: null` on its own is what made the fold invisible in the first place.
+        for arm in sorted({run.folded_from for run in self.runs if run.folded_from}):
+            notes.append(f"FOLDED: the {arm!r} arm ran as plain search; its row is that row.")
+        return " ".join(notes)
 
     # -- the obvious view ----------------------------------------------------
 
@@ -332,6 +407,13 @@ class Results:
             f"across {swept}, scored on {winner.scored_queries} questions."
         ]
 
+        # First, ahead of the winner sentence in every reader's eye, because "scored best
+        # across 11 configurations" is a claim about a matrix of 18 and reads as the answer.
+        # This paragraph goes to stdout from both `contextgrid run` and `contextgrid sweep`,
+        # which is the one place a truncated sweep was never admitted to.
+        if self.is_partial:
+            lines.insert(0, self.partial_note())
+
         # Two different question counts used to land in one paragraph with nothing saying
         # which was which: "on 17 questions" from `scored_queries` and "8 of 20 questions
         # failed" from the failure report, whose total is the whole eval set. Naming the eval
@@ -392,8 +474,26 @@ class Results:
                 f"It costs ${winner.cost.query_usd_per_1k:.4f} per 1,000 queries and answers "
                 f"at {latency} p95."
             )
+        elif winner.cost.machine_usd:
+            # Not "at no cost". The user has just told the tool their machine costs money, and
+            # the flat claim is the sentence they would quote back. Per *query* it is still
+            # free, and the machine bill lands in the next line.
+            lines.append(
+                f"It calls no priced model, so it costs nothing per query, answering at "
+                f"{latency} p95."
+            )
         else:
             lines.append(f"It runs locally at no cost per query, answering at {latency} p95.")
+
+        # The machine bill, whenever the user priced their machine. Without this, setting
+        # `machine_usd_per_hour` changed a number inside `index_usd` and appeared in nothing
+        # anybody reads -- while the sentence directly above said the run cost nothing at all.
+        if winner.cost.machine_usd:
+            lines.append(
+                f"Building it took {winner.cost.compute_seconds:.1f}s of machine time, "
+                f"{_usd(winner.cost.machine_usd)} at the rate you set. That is paid once, and "
+                "is not part of the per-query figure above."
+            )
 
         if winner.unresolved_gold:
             # One unresolved anchor is an ordinary result, and "1 pieces of evidence ... those
@@ -430,6 +530,18 @@ def _named(item_ids: Sequence[str], limit: int = 3) -> str:
         return ", ".join(item_ids)
     rest = len(item_ids) - limit
     return f"{', '.join(item_ids[:limit])} and {rest} more"
+
+
+def _usd(amount: float) -> str:
+    """Money a human can read, without rounding a real cost away to `$0.0000`.
+
+    Four decimal places is right for a per-1,000-queries figure and wrong for the machine time
+    of a sweep that took two seconds: printing `$0.0000` next to "at the rate you set" reads as
+    "your rate did nothing", which is the impression this sentence exists to correct.
+    """
+    if 0 < amount < 0.0001:
+        return f"${amount:.6f}"
+    return f"${amount:.4f}"
 
 
 def _readable_ms(milliseconds: float) -> str:

@@ -47,9 +47,45 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return handler(args)
+    except KeyboardInterrupt:
+        # `cli.md` promises every command prints `error: <message>` rather than a Python
+        # traceback. Ctrl-C printed fifty-one lines of one, ending somewhere inside
+        # `tokens.py`, which is the least useful moment to break that promise: the user is
+        # already stopping the thing and now has a wall of text about a generator expression.
+        #
+        # `KeyboardInterrupt` is not an `Exception`, so it walked straight past the handler
+        # below -- and it must keep doing so inside the runner, where `_run_one_or_report`
+        # catches `Exception` to fail one row. An interrupt is not one failed configuration.
+        print(f"error: {_interrupted_note()}", file=sys.stderr)
+        # 128 + SIGINT, which is what a shell reports for a process killed by Ctrl-C and what
+        # `timeout -s INT` already expects. Not 1: nothing was wrong with the config.
+        return 130
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+
+
+def _interrupted_note(cache: str | None = None) -> str:
+    """What to say about a command somebody stopped, and honestly what became of its work.
+
+    A disk cache survives the interrupt: a sweep killed 25 seconds into a 62-second cold run
+    and started again over the same directory produced identical results with reuse rising from
+    70% to 85%. So "re-running resumes" is a true and useful thing to say -- but only for a
+    disk cache. `run.cache` defaults to `memory`, which dies with the process, and telling that
+    user their work was kept would be the more comforting sentence and a false one.
+    """
+    stopped = "stopped by Ctrl-C."
+    if cache == "disk":
+        return (
+            f"{stopped} Everything parsed, chunked and embedded so far is in the cache on "
+            "disk, so re-running this command picks up from there rather than starting again."
+        )
+    if cache is None:
+        return stopped
+    return (
+        f"{stopped} This run kept its cache in memory, so nothing it had computed survives. "
+        "Set `run.cache: disk` to make a re-run resume where this one stopped."
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -98,6 +134,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--metric", default="recall@5")
     sweep.add_argument("--k", type=int, default=10)
     sweep.add_argument("--budget-seconds", type=float, default=None)
+    # `lab.run` and a config file have always taken either ceiling. `sweep` -- the one command
+    # that starts a sweep from a single line, with no file to read it out of -- could only be
+    # bounded by the clock, so the axis that spends real money had no limit here at all.
+    sweep.add_argument(
+        "--budget-usd",
+        type=float,
+        default=None,
+        help="Stop once this much has been spent on tokens. Machine time is not counted; "
+        "use --budget-seconds to bound wall-clock.",
+    )
     sweep.add_argument("--bundle", type=Path, help="Write a full result bundle here.")
 
     plugins = sub.add_parser("plugins", help="List everything registered.")
@@ -139,7 +185,13 @@ def _run_config(args: argparse.Namespace) -> int:
         def progress(index: int, total: int, cfg: object) -> None:
             print(f"  [{index}/{total}] {cfg.label}", file=sys.stderr)  # type: ignore[attr-defined]
 
-    results = run(config, on_progress=progress)
+    try:
+        results = run(config, on_progress=progress)
+    except KeyboardInterrupt:
+        # Caught here rather than in `main` alone, because this is where the config is: only
+        # this frame knows whether the cache the sweep was filling survives the process.
+        print(f"error: {_interrupted_note(config.run.cache)}", file=sys.stderr)
+        return 130
 
     # Worked out before anything is printed, so the reasons can appear next to the empty
     # leaderboard they explain rather than only in the error stream. `budget_usd: 0.0` is
@@ -150,6 +202,11 @@ def _run_config(args: argparse.Namespace) -> int:
     reasons = _why_nothing_ran(config, results) if not results.runs else []
 
     print()
+    # Over the table, on stdout, because this is the one place the reader has both in front of
+    # them. The header above says "18 to run" and the table below holds eleven rows, and the
+    # only line that reconciled them used to go to stderr -- the stream `/reference/cli` tells
+    # people to drop when they capture a leaderboard with `> leaderboard.txt`.
+    _print_if_partial(results)
     print(format_leaderboard(results, config.run.headline, config.report.leaderboard_limit))
     print()
     print(results.summary(config.run.headline))
@@ -181,24 +238,41 @@ def _run_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_if_partial(results: Results) -> None:
+    """One line on stdout when the leaderboard is a fraction of the matrix.
+
+    Printed by both `run` and `sweep`, immediately above the table, so that a captured
+    leaderboard carries its own caveat. `Results.partial_note` has no direction word in it,
+    which is what lets the same sentence sit above the table here and below it in `report.md`.
+    """
+    note = results.partial_note()
+    if note:
+        print(note)
+        print()
+
+
 def _why_nothing_ran(config: ExperimentConfig, results: Results) -> list[str]:
     """The reasons the sweep is empty, in the words the runner already used for them.
 
     The reasons are recorded as warnings, and warnings only reach the written report -- so on
     a console the exit code would have been the only signal, and "why" would have been left to
     guesswork.
+
+    `BUDGET_REACHED` needs no guard any more. It used to mean three things -- a sweep stopping,
+    an unpriced model, and a plugin with no ceiling -- so this had to check that the config set
+    a budget at all before it dared quote one. The other two now have their own codes
+    (`MODEL_NOT_PRICED`, `NO_COST_CEILING`), so every one of these is the sweep saying where it
+    stopped.
     """
+    del config
     from contextgrid.core.warnings import WarningCode
 
-    reasons = [w.message for w in results.warnings.of_code(WarningCode.IMPOSSIBLE_COMBINATION)]
-
-    # BUDGET_REACHED covers two different things: a sweep stopping, and an advisory that a
-    # model-calling plugin has no ceiling. The advisory is only ever added when no budget was
-    # set at all, so where the config sets one, every BUDGET_REACHED here is the sweep saying
-    # where it stopped.
-    if config.run.budget_seconds is not None or config.run.budget_usd is not None:
-        reasons += [w.message for w in results.warnings.of_code(WarningCode.BUDGET_REACHED)]
-    return reasons
+    return [
+        w.message
+        for w in results.warnings.of_code(
+            WarningCode.IMPOSSIBLE_COMBINATION, WarningCode.BUDGET_REACHED
+        )
+    ]
 
 
 def _print_warnings(results: Results, *, already_shown: Sequence[str] = ()) -> None:
@@ -223,7 +297,7 @@ def _print_warnings(results: Results, *, already_shown: Sequence[str] = ()) -> N
     # Unconditionally, before anything is decided: stdout is block-buffered whenever it is not
     # a terminal, so in the CI logs this exists for, everything written to stderr from here on
     # -- these warnings, and the `error:` lines after them -- came out *above* the leaderboard
-    # they are about. The budget warning literally says "the leaderboard below is partial".
+    # they are about, which is why none of them says "above" or "below" any more.
     sys.stdout.flush()
 
     seen = set(already_shown)
@@ -284,6 +358,7 @@ def _check(args: argparse.Namespace) -> int:
         print(f"  {axis:11} {values}")
 
     problems.extend(_plugin_problems(config))
+    problems.extend(_output_problems(config))
 
     if problems:
         print()
@@ -360,6 +435,51 @@ def _evalset_problems(config: ExperimentConfig) -> list[str]:
     return []
 
 
+def _output_problems(config: ExperimentConfig) -> list[str]:
+    """Whether the report could actually be written where the config says to write it.
+
+    The last thing a sweep does is the first thing that should be checked. A `report.out` on a
+    read-only directory validated, ran the whole matrix, and died on `manifest.json` with
+    `[Errno 13] Permission denied` and every result discarded -- a minute on a demo corpus, and
+    on a hosted embedder a bill for numbers nobody will ever read. This is exactly the failure
+    `check` exists to move to the front.
+
+    Tested by writing, because that is the only test that answers the question. `os.access`
+    consults the permission bits and is wrong about network filesystems, ACLs and read-only
+    mounts -- and a false "writable" here leaves the original bug in place.
+
+    Nothing is left behind. The probe file is removed immediately, and a `report.out` that does
+    not exist yet is *not* created: `write_report` will `mkdir(parents=True)` when the sweep
+    really runs, so what matters now is whether the nearest directory above it can be written.
+    A `results/` directory created by a command that only checks a config is litter, and litter
+    that looks like the output of a sweep nobody ran.
+    """
+    import tempfile
+
+    out = config.report.out
+    if out is None:
+        return []
+
+    # The nearest ancestor that exists is what `mkdir(parents=True)` would have to write into.
+    target = out
+    while not target.exists() and target != target.parent:
+        target = target.parent
+
+    if not target.is_dir():
+        return [f"report.out is not a directory: {target}"]
+
+    try:
+        with tempfile.NamedTemporaryFile(dir=target, prefix=".contextgrid-check-"):
+            pass
+    except OSError as error:
+        where = "" if target == out else f" (the nearest existing directory above {out})"
+        return [
+            f"report.out is not writable: {target}{where} -- {error.strerror or error}. The "
+            "sweep would run the whole matrix and then fail to write its report."
+        ]
+    return []
+
+
 def _plugin_problems(config: ExperimentConfig) -> list[str]:
     """Build every plugin the matrix names, and report whatever refuses to be built.
 
@@ -385,7 +505,7 @@ def _plugin_problems(config: ExperimentConfig) -> list[str]:
     """
     from contextgrid.chunk import CHUNKERS, get_chunker
     from contextgrid.config.loader import build_llm
-    from contextgrid.config.plugins import missing_extra
+    from contextgrid.config.plugins import missing_extra, model_missing_for
     from contextgrid.embed import EMBEDDERS, get_embedder
     from contextgrid.generate import GENERATORS, get_generator
     from contextgrid.index import INDEXES, get_index
@@ -404,8 +524,21 @@ def _plugin_problems(config: ExperimentConfig) -> list[str]:
     # installed. All nine, deliberately: `marker` is the only plugin in this tree that hides a
     # missing package from construction today, but "only parsers are checked" would be a rule
     # nobody could infer, and the next lazily-imported plugin would walk straight through it.
+    def ingester(spec: str) -> object:
+        """Build it, and first refuse it the way the other three model-backed axes do.
+
+        `get_ingester` cannot make this refusal itself: a strategy is handed its model through
+        `IngestionContext` at ingest time rather than through the factory, so building one
+        without a model is a legitimate call that the docs make in every example on the axis.
+        Here there is a whole configuration to read, and `run.model` is either set or it is not.
+        """
+        absent = model_missing_for(spec, llm)
+        if absent is not None:
+            raise absent
+        return get_ingester(spec)
+
     builders: dict[str, tuple[Registry[Any], Callable[[str], object]]] = {
-        "ingestion": (INGESTERS, get_ingester),
+        "ingestion": (INGESTERS, ingester),
         "parser": (PARSERS, get_parser),
         "chunker": (CHUNKERS, get_chunker),
         "embedder": (EMBEDDERS, get_embedder),
@@ -544,12 +677,14 @@ def _sweep(args: argparse.Namespace) -> int:
         mode=args.mode,
         headline=args.metric,
         budget_seconds=args.budget_seconds,
+        budget_usd=args.budget_usd,
         on_progress=lambda index, total, config: print(
             f"  [{index}/{total}] {config.label}", file=sys.stderr
         ),
     )
 
     print()
+    _print_if_partial(results)
     print(format_leaderboard(results, args.metric))
     print()
     print(results.summary(args.metric))
@@ -558,8 +693,13 @@ def _sweep(args: argparse.Namespace) -> int:
 
     if args.bundle:
         winner = results.best(args.metric)
+        # `notes` carries the partial-run line into `manifest.json`, so a bundle kept from a
+        # sweep the budget cut short cannot later be read as a complete experiment. Empty
+        # string for a sweep that finished, which is what `notes` already defaults to.
         manifest = (
-            build_manifest(winner.config, lab.corpus, evalset) if winner is not None else None
+            build_manifest(winner.config, lab.corpus, evalset, notes=results.manifest_note())
+            if winner is not None
+            else None
         )
         # The corpus and eval set the sweep actually ran over, so `winning-config.yaml` in the
         # bundle is a config you can hand straight back to `contextgrid run`. Without them
@@ -672,18 +812,57 @@ def _plugins(args: argparse.Namespace) -> int:
         listing = dict(registry.describe())
         needs_model = _model_backed_in(name)
         listing.update(needs_model)
+        blocked = _not_installed_in(registry)
 
         print(f"{_HEADINGS.get(name, _plural(name))}:")
         for plugin, description in sorted(listing.items()):
             # A marker column rather than a suffix on the description: the note is the same
-            # for every starred name, and repeating it on four lines out of six buries the
+            # for every marked name, and repeating it on four lines out of six buries the
             # part that differs.
-            mark = "*" if plugin in needs_model else " "
+            mark = "*" if plugin in needs_model else "-" if plugin in blocked else " "
             print(f"  {plugin:22} {mark} {description}")
         if needs_model:
             print("  * needs a model. Set `run.model` in your config to use it.")
+        # Grouped by extra rather than one line per plugin, exactly as `contextgrid init`
+        # groups them: `pip install "context-grid[parse]"` is one command for three parsers,
+        # and printing it three times makes it look like three different installs.
+        for extra, names in sorted(_by_extra(blocked).items()):
+            print(f'  - not installed here. `pip install "context-grid[{extra}]"` adds: {names}')
         print()
     return 0
+
+
+def _not_installed_in(registry: Registry[Any]) -> dict[str, str]:
+    """The names in this registry whose optional package is missing, and the extra each wants.
+
+    `/reference/cli` promises this listing is "for this installation specifically -- which
+    extras are installed changes what shows up", and nothing in the command had ever asked. It
+    listed `marker` unqualified on a machine with no `marker` module at all, and went on listing
+    `chonkie`, `faiss` and `usearch` after those packages were uninstalled underneath it. A
+    reference that is wrong about the machine it is running on is worse than no reference: the
+    names it prints are the names somebody puts in a config.
+
+    Asked through `extra_missing_for`, which is what `contextgrid check` asks before a sweep and
+    what `contextgrid init` asks when it decides what to write into a starter config -- so the
+    three of them cannot disagree about what is installed. It reads distribution metadata and,
+    failing that, looks for the module without importing it, so this stays a listing command
+    rather than a command that imports Surya to tell you Surya exists.
+    """
+    from contextgrid.config.plugins import extra_missing_for
+
+    missing: dict[str, str] = {}
+    for entry in registry:
+        if extra_missing_for(entry) is not None and entry.extra is not None:
+            missing[entry.name] = entry.extra
+    return missing
+
+
+def _by_extra(blocked: dict[str, str]) -> dict[str, str]:
+    """`{name: extra}` turned into `{extra: "one, two"}`, for one line per install command."""
+    grouped: dict[str, list[str]] = {}
+    for plugin, extra in sorted(blocked.items()):
+        grouped.setdefault(extra, []).append(plugin)
+    return {extra: ", ".join(names) for extra, names in grouped.items()}
 
 
 def _model_backed_in(family: str) -> dict[str, str]:

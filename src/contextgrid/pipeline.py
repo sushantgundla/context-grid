@@ -378,6 +378,10 @@ def build(
 
     # Ingestion decides what is indexed and what a hit on it returns. For plain chunking the
     # two are the same list; every other strategy deliberately breaks that identity.
+    # A paid strategy handed no model refuses inside `ingest()` -- see
+    # `_GeneratedIngestion._llm`. Not here: a strategy is given its model through
+    # `IngestionContext`, and a subclass that supplies its own (which is how this axis is
+    # tested without a key) is only visible once it runs.
     started_ingest = time.perf_counter()
     ingested = get_ingester(config.ingestion).ingest(
         chunks, IngestionContext(parses=dict(parses), warnings=warnings, llm=llm)

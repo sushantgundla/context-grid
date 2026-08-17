@@ -12,7 +12,8 @@ The seven, and what each one means for a retrieval sweep:
 
 - **FP1 Missing content** -- the answer is not in the corpus at all. Not a retrieval failure.
 - **FP2 Missed top-ranked** -- the evidence was retrieved, just not high enough. Rerank.
-- **FP3 Not in context** -- it was found but fell outside k. Widen k, or consolidate better.
+- **FP3 Not in context** -- it is in the index and did not reach the context, whether it
+  ranked below k or was never returned. Widen k, or consolidate better.
 - **FP4 Not extracted** -- present in the context and the generator missed it. Not retrieval.
 - **FP5 Wrong format** -- the answer was there, in a shape nothing could use.
 - **FP6 Wrong specificity** -- too general or too narrow to answer what was asked.
@@ -56,8 +57,9 @@ REMEDIES: dict[FailurePoint, str] = {
         "is for, and it is the cheapest failure on this list to fix"
     ),
     FailurePoint.NOT_IN_CONTEXT: (
-        "the evidence ranked outside k. Raising k or feeding a reranker a deeper candidate "
-        "list will recover it, at a cost in tokens"
+        "the evidence is in the index and never reached the context -- it ranked outside k, "
+        "or the run did not return it at all. Raising k or feeding a reranker a deeper "
+        "candidate list will recover it, at a cost in tokens"
     ),
     FailurePoint.NOT_EXTRACTED: (
         "the evidence reached the generator and the generator missed it. A retrieval change "
@@ -260,10 +262,20 @@ def _diagnose_one(
     )
 
     if rank is None:
+        # FP3, not FP1. The qrels name a chunk that holds the evidence, so it survived the
+        # parser and it survived the chunker -- the retriever simply never returned it. The
+        # FP1 remedy sends the reader to fix a parser that did nothing wrong, and because
+        # `FailureReport.summary` prints the remedy rather than the detail, that was the half
+        # they read.
+        #
+        # It sits with the rank-past-`deep_k` case below because the fix is the same one:
+        # more candidates. "Never seen at any depth we looked" is the far end of "ranked too
+        # low", not a different problem.
         return Diagnosis(
             item.id,
-            FailurePoint.MISSING_CONTENT,
-            f"the evidence exists in the index but did not appear in the top {len(ranked)}",
+            FailurePoint.NOT_IN_CONTEXT,
+            "the evidence is in the index but was not among the "
+            f"{len(ranked)} results this run returned",
             retrieved=len(ranked),
         )
 

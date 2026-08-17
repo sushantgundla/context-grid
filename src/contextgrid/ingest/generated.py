@@ -78,11 +78,16 @@ Summarise what it covers in a short paragraph, naming the topics someone might s
 Answer with the summary alone."""
 
 
+#: The model a paid strategy falls back to when its spec names none. A *default*, not a
+#: choice: reaching for it because nobody said otherwise is what `_llm` now refuses to do.
+DEFAULT_MODEL = "openai:gpt-4o-mini"
+
+
 @dataclass(frozen=True, slots=True)
 class _GeneratedIngestion:
     """Shared body: call the model per unit, survive its failures, count what it cost."""
 
-    model: str = "openai:gpt-4o-mini"
+    model: str = DEFAULT_MODEL
     max_document_chars: int = 12_000
 
     name: ClassVar[str] = "generated"
@@ -90,8 +95,27 @@ class _GeneratedIngestion:
     uses_model: ClassVar[bool] = True
 
     def _llm(self, context: IngestionContext) -> Any:
+        """The model to enrich with, or a refusal.
+
+        Three ways one arrives, and the third used to be a fourth. `IngestionContext.llm` is
+        `run.model`, and is how a sweep supplies it. A spec that names one -- `contextual:model=
+        anthropic:claude-3-5-haiku` -- is somebody choosing, and is honoured. A subclass may
+        put its own on the context before delegating, which is how this axis is tested with no
+        key at all.
+
+        What it no longer does is reach for `DEFAULT_MODEL` because nobody named anything. That
+        is choosing a provider on the user's behalf, and it failed quietly: with no key, every
+        call raised, `_ask` caught each one, every chunk was indexed as written, and the sweep
+        produced a row labelled `contextual` that had enriched nothing. The same refusal
+        `retrieve.get_retriever` makes for `agentic`, for the same reason.
+        """
         if context.llm is not None:
             return context.llm
+        if self.model == DEFAULT_MODEL:
+            from contextgrid.ingest.base import needs_model_error
+
+            raise needs_model_error(self.name)
+
         from contextgrid.evalset.llm import get_llm
 
         return get_llm(self.model)

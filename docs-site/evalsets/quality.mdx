@@ -57,8 +57,8 @@ for w in quality.warnings().entries:
 EvalSetQuality(size=3, answerable=3, reviewed=0, portable=3, types={'factoid': 3}, mean_discriminating_power=None, non_discriminating=0)
 reviewed_fraction: 0.0
 detectable_difference: 1.0
-3 questions (3 answerable), 0% reviewed, detects differences of 1.00 and above
-CAUTION [evalset]: 3 answerable questions can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
+3 questions (3 with evidence, unchecked against a corpus), 0% reviewed, detects differences of 1.00 and above
+CAUTION [evalset]: 3 questions carry evidence, unchecked against a corpus, so this set can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
 CAUTION [evalset]: only 0% of this set is marked as checked by a human. Ground truth nobody has read is the weakest link in any retrieval comparison. If you wrote these questions yourself, say so with `"meta": {"reviewed": true}` on each one; otherwise the review queue is the cheapest place to fix it
 ```
 
@@ -105,11 +105,19 @@ EvalSetQuality(
 |---|---|
 | `.reviewed_fraction` | `reviewed / size` |
 | `.unanswerable` | `size - answerable` |
-| `.detectable_difference` | `minimum_detectable_difference(self.answerable)` |
+| `.detectable_difference` | `minimum_detectable_difference(self.answerable)` — the exact floor |
+| `.reported_detectable_difference` | the same floor rounded **up** to 2 decimals; this is the number `.summary()` and `.warnings()` print |
 | `.is_portable` | `portable == answerable` |
-| `.can_support(difference) -> bool` | can this set reliably see a gap of this size |
+| `.can_support(difference) -> bool` | can this set reliably see a gap of this size — tested against the exact `.detectable_difference` |
 | `.summary() -> str` | the one-line summary shown above |
 | `.warnings() -> WarningLog` | CAUTION/INFO messages: small size, low review coverage, non-discriminating questions, non-portable gold, one question type dominating (>70% of a set of 10+) |
+
+<Note>
+The printed floor is rounded **up**, not to nearest, so that the sentence is true as written
+and the number can be handed straight back. On 24 questions the exact floor is `0.404145`:
+`.summary()` says `detects differences of 0.41 and above`, and `can_support(0.41)` is `True`.
+It used to print `0.40` — the number the same object then rejected.
+</Note>
 
 `minimum_detectable_difference(n, *, power=0.8, alpha=0.05)` is an approximate two-sided
 sample-size formula, worst-case variance. It uses two-value lookup tables for the

@@ -354,9 +354,9 @@ contextgrid evalset path
 ```
 $ contextgrid evalset questions.jsonl
 policy-questions v1 (manual)
-3 questions (3 answerable), 0% reviewed, detects differences of 1.00 and above
+3 questions (3 with evidence, unchecked against a corpus), 0% reviewed, detects differences of 1.00 and above
 types: {'unlabelled': 3}
-  - 3 answerable questions can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
+  - 3 questions carry evidence, unchecked against a corpus, so this set can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
   - only 0% of this set is marked as checked by a human. Ground truth nobody has read is the weakest link in any retrieval comparison. If you wrote these questions yourself, say so with `"meta": {"reviewed": true}` on each one; otherwise the review queue is the cheapest place to fix it
 ```
 

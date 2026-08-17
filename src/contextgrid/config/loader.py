@@ -96,8 +96,23 @@ def _parse_yaml(text: str, source: Path | None) -> Any:
         return yaml.safe_load(text)
     except yaml.YAMLError as error:
         where = f" in {source}" if source else ""
-        # PyYAML's own message carries the line and column, which is the useful part.
-        raise ConfigError(f"could not parse the config{where}: {error}") from error
+        # PyYAML's own message carries the line, the column and a caret under the offending
+        # character, which is the useful part and is kept verbatim. The one word in it that
+        # means nothing to anybody is the name it gives the input: parsing a `str` makes every
+        # mark read `in "<unicode string>"`, which names neither the file the user pointed at
+        # nor anything else they have ever seen. Rewritten rather than fixed at the source,
+        # because the fix at the source -- handing PyYAML a named stream -- costs the caret:
+        # a stream is read in chunks and the snippet under the mark comes back empty.
+        raise ConfigError(
+            f"could not parse the config{where}: {_named(str(error), source)}"
+        ) from error
+
+
+def _named(message: str, source: Path | None) -> str:
+    """PyYAML's placeholder for the input, replaced with what the input actually was."""
+    return message.replace(
+        '"<unicode string>"', f'"{source}"' if source is not None else "the config text"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +193,7 @@ def run(
     corpus = build_corpus(config)
     evalset = build_evalset(config)
     runner = build_runner(config, corpus)
+    _require_a_model_where_one_is_needed(config, runner.llm)
 
     return runner.run(
         config.grid.to_matrix(config.run.k),
@@ -189,15 +205,41 @@ def run(
     )
 
 
+def _require_a_model_where_one_is_needed(config: ExperimentConfig, llm: object | None) -> None:
+    """Refuse a sweep whose ingestion axis needs a model the config never set.
+
+    Before the first document is read, because the alternative is what shipped: every chunk's
+    model call failed, every chunk fell back to being indexed as written, and the sweep printed
+    a row labelled `contextual` that had spent nothing and enriched nothing. It is the same
+    refusal `transform: hyde`, `retrieval: agentic` and `generator: llm` already make from
+    inside `pipeline.build`; only ingestion could not make it there, because a strategy is
+    handed its model at ingest time rather than at construction.
+
+    The retrieval, transform and generator axes are deliberately not re-checked here. They
+    refuse themselves, in their own words, and a second refusal that could word it differently
+    is worse than none.
+    """
+    from contextgrid.config.plugins import model_missing_for
+
+    for spec in config.grid.ingestion:
+        if spec is None:
+            continue
+        absent = model_missing_for(spec, llm)
+        if absent is not None:
+            raise absent
+
+
 def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
     """Write whatever the config asked for."""
     if config.report.out is None:
         return []
 
     from contextgrid.report.export import (
+        clear_bundle,
         config_to_python,
         results_to_json,
         results_to_markdown,
+        warn_about_stale,
         winning_config_to_yaml,
     )
     from contextgrid.report.manifest import build_manifest
@@ -205,6 +247,13 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
     root = config.report.out
     root.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+
+    # A second run into the directory used to leave whatever it did not happen to rewrite --
+    # `formats: [json]` over a full bundle kept the previous run's `report.md`,
+    # `winning-config.yaml` and `use_winning_config.py`, so the yaml described a sweep the new
+    # `manifest.json` beside it said had not happened. Same guard as `write_bundle`, from the
+    # same list, because this is the same bundle written by the other door.
+    removed = clear_bundle(root)
 
     winner = results.best(config.run.headline)
     manifest = None
@@ -214,6 +263,10 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
             build_corpus(config),
             build_evalset(config),
             seeds={"run": config.run.seed},
+            # A sweep the budget cut short writes a bundle like any other, and a manifest that
+            # says nothing about it is what makes an eleven-row leaderboard readable, months
+            # later, as a finished experiment. Empty for a sweep that covered its matrix.
+            notes=results.manifest_note(),
         )
         written.append(manifest.save(root / "manifest.json"))
 
@@ -267,4 +320,5 @@ def write_report(config: ExperimentConfig, results: Results) -> list[Path]:
         copy.write_text(config.source_path.read_text(encoding="utf-8"), encoding="utf-8")
         written.append(copy)
 
+    warn_about_stale(removed, written)
     return written

@@ -166,12 +166,22 @@ class SpanResolver:
         # through into an empty loop and reported nothing at all.
         if not item.is_resolved:
             if item.anchors:
+                # "That is a measurement of the parser, not of the retriever" was half right,
+                # and the wrong half was stated the most confidently. This fires whenever the
+                # anchors produced no spans -- which happens for an invented quote, a quote
+                # naming the wrong `source_id`, and an `occurrence` past the last copy, none
+                # of which is the parser's doing. `anchor.py` is where those causes are told
+                # apart, so the honest thing here is to keep the claim that survives -- this
+                # is not a retriever result -- and send the reader to the warning that knows.
                 log.add(
                     WarningCode.GOLD_SPAN_UNREACHABLE,
                     (
                         f"item {item.id!r} quotes its evidence but none of it was located in "
-                        f"this parse, so it is excluded from ranking metrics. That is a "
-                        f"measurement of the parser, not of the retriever"
+                        f"this parse, so it is excluded from ranking metrics. Nothing here is "
+                        f"a measurement of the retriever. Whether the parser lost the text or "
+                        f"the eval set quotes something that is not in the document it names, "
+                        f"this cannot tell -- the `anchor_not_found` warnings for "
+                        f"{item.id!r} say which of those could be told apart"
                     ),
                     severity=Severity.CAUTION,
                     stage="resolve",
@@ -231,11 +241,7 @@ class SpanResolver:
             elif not resolution.is_reachable:
                 log.add(
                     WarningCode.GOLD_SPAN_UNREACHABLE,
-                    (
-                        f"gold span {gold.span.start}-{gold.span.end} in {gold.doc_id!r} matches "
-                        f"no chunk at all. This question cannot be answered under this chunking, "
-                        f"whatever the retriever does"
-                    ),
+                    _unreachable_message(gold, chunk_spans),
                     severity=Severity.CAUTION,
                     stage="resolve",
                     subject=item.id,
@@ -287,6 +293,45 @@ class SpanResolver:
             for item_id, resolution in resolutions.items()
             if resolution.labels
         }
+
+
+def _unreachable_message(gold: GoldSpan, chunk_spans: Sequence[Span]) -> str:
+    """Why one gold span matched no chunk, claiming only what the offsets can show.
+
+    "This question cannot be answered under this chunking" was the only answer given, and it
+    is not the only cause. A gold span at 900-950 of a 100-character document matches no chunk
+    for the same reason a real chunking gap does -- `is_reachable` is `bool(chunk_ids)` and
+    says nothing about why -- so an eval set carrying stale offsets sent somebody off to sweep
+    a chunk size that was never the problem.
+
+    The offsets settle it. A span outside everything this parse chunked cannot be a decision
+    the chunker made; a span inside that range that still hits nothing is exactly that.
+    """
+    where = f"gold span {gold.span.start}-{gold.span.end} in {gold.doc_id!r}"
+    same_document = [span for span in chunk_spans if span.doc_id == gold.doc_id]
+
+    if not same_document:
+        return (
+            f"{where} matches no chunk, because this run produced no chunks for "
+            f"{gold.doc_id!r} at all. Either the corpus does not hold that document or the "
+            "eval set names it differently -- the chunker never saw it"
+        )
+
+    start = min(span.start for span in same_document)
+    end = max(span.end for span in same_document)
+    if gold.span.start >= end or gold.span.end <= start:
+        return (
+            f"{where} matches no chunk, and it lies outside the {start}-{end} this parse "
+            f"chunked for {gold.doc_id!r}. That is an eval set pointing at offsets this text "
+            "does not have, not a chunking decision -- span-form gold does not survive a "
+            "change of parser, which is what `anchors` are for"
+        )
+
+    return (
+        f"{where} matches no chunk at all, though it lies inside the {start}-{end} this parse "
+        f"chunked for {gold.doc_id!r}. This question cannot be answered under this chunking, "
+        "whatever the retriever does"
+    )
 
 
 # ---------------------------------------------------------------------------

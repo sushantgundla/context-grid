@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
 import shutil
+import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -185,10 +187,24 @@ class DiskCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write beside the target and move, so a crash mid-write cannot leave a truncated
         # file that later reads as a valid cache hit.
-        temporary = path.with_suffix(".tmp")
-        with temporary.open("wb") as handle:
-            pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        temporary.replace(path)
+        #
+        # The temporary name is unique per writer, which is the part that was missing. Two
+        # `contextgrid run` processes over one output directory with a cold cache both wrote
+        # `<key>.tmp`, and the loser's rename found nothing: `[Errno 2] No such file or
+        # directory: '...tmp' -> '...pkl'`, one sweep dead, an internal cache path in the
+        # message and no advice. Sharing a cache directory is a reasonable thing to do and
+        # nothing documents otherwise, so it has to work. A warm cache hid it entirely,
+        # because nobody writes.
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("wb") as handle:
+                pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            # Atomic, and the last writer wins. Both wrote the same value -- the key is a
+            # hash of the inputs -- so which one wins does not matter.
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
         self.stats.writes += 1
 
     def clear(self) -> None:

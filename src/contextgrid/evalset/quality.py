@@ -24,6 +24,25 @@ from contextgrid.evalset.classify import type_distribution
 SMALL_SET = 30
 #: Around here, differences of about 0.1 become detectable.
 COMFORTABLE_SET = 100
+#: Decimal places every message about the noise floor prints it to.
+FLOOR_PLACES = 2
+
+
+def round_up(value: float, places: int = FLOOR_PLACES) -> float:
+    """`value` rounded *away from zero* to `places` decimals.
+
+    Up rather than to-nearest, because the number this rounds is a floor. Printing 0.40 for a
+    real floor of 0.404145 states something the set cannot do; printing 0.41 states something
+    it can, and errs by less than a hundredth.
+
+    The `round` inside the `ceil` is not decoration: `0.28` is held as 0.28000000000000003, so
+    a bare `ceil(value * 100)` would report a 24-question set's floor as 0.29 on the strength
+    of a rounding error in the seventeenth decimal place.
+    """
+    # Annotated because `10**places` is `Any` to a type checker -- a negative exponent would
+    # make it a float -- and an `Any` here would silently widen the return type.
+    factor: int = 10**places
+    return math.ceil(round(value * factor, 9)) / factor
 
 
 def minimum_detectable_difference(n: int, *, power: float = 0.8, alpha: float = 0.05) -> float:
@@ -70,12 +89,32 @@ class EvalSetQuality:
         return minimum_detectable_difference(self.answerable)
 
     @property
+    def reported_detectable_difference(self) -> float:
+        """The noise floor as every message here prints it: rounded up to two places.
+
+        `summary()` used to print `{detectable_difference:.2f}`, which rounds to *nearest*.
+        On 24 questions the real floor is 0.404145, so the sentence read "detects differences
+        of 0.40 and above" -- and `can_support(0.40)` then returned False, because it tests
+        the unrounded value. Somebody read a number out of the tool's own summary, handed it
+        straight back, and was told no.
+
+        Rounding up is the half of that pair worth fixing. Rounding the *predicate* down to
+        match the print would make `can_support` agree by promising a resolution the eval set
+        has not got, which is the failure this whole module exists to prevent.
+        """
+        return round_up(self.detectable_difference)
+
+    @property
     def is_portable(self) -> bool:
         """True when every answerable question can be re-resolved against another parser."""
         return self.portable == self.answerable
 
     def can_support(self, difference: float) -> bool:
-        """Whether a claimed difference of this size is bigger than the noise floor."""
+        """Whether a claimed difference of this size is bigger than the noise floor.
+
+        Tested against the exact floor, not the printed one. The number in `summary()` is
+        rounded up precisely so that handing it back here answers True.
+        """
         return difference >= self.detectable_difference
 
     def summary(self) -> str:
@@ -89,20 +128,31 @@ class EvalSetQuality:
         parts = [
             f"{self.size} questions ({self.answerable} with evidence, unchecked against a corpus)",
             f"{self.reviewed_fraction:.0%} reviewed",
-            f"detects differences of {self.detectable_difference:.2f} and above",
+            f"detects differences of {self.reported_detectable_difference:.2f} and above",
         ]
         return ", ".join(parts)
 
     def warnings(self) -> WarningLog:
-        """Everything about this set that should change how its results are read."""
+        """Everything about this set that should change how its results are read.
+
+        Nothing here says "answerable" either, and that is the same fix `summary()` got in
+        0.9.1 rather than a second opinion about wording. That release retired the word from
+        the line above these on the grounds that the codebase spends it on *can be scored*,
+        while this number counts *carries an anchor* -- and then left it in the caution
+        printed directly beneath, where it went on making the identical claim about the
+        identical count. The field keeps its name: `answerable` is what the attribute is
+        called, `EvalSetQuality`'s repr is documented with it, and `detail["answerable"]` is
+        read by things that are not prose. Only the sentences overstated the case.
+        """
         log = WarningLog()
 
         if self.answerable < SMALL_SET:
             log.add(
                 WarningCode.SMALL_EVAL_SET,
-                f"{self.answerable} answerable questions can only detect differences of about "
-                f"{self.detectable_difference:.2f} or larger. Anything smaller than that on a "
-                "leaderboard built from this set is noise",
+                f"{self.answerable} questions carry evidence, unchecked against a corpus, so "
+                f"this set can only detect differences of about "
+                f"{self.reported_detectable_difference:.2f} or larger. Anything smaller than "
+                "that on a leaderboard built from this set is noise",
                 severity=Severity.CAUTION,
                 stage="evalset",
                 answerable=self.answerable,
@@ -110,9 +160,10 @@ class EvalSetQuality:
         elif self.answerable < COMFORTABLE_SET:
             log.add(
                 WarningCode.SMALL_EVAL_SET,
-                f"{self.answerable} answerable questions detect differences of about "
-                f"{self.detectable_difference:.2f}. Enough to choose between clearly different "
-                "configurations, not enough to rank close ones",
+                f"{self.answerable} questions carry evidence, unchecked against a corpus, so "
+                f"this set detects differences of about "
+                f"{self.reported_detectable_difference:.2f}. Enough to choose between clearly "
+                "different configurations, not enough to rank close ones",
                 severity=Severity.INFO,
                 stage="evalset",
             )
@@ -147,8 +198,8 @@ class EvalSetQuality:
         if self.answerable and not self.is_portable:
             log.add(
                 WarningCode.SMALL_EVAL_SET,
-                f"{self.answerable - self.portable} answerable questions carry character spans "
-                "rather than quoted evidence. They compare chunkers correctly and cannot be "
+                f"{self.answerable - self.portable} questions carry character spans rather "
+                "than quoted evidence. They compare chunkers correctly and cannot be "
                 "re-resolved against a different parser, so the parser axis is not available",
                 severity=Severity.CAUTION,
                 stage="evalset",

@@ -162,6 +162,15 @@ class GridConfig:
             candidates=_as_ints(data.get("candidates", (50,)), "grid.candidates"),
             generator=_as_optional_strings(data.get("generator", (None,)), "grid.generator"),
         )
+        # Raised here rather than collected with the name problems below, because it is the
+        # same class of mistake as `run.k: -1` and is reported the same way: a number that
+        # cannot mean anything, refused where it was written. `check` used to accept
+        # `candidates: -3` and print it back as a leaderboard label -- while refusing `run.k:
+        # -1` and `chunker: recursive:-5` in the same command, in the same breath.
+        for depth in grid.candidates:
+            if depth < 1:
+                raise ConfigError(f"grid.candidates must be at least 1, got {depth}")
+
         if check_names:
             grid.validate_names()
         return grid

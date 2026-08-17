@@ -21,6 +21,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -191,10 +192,38 @@ def read_jsonl(path: str | Path) -> EvalSet:
 # CSV -- what a domain expert actually hands you
 # ---------------------------------------------------------------------------
 
+#: Two columns the CSV format carries that `CSV_ALIASES` does not name, and deliberately so.
+#:
+#: `CSV_ALIASES` lives in `core.evalset` because the *JSON* side needs it: a reader who saw
+#: `doc_id` in the CSV documentation and then hand-wrote JSONL is told that the name is real
+#: in the other format rather than simply refused. That reasoning does not apply to these two.
+#: `occurrence` and `meta` are spelled identically in both formats, so there is no alias to
+#: disambiguate and nothing for the JSON error path to say about them.
+_LOCAL_CSV_ALIASES: dict[str, tuple[str, ...]] = {
+    "occurrence": ("occurrence", "occurrence_index", "nth"),
+    "meta": ("meta", "metadata"),
+}
+
 #: Column names accepted for each field, so a spreadsheet does not have to be reformatted.
 #: Defined in `core.evalset` because the JSON readers need to recognise these names too, in
 #: order to say that an alias belongs to the other format rather than simply refusing it.
-_CSV_ALIASES = CSV_ALIASES
+_CSV_ALIASES: dict[str, tuple[str, ...]] = {**CSV_ALIASES, **_LOCAL_CSV_ALIASES}
+
+#: The columns `write_csv` writes, in order. `occurrence` sits with the other anchor fields;
+#: `meta` goes last because it is the only one holding JSON rather than a plain value, and a
+#: spreadsheet is easier to read with the awkward column at the end.
+CSV_COLUMNS: tuple[str, ...] = (
+    "id",
+    "question",
+    "source_id",
+    "quote",
+    "grade",
+    "page",
+    "occurrence",
+    "qtype",
+    "answer",
+    "meta",
+)
 
 
 def read_csv(path: str | Path, *, evalset_id: str | None = None) -> EvalSet:
@@ -235,6 +264,7 @@ def read_csv(path: str | Path, *, evalset_id: str | None = None) -> EvalSet:
                         quote=quote,
                         grade=_as_int(row.get(columns.get("grade", "")), default=2),
                         page_hint=_as_optional_int(row.get(columns.get("page", ""))),
+                        occurrence=_as_int(row.get(columns.get("occurrence", "")), default=0),
                     ),
                 )
 
@@ -245,6 +275,7 @@ def read_csv(path: str | Path, *, evalset_id: str | None = None) -> EvalSet:
                     anchors=anchors,
                     qtype=(row.get(columns.get("qtype", "")) or "").strip() or None,
                     answer=(row.get(columns.get("answer", "")) or "").strip() or None,
+                    meta=_as_meta(row.get(columns.get("meta", ""))),
                 )
             )
 
@@ -254,15 +285,33 @@ def read_csv(path: str | Path, *, evalset_id: str | None = None) -> EvalSet:
 
 
 def write_csv(evalset: EvalSet, path: str | Path) -> Path:
-    """Write an eval set back out as a spreadsheet, for hand editing."""
+    """Write an eval set back out as a spreadsheet, for hand editing.
+
+    Columns: `id, question, source_id, quote, grade, page, occurrence, qtype, answer, meta`.
+
+    `occurrence` and `meta` are here because leaving them out silently changed what the file
+    meant. An anchor written with `occurrence: 2` came back as `0`, which points at a
+    different passage in a document that repeats its quote; and `meta` came back empty, which
+    includes `meta.reviewed` -- the flag `assess()` counts for its "% reviewed" figure. So a
+    round trip through a spreadsheet reset somebody's review progress and then had the quality
+    summary tell them off for not having reviewed anything.
+
+    `meta` is written as JSON in one cell. It is the only column that is not a plain value,
+    and it is not pretty in a spreadsheet, but a JSON cell round-trips and a missing column
+    does not. Note that JSON has no tuples: `("a", 1)` inside `meta` comes back as `["a", 1]`.
+
+    What still cannot survive the format is warned about rather than dropped in silence: CSV
+    is one row per question, so only `item.anchors[0]` is written, and span-form `gold` has no
+    column at all. Both raise a `UserWarning` naming the questions affected.
+    """
     target = Path(path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    _warn_about_what_csv_cannot_carry(evalset)
+
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(
-            ["id", "question", "source_id", "quote", "grade", "page", "qtype", "answer"]
-        )
+        writer.writerow(CSV_COLUMNS)
         for item in evalset:
             anchor = item.anchors[0] if item.anchors else None
             writer.writerow(
@@ -273,11 +322,49 @@ def write_csv(evalset: EvalSet, path: str | Path) -> Path:
                     anchor.quote if anchor else "",
                     anchor.grade if anchor else "",
                     anchor.page_hint if anchor and anchor.page_hint is not None else "",
+                    anchor.occurrence if anchor else "",
                     item.qtype or "",
                     item.answer or "",
+                    json.dumps(item.meta, sort_keys=True) if item.meta else "",
                 ]
             )
     return target
+
+
+def _warn_about_what_csv_cannot_carry(evalset: EvalSet) -> None:
+    """Say out loud which questions lose something on the way to a spreadsheet.
+
+    A `UserWarning` rather than a `WarningLog`: `write_csv` returns a `Path`, so there is no
+    result object to hang a log on, and the caller is a person running a command rather than a
+    stage of a sweep. The point is only that the loss stops being silent -- the previous
+    behaviour was to write the file and say nothing, which is how somebody discovers a
+    second anchor is gone by finding a question scoring zero three commands later.
+    """
+    extra_anchors = [item.id for item in evalset if len(item.anchors) > 1]
+    with_gold = [item.id for item in evalset if item.gold]
+
+    if extra_anchors:
+        warnings.warn(
+            f"CSV holds one anchor per question, so only the first was written for "
+            f"{_named_items(extra_anchors)}. Use `write_jsonl` to keep all of them.",
+            UserWarning,
+            stacklevel=3,
+        )
+    if with_gold:
+        warnings.warn(
+            f"CSV has no column for span-form `gold`, so the resolved spans on "
+            f"{_named_items(with_gold)} were not written. The anchors were; re-resolve them "
+            "against a parse to get the spans back, or use `write_jsonl`.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def _named_items(ids: Sequence[str], limit: int = 3) -> str:
+    """Up to `limit` question ids, then a count. A warning naming 400 questions is noise."""
+    shown = ", ".join(repr(name) for name in ids[:limit])
+    rest = len(ids) - limit
+    return f"{shown} and {rest} more" if rest > 0 else shown
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +732,25 @@ def _as_optional_int(value: Any) -> int | None:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _as_meta(value: Any) -> dict[str, Any]:
+    """A `meta` cell, read as JSON, or `{}` when it is empty or is not JSON at all.
+
+    Forgiving on purpose. The column is only there so `write_csv`'s own output survives a
+    round trip, and the file in between has been open in a spreadsheet where somebody may
+    well have typed a note into it. A free-text cell should not take down a file of 400
+    perfectly good questions; a JSON array should not become an item's `meta` either, which
+    is why the type is checked rather than trusted.
+    """
+    text = (str(value) if value is not None else "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
 def to_records(items: Iterable[EvalItem]) -> list[Mapping[str, Any]]:

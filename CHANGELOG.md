@@ -8,6 +8,132 @@ called out here when it does.
 
 Nothing yet.
 
+## [0.9.3] — 2026-08-17
+
+0.9.2 was installed from PyPI into containers and driven by seven independent readers, each
+using only the published documentation site and none of them allowed to see the source. They
+covered install and quickstart, the ten axes, eval sets and reports, statistical significance,
+cost and latency, metric arithmetic, and deliberately hostile input. Thirty-three things were
+wrong. Every one was reproduced before anything changed.
+
+The theme is narrower than last time, and worse: **the tool kept telling you things it could not
+know.** A score above 1.000. A failure diagnosis contradicting itself in the same object. A
+leaderboard that stopped early and did not say so. Three separate warnings blaming the parser
+for an eval set's mistake.
+
+### Fixed — numbers that were wrong
+
+- **`recall` and `map` could exceed 1.0.** A ranking containing the same chunk twice was scored
+  as two hits, so `recall@3` came back `1.5` where the answer is `0.5`. Metrics now count a
+  chunk once, and `evaluate()` rejects a repeated id outright rather than scoring it — a
+  retriever returning duplicates has a bug, and quietly repairing it would hide that.
+- **`diagnose()` sent you to fix the wrong stage.** Evidence that was in the index but never
+  retrieved was labelled `fp1_missing_content`, whose remedy reads "the evidence is not in this
+  index at all. No retriever can fix this" — while the `detail` field on the same object said
+  the opposite. It is now `fp3_not_in_context`, and the two agree.
+- **A question with no relevant chunk was scored two different ways.** `{}` excluded it from the
+  average; `{"c1": 0}` counted it as a zero and dragged every score down. Both now mean the same
+  thing. A cut-off below 1 is rejected instead of quietly using Python's negative slicing.
+- **`Comparison.can_support()` disagreed with the number printed beside it.** The summary said
+  "detects differences of 0.40 and above" while `can_support(0.40)` returned `False`, because
+  the printed figure was rounded down from 0.404. The printed number is now rounded up, so the
+  sentence is true as written.
+
+### Fixed — results that looked complete and were not
+
+- **A budget-stopped sweep now says so where you can see it.** A run that exhausted
+  `budget_seconds` printed a header saying "18 to run", eleven rows, and exited 0, with the only
+  warning on stderr — so the documented `contextgrid run … > leaderboard.txt` kept the
+  misleading half and discarded the caveat. The note is now on stdout above the table, in
+  `summary()`, and in the manifest.
+- **One output directory could describe two different experiments.** Running again with fewer
+  formats left the previous run's `report.md` and `winning-config.yaml` in place beside the new
+  `manifest.json`. `use_winning_config.py` then handed you the earlier experiment's
+  configuration. A bundle now clears the files it owns, and warns about any it removed and did
+  not replace.
+- **`write_bundle` never wrote the manifest** its own docstring promised, which left
+  `contextgrid diff` — documented as reading "two `manifest.json` files from earlier bundled
+  runs" — with no input at all. It now builds one when given the corpus and eval set, matching
+  `contextgrid sweep --bundle` to the hash.
+- **A folded `widened` arm read as a tie it never earned.** When `widened` provably returns what
+  plain search returns, the matrix folds it — correctly — but said nothing, so the row looked
+  like an independent arm that drew. It now carries `[~widened:factor=8 ran as plain search]`
+  and an `arm_not_measured` warning.
+- **`Lab(cache=DiskCache(...))` never wrote to disk.** An empty `DiskCache` is falsy and
+  `cache or MemoryCache()` swapped it out, so every first run silently used memory and the
+  directory never stopped being empty. Documented as a known defect for two releases; now fixed,
+  and the warning block describing it is gone.
+
+### Fixed — blame pointed at the wrong thing
+
+- **Three warnings claimed a fact about the parser they could not know.** `anchor_not_found`,
+  `gold_span_unreachable` and its per-configuration twin all asserted "a measurement of the
+  parser, not the eval set" — for an invented quote, a wrong `source_id`, or an out-of-range
+  `occurrence`, all of which are the eval set's doing. They now say what they can defend and
+  point at the per-question warnings that can tell the causes apart.
+- **`one_chunk_per_document` blamed the chunker for an ingestion strategy's work.**
+  `parent-document` groups small chunks back into passages by design, which made the counts
+  equal; the warning then told you to sweep smaller sizes, which cannot help. It now names
+  whichever axis actually collapsed them.
+- **An out-of-range `occurrence` was reported as the evidence being absent.** It now says the
+  quote appears N times and the anchor asked for one past the end, numbered from 0.
+
+### Fixed — input the tool accepted and should not have
+
+- **`contextgrid check` passed a config the sweep could not finish.** A read-only output
+  directory validated clean, then the whole matrix ran and died writing `manifest.json`. It is
+  now caught before anything is spent.
+- **`contextual` ingestion with no model** validated, ran, and scored as though it had enriched
+  anything. It now fails like the transforms and generators already did.
+- **`grid.candidates` below 1** validated and reached the leaderboard as `lexical@-3`.
+- **A binary file with a `.md` extension** was indexed as ten chunks of replacement characters
+  with no warning, and non-UTF-8 text was silently mangled — after which `anchor_not_found`
+  blamed the parser. Both are now reported per file, naming the file and what is wrong with it.
+- **A UTF-8 BOM deleted the first heading** of a Markdown document, silently, breaking every
+  heading-aware chunker on files Windows editors write by default.
+
+### Fixed — failures that took more with them than they should
+
+- **One unbuildable configuration killed the whole sweep.** Every row already measured was
+  discarded. A failing configuration is now dropped from the leaderboard with a
+  `configuration_failed` warning naming it, and the sweep finishes. It is left out rather than
+  scored zero: a zero is a measurement, and nothing measured it.
+- **Two concurrent runs destroyed each other's cache.** On a cold cache the `.tmp` → `.pkl`
+  rename raced and one process died, losing its sweep. Writes are now atomic per process.
+- **`Ctrl-C` printed a fifty-one line traceback**, breaking the documented promise that no
+  command ever shows one. It now prints one line and exits 130 — and says whether the work
+  survives, which depends on `run.cache` and is only claimed when true.
+- **`Corpus.from_dir` leaked a raw `PermissionError`** from the public API, outside the
+  documented exception hierarchy, so the handler `/reference/errors` tells you to write never
+  fired.
+
+### Changed
+
+- `BUDGET_REACHED` meant three different things — a sweep stopping, a model with no published
+  price, and a plugin with no cost ceiling — while the documentation told you to filter on it to
+  detect a stop. It now means only the stop; `MODEL_NOT_PRICED` and `NO_COST_CEILING` are their
+  own codes.
+- `budget_usd` was non-deterministic: it charged machine time, which falls with a warm cache, so
+  the same budget bought a different number of configurations each run. It now charges metered
+  token spend. The reported bill is unchanged; only the limit stopped moving.
+- `machine_usd_per_hour` was accepted and appeared in no cost readout. It is now reported as
+  `machine_usd`, and the summary stops saying "at no cost" when a rate is set. The `$/1k` column
+  still excludes it on purpose — build cost and serving cost must not be summed.
+- `contextgrid sweep` gained `--budget-usd`, which `--budget-seconds` already had.
+- `contextgrid plugins` marks a plugin whose optional package is missing and prints the
+  `pip install` line that fixes it, which is what the page always claimed it did.
+- `--chunker` and its four siblings document that they are repeated once per value.
+
+### Documentation
+
+- `contextgrid evalset` stopped calling questions "answerable" in three more places. The word
+  means *can be scored*; these counts only know an anchor is attached. 0.9.1 fixed one of four.
+- `recall_against_exact`, `coverage_fraction`, `score_answer` and `AnswerScore` are reachable
+  from `/scoring/metrics`. Each was already documented, on a page a reader looking for metrics
+  would never open.
+- A table on `/reference/cli` broke in 0.9.2 when a new section was inserted between two of its
+  rows.
+
 ## [0.9.2] — 2026-08-17
 
 Found the same way as 0.9.1: 0.9.1 was installed from PyPI into a container and driven using
@@ -134,7 +260,8 @@ RAPTOR and GraphRAG. Deliberately, not accidentally — see `docs/roadmap.md`.
   the documentation followed as a stranger would. 40-odd disagreements between the docs and the
   tool were found that way and fixed. It is the most honest thing in the repository.
 
-[Unreleased]: https://github.com/sushantgundla/context-grid/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/sushantgundla/context-grid/compare/v0.9.3...HEAD
 [0.9.0]: https://github.com/sushantgundla/context-grid/releases/tag/v0.9.0
 [0.9.1]: https://github.com/sushantgundla/context-grid/releases/tag/v0.9.1
 [0.9.2]: https://github.com/sushantgundla/context-grid/releases/tag/v0.9.2
+[0.9.3]: https://github.com/sushantgundla/context-grid/releases/tag/v0.9.3

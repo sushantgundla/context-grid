@@ -147,7 +147,12 @@ q2 | How fast is express shipping? | (GoldAnchor(source_id='shipping.md', quote=
 ```
 
 An `id` column is optional — rows without one get `q1`, `q2`, ... in file order.
-`write_csv(evalset, path)` writes the same shape back out for hand editing.
+`write_csv(evalset, path)` writes the same shape back out for hand editing, as
+`id, question, source_id, quote, grade, page, occurrence, qtype, answer, meta`. `meta` is a
+JSON cell, so `meta.reviewed` survives the round trip — it did not before 0.9.3, and losing it
+silently reset a hand-reviewed set to 0% reviewed. What still cannot fit is a second anchor or
+span-form `gold`; `write_csv` raises a `UserWarning` naming the questions affected rather than
+dropping them quietly.
 
 ### BEIR and LegalBench-RAG — importing published benchmarks
 
@@ -251,9 +256,9 @@ Before trusting a leaderboard, know what the eval set underneath it can actually
 ```
 $ contextgrid evalset questions.jsonl
 policy-questions v1 (manual)
-3 questions (3 answerable), 0% reviewed, detects differences of 1.00 and above
+3 questions (3 with evidence, unchecked against a corpus), 0% reviewed, detects differences of 1.00 and above
 types: {'unlabelled': 3}
-  - 3 answerable questions can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
+  - 3 questions carry evidence, unchecked against a corpus, so this set can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
   - only 0% of this set is marked as checked by a human. Ground truth nobody has read is the weakest link in any retrieval comparison. If you wrote these questions yourself, say so with `"meta": {"reviewed": true}` on each one; otherwise the review queue is the cheapest place to fix it
 ```
 

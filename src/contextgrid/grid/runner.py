@@ -58,7 +58,7 @@ class Budget:
         self._started = time.perf_counter()
 
     def charge(self, result: RunResult, queries: int) -> None:
-        """Add what one configuration actually spent.
+        """Add what one configuration actually spent, in money that is the same every run.
 
         `spent_now(queries)`, not `total_at(queries)`. The two ask different questions:
         `total_at` is "what would this cost to serve in production"; a spending limit is
@@ -67,10 +67,16 @@ class Budget:
         judge entirely. With a local embedder and a hosted generator it came to zero however
         many dollars had just gone through -- which is why a positive `budget_usd` could never
         fire on the one axis that spends real money.
+
+        `metered_now`, not `spent_now`, for a second and separate reason: machine time is real
+        money and is not the same money twice. It is `compute_seconds` priced by the hour, and
+        a warm cache cuts the seconds, so the identical sweep under the identical ceiling
+        stopped after two configurations, then four, then two -- a cache bought extra runs. A
+        limit nobody can reproduce is not a limit. What is charged here is token spend.
         """
         cost = getattr(result, "cost", None)
         if cost is not None:
-            self.spent_usd += float(cost.spent_now(queries))
+            self.spent_usd += float(cost.metered_now(queries))
 
     def exceeded(self) -> str | None:
         """Why the sweep should stop, or None to keep going."""
@@ -254,10 +260,19 @@ class Runner:
             metrics["embedding_quality"] = quality
 
         if not qrels:
+            # What it is not, and then plainly that it cannot say which of the two causes it
+            # is. The old wording -- "for reasons that have nothing to do with retrieval" --
+            # is true and stops there, and it fires just as readily when the eval set quotes
+            # something the document does not contain as when the parser lost the text. A
+            # reader was left with a correct sentence and nowhere to look, so it now points at
+            # the warnings that can tell those apart, the same way the item-level version does.
             warnings.add(
                 WarningCode.GOLD_SPAN_UNREACHABLE,
-                f"{config.label} could not resolve a single piece of evidence, so every "
-                "metric here is zero for reasons that have nothing to do with retrieval",
+                f"{config.label} could not resolve a single piece of evidence, so every metric "
+                "here is zero and none of them is a measurement of the retriever. Whether this "
+                "parse lost the text or the eval set quotes something that is not in the "
+                "documents it names, this cannot tell -- the `anchor_not_found` and "
+                "`no_parse_for_source` warnings above are per question and say which",
                 severity=Severity.INVALID,
                 stage="score",
                 subject=config.label,
@@ -430,16 +445,22 @@ class Runner:
         if chosen is SweepMode.STAGED:
             return self._staged(matrix, evalset, budget, on_progress)
 
-        configs, dropped = matrix.expand_with_dropped(chosen)
-        results = self._flat(configs, evalset, chosen, budget, on_progress)
+        configs, report = matrix.expand_with_report(chosen)
+        dropped = report.impossible
+        results = self._flat(configs, evalset, chosen, budget, on_progress, report.folded)
 
         _warn_if_approximate_alone(matrix, results)
         self._warn_if_at_ceiling(results)
+        _warn_about_rewrites(results, report.rewrites)
 
         unbounded = matrix.meta.get("unbounded_model_calls")
         if unbounded:
+            # `NO_COST_CEILING`, not `BUDGET_REACHED`. No budget was reached here; there is no
+            # budget. Sharing the code meant `_why_nothing_ran` had to reason about which
+            # meaning it had caught, and `/lab/running`'s "filter on BUDGET_REACHED to detect a
+            # stop" caught an advisory about a sweep that ran to the end.
             results.warnings.add(
-                WarningCode.BUDGET_REACHED,
+                WarningCode.NO_COST_CEILING,
                 f"the {unbounded!r} plugin calls a model -- per question at query time, or "
                 "per chunk while building the index -- and this sweep has no `budget_usd` or "
                 "`budget_seconds`. Nothing here can tell you the bill in advance",
@@ -447,6 +468,8 @@ class Runner:
                 stage="run",
                 subject=str(unbounded),
             )
+
+        _warn_if_machine_time_is_outside_the_budget(self.cost_model, budget, results)
 
         if dropped:
             results.warnings.add(
@@ -491,6 +514,40 @@ class Runner:
             configurations=len(scores),
         )
 
+    def _run_one_or_report(
+        self, config: Config, evalset: EvalSet, results: Results
+    ) -> RunResult | None:
+        """One configuration, or `None` and a warning saying why this row is missing.
+
+        A configuration that cannot be built, run or scored is a failed *row*. It used to be a
+        failed sweep: `run_one` was called bare, so anything it raised travelled out of the
+        loop and discarded every configuration already measured. `evaluate()` refusing a
+        ranking that repeats a chunk id is the live example -- the refusal is correct, and
+        losing eighteen configurations of work to it is not.
+
+        The same instinct as `_score_generation`, which records a generator's failure on the
+        question it happened to and scores the rest of the eval set.
+
+        Deliberately broad. What can come out of here is every plugin in the pipeline plus
+        every metric, third-party code included, and a list of the exception types worth
+        surviving is a list that goes stale. `KeyboardInterrupt` and `SystemExit` are not
+        `Exception` and still stop the sweep, which is what they are for.
+        """
+        try:
+            return self.run_one(config, evalset)
+        except Exception as error:
+            results.warnings.add(
+                WarningCode.CONFIGURATION_FAILED,
+                f"{config.label} could not be run: {type(error).__name__}: {error}. That "
+                "configuration is absent from the leaderboard rather than scored zero -- a "
+                "zero is a measurement, and nothing here measured it. The rest of the sweep "
+                "carried on",
+                severity=Severity.CAUTION,
+                stage="run",
+                subject=config.label,
+            )
+            return None
+
     def _flat(
         self,
         configs: Sequence[Config],
@@ -498,23 +555,28 @@ class Runner:
         mode: SweepMode,
         budget: Budget,
         on_progress: Progress | None,
+        folded: Mapping[Config, str] | None = None,
     ) -> Results:
-        results = Results(mode=mode.value, seed=self.seed)
+        results = Results(mode=mode.value, seed=self.seed, planned=len(configs))
         budget.start()
 
         for index, config in enumerate(configs, start=1):
             spent = budget.exceeded()
             if spent is not None:
+                results.stopped = spent
                 # Two different outcomes, and they need different words. "The leaderboard
-                # below is partial" is simply false when the count is zero: there is no
+                # is partial" is simply false when the count is zero: there is no
                 # leaderboard, nothing was compared, and the budget is the whole story.
                 # `budget_usd: 0.0` -- documented as "already spent" -- lands there every
                 # time, and so does any ceiling too small for a single configuration.
                 completed = index - 1
                 if completed:
+                    # Not "the leaderboard *below*". This warning is printed under the
+                    # leaderboard in `report.md` and over it on a console, so a direction is
+                    # wrong in one of the two places every time.
                     detail = (
                         f"stopped after {completed} of {len(configs)} configurations: "
-                        f"{spent}. The leaderboard below is partial"
+                        f"{spent}. The leaderboard is partial"
                     )
                 else:
                     detail = (
@@ -533,7 +595,14 @@ class Runner:
 
             if on_progress:
                 on_progress(index, len(configs), config)
-            result = self.run_one(config, evalset)
+            result = self._run_one_or_report(config, evalset, results)
+            if result is None:
+                continue
+            # The arm this row was written as, when the matrix folded it onto plain search.
+            # Carried onto the result rather than into the configuration, because a `Config`
+            # holds axes that survive a round trip through `winning-config.yaml` and this is
+            # provenance about one row.
+            result.folded_from = (folded or {}).get(config)
             results.runs.append(result)
             # `extend_unique`, not `extend`: half of what a run logs is a fact about the eval
             # set rather than about the configuration, and every configuration rediscovers it.
@@ -564,7 +633,7 @@ class Runner:
         called the second of two, and a denominator that moved three times while the header's
         number never moved at all.
         """
-        results = Results(mode="staged", seed=self.seed)
+        results = Results(mode="staged", seed=self.seed, planned=matrix.count(SweepMode.STAGED))
         budget.start()
         current = matrix.baseline()
         seen: dict[Config, RunResult] = {}
@@ -576,6 +645,9 @@ class Runner:
         announced = matrix.count(SweepMode.STAGED)
         total = announced
         completed = 0
+        #: Filled per stage below, because staged canonicalises against a different frozen
+        #: baseline each time: the same arm is folded in one stage and real in the next.
+        folded: dict[Config, str] = {}
 
         def run_stage(candidates: Sequence[Config]) -> str | None:
             """Run whatever this stage has not run already, or say why the sweep stopped.
@@ -596,7 +668,12 @@ class Runner:
                 completed += 1
                 if on_progress:
                     on_progress(completed, total, config)
-                result = self.run_one(config, evalset)
+                result = self._run_one_or_report(config, evalset, results)
+                if result is None:
+                    # Not recorded in `seen`, so the stage picks its winner from the values it
+                    # could actually measure and the sweep moves on to the next axis.
+                    continue
+                result.folded_from = folded.get(config)
                 seen[config] = result
                 results.runs.append(result)
                 results.warnings.extend_unique(result.warnings)
@@ -604,12 +681,19 @@ class Runner:
             return None
 
         for axis in AXIS_ORDER:
-            candidates = matrix.stage_configs(axis, current)
+            candidates, report = matrix.stage_configs_with_report(axis, current)
+            # Per stage, because staged freezes a different configuration in front of each one:
+            # the same `widened` arm is plain search in the stage before a reranker is chosen
+            # and a real arm in the stage after it.
+            _warn_about_rewrites(results, report.rewrites)
+            folded.update(report.folded)
             if len(candidates) < 2:
                 continue
 
             spent = run_stage(candidates)
             if spent is not None:
+                results.stopped = spent
+                results.planned = max(total, results.planned)
                 results.warnings.add(
                     WarningCode.BUDGET_REACHED,
                     f"{spent} during the {axis!r} stage. Later axes were never swept at all",
@@ -635,6 +719,7 @@ class Runner:
             only, _ = deduplicate([current])
             spent = run_stage(only)
             if spent is not None:
+                results.stopped = spent
                 results.warnings.add(
                     WarningCode.BUDGET_REACHED,
                     f"{spent} before the only configuration in this matrix could run. Nothing "
@@ -679,6 +764,58 @@ class Runner:
         results.warnings.extend_unique(self.cost_model.warnings)
         results.meta["final"] = current.as_dict()
         return results
+
+
+def _warn_if_machine_time_is_outside_the_budget(
+    cost_model: CostModel, budget: Budget, results: Results
+) -> None:
+    """Say that `budget_usd` counts tokens and not the hourly rate the user set.
+
+    Only when both are set, because only then does the difference exist. Ignoring a number
+    somebody typed is how the old behaviour would quietly come back: the budget used to charge
+    machine time, which is why the same ceiling bought a different number of configurations on
+    every run. Leaving it out is the fix; leaving it out in silence would be another surprise.
+    """
+    if budget.usd is None or not cost_model.machine_usd_per_hour:
+        return
+
+    results.warnings.add(
+        WarningCode.NO_COST_CEILING,
+        "`budget_usd` counts token spend only, not machine time. Your machine time at "
+        f"${cost_model.machine_usd_per_hour:,.2f}/hour is still measured and reported per "
+        "configuration, and this budget deliberately does not cap it: it falls whenever a "
+        "cache is warm, so a limit that counted it stopped in a different place on every run. "
+        "Use `budget_seconds` to bound wall-clock",
+        # Loud rather than INFO: somebody who set both numbers is entitled to think one bounds
+        # the other, and INFO is dropped from the console whenever a run produced results.
+        severity=Severity.CAUTION,
+        stage="cost",
+    )
+
+
+def _warn_about_rewrites(results: Results, rewrites: Sequence[str]) -> None:
+    """Say when a row ran as something other than what was asked for.
+
+    The matrix folds `widened` onto plain search wherever the extra reach is provably thrown
+    away, which is right -- and it did it in silence. The row is labelled as plain search, the
+    manifest records `retrieval: null`, and the sweep exits 0, so a leaderboard naming both arms
+    shows a tie between one configuration and itself. Every other strategy on that axis labels
+    itself, so silence here reads as a measurement.
+
+    `CAUTION` rather than `INFO` for one specific reason: the CLI drops INFO whenever a run
+    produced results, and this warning is only ever raised on runs that produced results.
+
+    `ARM_NOT_MEASURED` rather than `NON_DETERMINISTIC_STAGE`, which is what this was first
+    raised as and is the wrong fact about it: the fold is deliberate, it is provable, and it
+    repeats identically on every run. Nothing here is non-deterministic.
+    """
+    for note in rewrites:
+        results.warnings.add(
+            WarningCode.ARM_NOT_MEASURED,
+            note,
+            severity=Severity.CAUTION,
+            stage="retrieve",
+        )
 
 
 def _warn_if_approximate_alone(matrix: Matrix, results: Results) -> None:
@@ -824,6 +961,14 @@ def _check_chunking_can_be_seen(config: Config, pipeline: Any, log: WarningLog) 
 
     Deliberately measured against the parses rather than the corpus, because that is what the
     chunker was handed -- a document the parser dropped is not one the chunker declined to cut.
+
+    **And deliberately not always about the chunker.** What is counted here is the *retrievable*
+    side -- what a hit turns into, and what gets scored -- which an ingestion strategy is
+    entitled to make coarser than the chunker's own output: `parent-document` indexes small
+    chunks and returns the passage they came from, by design and as `/axes/ingestion` documents.
+    Blaming the chunker there was a false alarm on the one warning whose entire job is to be
+    believed, and its advice -- sweep smaller sizes -- could not have helped, because the
+    strategy groups whatever the chunker produces back into the same passage.
     """
     parses = getattr(pipeline, "parses", None)
     chunks = getattr(pipeline, "chunks", None)
@@ -834,6 +979,34 @@ def _check_chunking_can_be_seen(config: Config, pipeline: Any, log: WarningLog) 
 
     documents = len(parses)
     if len(chunks) > documents:
+        return
+
+    # How many units the chunker actually produced, recovered from what came back. A strategy
+    # that merges units builds each passage with `ingest.structural._merge`, which records how
+    # many it swallowed; anything else returns the chunker's own units, where the count is one
+    # apiece. So this is the chunker's output whether or not a strategy touched it, without the
+    # pipeline having to carry a second list around to prove it.
+    units = sum(_merged_count(chunk) for chunk in chunks)
+
+    if config.ingestion and units > documents:
+        log.add(
+            WarningCode.ONE_CHUNK_PER_DOCUMENT,
+            f"{config.ingestion} returned {len(chunks)} passage(s) from {documents} "
+            "document(s), so each document comes back whole and these scores rank documents "
+            f"rather than passages. The chunker is not the cause -- {config.chunker} cut "
+            f"{units} unit(s) and this strategy grouped them back together -- so sweeping "
+            "smaller sizes cannot change it. Return finer units (a smaller group), or compare "
+            "against `ingestion: plain`",
+            severity=Severity.CAUTION,
+            # The strategy, for the reason the chunker is the subject below: this is a fact
+            # about one strategy meeting this corpus, and every arm of a sweep that shares it
+            # re-derives the identical fact.
+            stage="ingest",
+            subject=config.ingestion,
+            documents=documents,
+            passages=len(chunks),
+            units=units,
+        )
         return
 
     log.add(
@@ -853,6 +1026,20 @@ def _check_chunking_can_be_seen(config: Config, pipeline: Any, log: WarningLog) 
         documents=documents,
         chunks=len(chunks),
     )
+
+
+def _merged_count(chunk: Any) -> int:
+    """How many of the chunker's own units this retrievable unit stands for.
+
+    One, unless a strategy merged several -- `ingest.structural._merge` writes `merged_count`
+    into the merged chunk's `meta`, and it is the only thing in the package that does. Read
+    defensively because `meta` is a free-form dictionary a custom strategy also writes into,
+    and a stray value there must not be able to take down a run over a diagnostic.
+    """
+    try:
+        return max(1, int(getattr(chunk, "meta", {}).get("merged_count", 1)))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _character_metrics(
@@ -941,4 +1128,10 @@ def estimate_cost(
         "shape": matrix.shape(),
         "approximate_index_tokens": approximate_tokens,
         "estimated_usd": round(total, 4),
+        # Echoed, not applied. `/lab/grid` told people to set this "if your compute isn't
+        # actually free" beside an `estimated_usd` that never moved when they did -- machine
+        # cost is seconds times a rate, and the seconds are not knowable until the sweep has
+        # run. So the setting is reported here, and the money it makes is measured per
+        # configuration and reported on `CostBreakdown.machine_usd`.
+        "machine_usd_per_hour": model.machine_usd_per_hour,
     }

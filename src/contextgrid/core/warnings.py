@@ -40,10 +40,15 @@ class WarningCode(str, Enum):
     # -- chunking ------------------------------------------------------------
     CHUNK_EXCEEDS_MODEL_CONTEXT = "chunk_exceeds_model_context"
     EMPTY_CHUNK_SET = "empty_chunk_set"
-    #: Every document came out as a single chunk, so what got scored was which *document*
-    #: ranked, not which chunk. The chunker axis cannot move a number it is not part of, and a
-    #: leaderboard of tied configurations then reads as a measured tie rather than an unasked
-    #: question. `contextgrid profile` has always known the rule; the run path did not repeat it.
+    #: Every document came back as a single unit, so what got scored was which *document*
+    #: ranked, not which passage. A leaderboard of tied configurations then reads as a measured
+    #: tie rather than an unasked question. `contextgrid profile` has always known the rule; the
+    #: run path did not repeat it.
+    #:
+    #: Raised about whichever axis actually caused it, which is not always the chunker: an
+    #: ingestion strategy that returns the passage its small chunks came from collapses the
+    #: units on purpose, and blaming the chunker there is a false alarm carrying advice -- sweep
+    #: smaller sizes -- that cannot work. See `runner._check_chunking_can_be_seen`.
     ONE_CHUNK_PER_DOCUMENT = "one_chunk_per_document"
 
     # -- embedding -----------------------------------------------------------
@@ -76,9 +81,41 @@ class WarningCode(str, Enum):
     # -- generation ------------------------------------------------------------
     GENERATION_FAILED = "generation_failed"
 
+    # -- cost ------------------------------------------------------------------
+    #: A model this run used has no published price, so it was costed at zero. Its own code
+    #: because `BUDGET_REACHED` used to carry it, and `/lab/running` tells people to detect a
+    #: budget stop with `w.code.name == "BUDGET_REACHED"` -- a filter that then caught an
+    #: unrelated fact about pricing and reported a sweep as stopped when nothing had stopped.
+    MODEL_NOT_PRICED = "model_not_priced"
+    #: This sweep can call a model an unknown number of times and has no `budget_usd` or
+    #: `budget_seconds`. Nothing has been reached; there is nothing to reach.
+    NO_COST_CEILING = "no_cost_ceiling"
+
     # -- runs ----------------------------------------------------------------
+    #: A budget ran out and the sweep stopped, or could not start. One fact, since the two
+    #: above were split out of it.
     BUDGET_REACHED = "budget_reached"
+    #: One configuration could not be built, run or scored, and was left out of the
+    #: leaderboard. The rest of the sweep carried on.
+    #:
+    #: A row failing must not take the sweep with it. `evaluate()` rightly refuses to score a
+    #: ranking that repeats a chunk id -- it would report a retriever's bug as `recall@3 = 1.5`
+    #: -- and that refusal used to travel straight out of the runner's loop and discard every
+    #: configuration already measured. Trading one wrong number for eighteen configurations of
+    #: lost work is not a trade.
+    CONFIGURATION_FAILED = "configuration_failed"
     IMPOSSIBLE_COMBINATION = "impossible_combination"
+    #: A row ran under a configuration other than the one written, so the arm somebody asked
+    #: for was never measured. `widened` with nothing downstream to use the extra reach is the
+    #: one case: it provably returns what plain search returns, the matrix folds it onto plain
+    #: search rather than paying for the same run twice, and the row is then labelled,
+    #: manifested and read as plain search.
+    #:
+    #: Its own code rather than a borrowed one. `NON_DETERMINISTIC_STAGE` was the first
+    #: attempt and says the wrong thing entirely -- the fold is deliberate and repeats on every
+    #: run -- and a code that means two things is how `BUDGET_REACHED` came to catch both a
+    #: stopped sweep and an unpriced model, breaking the filter the docs hand out for it.
+    ARM_NOT_MEASURED = "arm_not_measured"
     CACHE_MISS_STORM = "cache_miss_storm"
     NON_DETERMINISTIC_STAGE = "non_deterministic_stage"
 
