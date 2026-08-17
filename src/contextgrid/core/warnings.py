@@ -40,6 +40,11 @@ class WarningCode(str, Enum):
     # -- chunking ------------------------------------------------------------
     CHUNK_EXCEEDS_MODEL_CONTEXT = "chunk_exceeds_model_context"
     EMPTY_CHUNK_SET = "empty_chunk_set"
+    #: Every document came out as a single chunk, so what got scored was which *document*
+    #: ranked, not which chunk. The chunker axis cannot move a number it is not part of, and a
+    #: leaderboard of tied configurations then reads as a measured tie rather than an unasked
+    #: question. `contextgrid profile` has always known the rule; the run path did not repeat it.
+    ONE_CHUNK_PER_DOCUMENT = "one_chunk_per_document"
 
     # -- embedding -----------------------------------------------------------
     INPUT_TRUNCATED = "input_truncated"

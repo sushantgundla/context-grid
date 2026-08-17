@@ -96,9 +96,7 @@ class Comparison:
         if not self.distinguishable:
             return (
                 f"{self.left} and {self.right} are not distinguishable on this eval set "
-                f"(n={self.n}). The gap of {self.difference.estimate:+.3f} on {self.metric} "
-                f"sits inside the confidence interval {self.difference.low:+.3f} to "
-                f"{self.difference.high:+.3f}, so it is consistent with no difference at all. "
+                f"(n={self.n}). {self._why_not()} "
                 + _sample_size_note(self.difference.estimate, self.n, self.ties)
             )
 
@@ -108,6 +106,39 @@ class Comparison:
             f"{self.metric} (95% CI {self.difference.low:+.3f} to {self.difference.high:+.3f}, "
             f"p={self.p_value:.3f}, n={self.n}). It wins on {self.wins} questions, loses on "
             f"{self.losses} and ties on {self.ties}."
+        )
+
+    def _why_not(self) -> str:
+        """Which half of the dual rule failed, said in the reader's terms.
+
+        `distinguishable` needs a small p-value *and* an interval on one side of zero, and for
+        a long time one sentence explained both failures: "the gap sits inside the confidence
+        interval X to Y, so it is consistent with no difference at all". That is exactly right
+        when the interval straddles zero and flatly false when it does not -- printed against
+        bounds of +0.062 to +0.500, it tells the reader that no difference at all is plausible
+        while the two numbers beside it rule that out. A sentence that argues with the figures
+        it quotes costs more trust than saying nothing would.
+
+        So the interval case keeps its wording, unchanged and quoted verbatim across the
+        documentation, and the p-value case gets its own.
+        """
+        interval = f"{self.difference.low:+.3f} to {self.difference.high:+.3f}"
+        gap = f"The gap of {self.difference.estimate:+.3f} on {self.metric}"
+
+        if not self.difference.excludes_zero:
+            return (
+                f"{gap} sits inside the confidence interval {interval}, so it is consistent "
+                "with no difference at all."
+            )
+
+        # The interval did its part; the permutation test did not. Which is a genuinely
+        # different situation to be in, and a different thing to do about it: the effect looks
+        # real and there is not yet enough evidence to say so.
+        return (
+            f"{gap} has a confidence interval of {interval}, which does stay clear of zero, "
+            f"but the p-value of {self.p_value:.3f} is not below alpha {self.alpha:g}. Both "
+            "have to hold before this package will name a winner, so on this evidence the "
+            "ranking could still come down to which questions were asked."
         )
 
     def as_dict(self) -> dict[str, object]:

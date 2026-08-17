@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from contextgrid import __version__
-from contextgrid.core.registry import Registry
+from contextgrid.core.registry import Registry, SpecValueError
 
 if TYPE_CHECKING:  # imported for types only, so `contextgrid --version` stays a cheap import
     from contextgrid.config.schema import ExperimentConfig
@@ -82,11 +82,18 @@ def _build_parser() -> argparse.ArgumentParser:
     sweep = sub.add_parser("sweep", help="Run a matrix and print the leaderboard.")
     sweep.add_argument("corpus", type=Path)
     sweep.add_argument("evalset", type=Path, help="A JSONL eval set.")
-    sweep.add_argument("--parser", action="append")
-    sweep.add_argument("--chunker", action="append")
-    sweep.add_argument("--embedder", action="append")
-    sweep.add_argument("--index", action="append")
-    sweep.add_argument("--reranker", action="append")
+    # `action="append"` is how an axis gets swept from the command line, and the generated
+    # `--chunker CHUNKER` said nothing about it -- so the natural guess was a comma-separated
+    # list, which parses as one long plugin name and fails. The help text is where somebody
+    # looks before they guess, so it is where the answer belongs.
+    for axis in ("parser", "chunker", "embedder", "index", "reranker"):
+        sweep.add_argument(
+            f"--{axis}",
+            action="append",
+            metavar=axis.upper(),
+            help=f"One {axis} to try. Repeat the flag to sweep several: "
+            f"--{axis} A --{axis} B. Not a comma-separated list.",
+        )
     sweep.add_argument("--mode", default="ofat", choices=["factorial", "ofat", "staged"])
     sweep.add_argument("--metric", default="recall@5")
     sweep.add_argument("--k", type=int, default=10)
@@ -431,6 +438,11 @@ def _plugin_problems(config: ExperimentConfig) -> list[str]:
 
             try:
                 build(spec)
+            except SpecValueError as error:
+                # Unprefixed, for the same reason `missing_extra` is: this one already opens
+                # with its family and its spec ("chunker 'recursive:banana': ..."), and adding
+                # the pair again in front produces the message twice in one line.
+                problems.append(str(error))
             except Exception as error:
                 # Prefixed with the axis and the spec because the messages are written for the
                 # moment a plugin is built, when there is only one: "chunk size must be
@@ -475,10 +487,42 @@ def _corpus_at(path: Path) -> Corpus:
     return Corpus.from_files([path])
 
 
+def _check_sweep_specs(args: argparse.Namespace) -> None:
+    """Read every spec the flags name before anything is loaded or run.
+
+    `sweep` used to find a bad spec where every other command finds one: at construction, deep
+    inside the run. So it printed the plan, printed `[1/1] markdown · recursive:banana · ...`,
+    and only then said the spec could not be built -- two lines of confident output about a
+    configuration that never existed. `check` has always done this earlier, and a sweep from
+    flags deserves the same courtesy even though there is no config file to check.
+
+    Parsing is all that is needed and all that is done: `parse_spec` resolves the name and
+    validates the parameters without importing a plugin's optional package, so this stays
+    honest on a machine that could not build half the registry.
+    """
+    from contextgrid.chunk import CHUNKERS
+    from contextgrid.embed import EMBEDDERS
+    from contextgrid.index import INDEXES
+    from contextgrid.parse import PARSERS
+    from contextgrid.rerank import RERANKERS
+
+    for flag, registry in (
+        ("parser", PARSERS),
+        ("chunker", CHUNKERS),
+        ("embedder", EMBEDDERS),
+        ("index", INDEXES),
+        ("reranker", RERANKERS),
+    ):
+        for spec in getattr(args, flag) or ():
+            registry.parse_spec(spec)
+
+
 def _sweep(args: argparse.Namespace) -> int:
     from contextgrid.evalset import read_jsonl
     from contextgrid.lab import Lab
     from contextgrid.report import build_manifest, format_leaderboard, write_bundle
+
+    _check_sweep_specs(args)
 
     lab = Lab(args.corpus)
     evalset = read_jsonl(args.evalset)

@@ -146,6 +146,25 @@ by the same margin as everything else.
 </Step>
 </Steps>
 
+The `chunks` column is the part worth staring at: `3` chunks from `3` documents. At
+`recursive:512` these documents are shorter than one chunk, so nothing was ever cut and every
+score above is really "did the right *document* rank in the top 5 of three". The run says so
+itself, on `results.warnings` rather than in the summary line:
+
+```python
+for warning in results.warnings:
+    print(warning)
+```
+
+```text
+CAUTION [chunk] (recursive:512): recursive:512 produced 3 chunk(s) from 3 document(s), so each document is a single chunk and these scores rank documents rather than passages. The chunker axis cannot change a number it never touched -- sweep smaller sizes, or measure on longer documents
+CAUTION [score]: every one of the 3 configurations scored recall@5 = 1.000. Nothing here can be ranked: the eval set is answered perfectly by all of them, so the sweep measured no difference rather than finding none. Ask harder questions, or compare at a smaller cut-off (recall@1) where there is room to separate them
+```
+
+`contextgrid run` prints both of these under the leaderboard without being asked. From Python
+they are on `results.warnings`, and reading them is the difference between a number and a
+result.
+
 <Note>
 This corpus is three short paragraphs. Real recall differences between chunkers and indexes
 only show up once there is enough text, and enough overlapping evidence, for one strategy to

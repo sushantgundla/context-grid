@@ -206,6 +206,7 @@ class Runner:
         by_type = _slice_by_type(resolved, scores, self.headline)
         failures = diagnose(resolved, qrels, run, k=headline_k)
         _check_strategy_did_something(config, pipeline, len(resolved.items), span_log)
+        _check_chunking_can_be_seen(config, pipeline, warnings)
 
         # A no-op when `config.generator` is unset: no assembly, no model call, no cost, same
         # as before this axis existed. Folds `faithfulness` and `answer_relevancy` in when a
@@ -805,6 +806,53 @@ def _check_strategy_did_something(
             questions=questions,
             searches=trace.searches,
         )
+
+
+def _check_chunking_can_be_seen(config: Config, pipeline: Any, log: WarningLog) -> None:
+    """Say when the chunker never cut anything, so the score is about documents.
+
+    A chunk size above the length of the documents leaves every document whole. Retrieval then
+    ranks documents, recall@5 out of a handful of them is close to free, and the number goes
+    to 1.000 and stays there -- across every chunker, every index, every reranker. Read off a
+    leaderboard, that is a clean sweep of tied configurations. It is actually a sweep in which
+    the axis under test was never applied.
+
+    `contextgrid profile` already knew: "The median document is 1,224 characters. Chunk sizes
+    above that cannot differentiate, so sweep small sizes." But `profile` is a separate command
+    nothing prompts you to run, and the leaderboard is what gets copied into a decision. The
+    fact belongs next to the number it undermines.
+
+    Deliberately measured against the parses rather than the corpus, because that is what the
+    chunker was handed -- a document the parser dropped is not one the chunker declined to cut.
+    """
+    parses = getattr(pipeline, "parses", None)
+    chunks = getattr(pipeline, "chunks", None)
+    if not parses or not chunks:
+        # No documents, or no chunks at all. `EMPTY_CHUNK_SET` and `GOLD_SPAN_UNREACHABLE`
+        # cover the second case, and say more about it than this could.
+        return
+
+    documents = len(parses)
+    if len(chunks) > documents:
+        return
+
+    log.add(
+        WarningCode.ONE_CHUNK_PER_DOCUMENT,
+        f"{config.chunker} produced {len(chunks)} chunk(s) from {documents} document(s), so "
+        "each document is a single chunk and these scores rank documents rather than "
+        "passages. The chunker axis cannot change a number it never touched -- sweep smaller "
+        "sizes, or measure on longer documents",
+        severity=Severity.CAUTION,
+        # The chunker, not the whole config label. This is a fact about one chunker meeting
+        # this corpus, and a five-row sweep holding four `recursive:512` arms re-derives the
+        # identical fact four times -- `WarningLog.extend_unique` collapses those to one only
+        # while the subject and the message agree, which is what keeps the real finding from
+        # being buried under copies of itself.
+        stage="chunk",
+        subject=config.chunker,
+        documents=documents,
+        chunks=len(chunks),
+    )
 
 
 def _character_metrics(

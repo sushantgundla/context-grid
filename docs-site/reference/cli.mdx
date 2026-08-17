@@ -36,7 +36,7 @@ options:
 ```
 
 Running `contextgrid` with no command prints this same help and exits `1`. `contextgrid
---version` prints `context-grid <version>` (e.g. `context-grid 0.9.0`) and exits `0`.
+--version` prints `context-grid <version>` (e.g. `context-grid 0.9.2`) and exits `0`.
 
 Every command catches its own exceptions and prints `error: <message>` to stderr rather than a
 Python traceback, then exits `1`. The three commands below are the ones most people reach for
@@ -224,6 +224,20 @@ what it's for.
 |---|---|
 | `contextgrid profile <corpus> [--parser markdown]` | Measure a corpus's shape (file count, size, structure) and print hints about which axis values it rules out, before you spend a sweep finding out. |
 | `contextgrid sweep <corpus> <evalset.jsonl> [--parser ...] [--chunker ...] ...` | A one-shot sweep from flags alone, no YAML file — the CLI equivalent of building a `cg.Lab` and calling `.grid()` in Python. See [The Lab](/lab/overview). |
+
+**Sweeping an axis from flags: repeat the flag.** `--parser`, `--chunker`, `--embedder`,
+`--index` and `--reranker` each collect every occurrence, so one value per flag and the flag as
+many times as you have values:
+
+```bash
+contextgrid sweep ./corpus ./questions.jsonl \
+  --chunker recursive:256 --chunker recursive:512 --chunker sentence:3 \
+  --index dense --index bm25
+```
+
+A comma-separated list is not supported and is not a silent no-op — `--chunker
+recursive:128,recursive:256` reads as a single chunker named `recursive` with a stray second
+parameter, and the command says so and exits `1` before running anything.
 | `contextgrid plugins [--family parser]` | List every registered name on every axis, for this installation specifically — which extras are installed changes what shows up. |
 | `contextgrid evalset <path>` | Load a JSONL or CSV eval set and print its quality summary and question-type distribution, without running a sweep. See [Eval Set Quality](/evalsets/quality). |
 | `contextgrid diff <before.json> <after.json>` | Explain what changed between two `manifest.json` files from earlier bundled runs. |

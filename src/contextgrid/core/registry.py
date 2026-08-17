@@ -14,6 +14,9 @@ raise `ModuleNotFoundError: No module named 'docling'` from four frames down.
 from __future__ import annotations
 
 import importlib
+import inspect
+import types
+import typing
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -23,6 +26,14 @@ from contextgrid.core.errors import ContextGridError, MissingExtraError
 T = TypeVar("T")
 
 Factory = Callable[..., Any]
+
+
+class SpecValueError(ContextGridError, ValueError):
+    """A spec string gave a parameter a value of the wrong kind.
+
+    Separate from `ContextGridError` so a caller reporting many problems at once can tell that
+    this message already names its axis and its spec, and does not want them prefixed on again.
+    """
 
 
 class UnknownPluginError(ContextGridError, KeyError):
@@ -197,8 +208,61 @@ class Registry(Generic[T]):
                         else f" (only the first value may be bare, meaning "
                         f"{registration.shorthand}={raw!r})"
                     )
+                    + self._list_hint(raw)
                 )
+
+        self._check_param_types(spec, registration, params)
         return name, params
+
+    def _list_hint(self, raw: str) -> str:
+        """An extra clause for the case where the comma was meant to separate two plugins.
+
+        `--chunker recursive:128,recursive:256` is the obvious guess and it parses as one spec
+        with a stray second value, so the honest `must be written as key=value` answers a
+        question the user was not asking. A comma-separated part that names a plugin of this
+        family is not a mistyped parameter, it is a list -- and the fix is a different shape
+        entirely, so say which one.
+        """
+        if self.name_in(raw) not in self._entries:
+            return ""
+        return (
+            f". To sweep several {self.family}s, give one value per entry -- a YAML list in a "
+            "config file, or the command-line flag repeated once per value"
+        )
+
+    def _check_param_types(
+        self, spec: str, registration: Registration, params: dict[str, Any]
+    ) -> None:
+        """Refuse a parameter whose value is not the kind of thing the plugin takes.
+
+        A spec string carries no types, so `_coerce` guesses from the text: `512` becomes an
+        int and `banana` stays a str, because that is all it can know. The str then travelled
+        all the way into the chunker and met `self.size // 8`, and what reached the user was
+        `unsupported operand type(s) for //: 'str' and 'int'` -- a sentence about the inside of
+        a class, from a tool whose premise is that nobody has to read its source.
+
+        Every other way of getting a spec wrong already reads well. A bad name lists the real
+        ones, a bad sign says `chunk size must be positive, got -5`. Only a bad *type* fell
+        through, and it fell through in seven places, so the check belongs here rather than in
+        seven `__post_init__` methods -- the eighth would be written without it.
+
+        Two deliberate limits. Only in-tree plugins are checked, because reading a lazy
+        plugin's annotations means importing it, and `parse_spec` is supposed to work on a
+        machine where the optional package is not installed. And only parameters annotated
+        purely with `int`, `float`, `str`, `bool` or `None` are judged; anything richer -- a
+        tokenizer, an embedder, a tuple of separators -- is left to the plugin, which knows
+        what it will accept and this does not.
+        """
+        if registration.factory is None or not params:
+            return
+        hints = _parameter_types(registration.factory)
+        for key, value in params.items():
+            allowed = _simple_types_in(hints.get(key))
+            if allowed is None or _acceptable(value, allowed):
+                continue
+            raise SpecValueError(
+                f"{self.family} {spec!r}: {key} must be {_wanted(allowed)}, got {value!r}"
+            )
 
     def _split_name(self, spec: str) -> tuple[str, str]:
         """Separate the plugin name from its parameters.
@@ -256,6 +320,91 @@ class Registry(Generic[T]):
 
     def __iter__(self) -> Iterator[Registration]:
         return iter(self._entries.values())
+
+
+#: The types a spec string can express, and therefore the only ones worth judging.
+_SIMPLE: frozenset[type] = frozenset({int, float, str, bool, type(None)})
+
+#: Resolved annotations per factory. `get_type_hints` re-evaluates every annotation in the
+#: module's namespace, and `from __future__ import annotations` means it has to; doing that on
+#: every spec in a sweep would be a measurable cost for an answer that cannot change.
+_HINTS: dict[Any, Mapping[str, Any]] = {}
+
+
+def _parameter_types(factory: Factory) -> Mapping[str, Any]:
+    """The factory's parameter annotations, resolved to real types, cached, never raising.
+
+    A plugin whose annotations cannot be resolved -- a forward reference to something only
+    imported under `TYPE_CHECKING`, most likely -- gets no checking rather than a crash. Failing
+    to validate is a much smaller problem than refusing to build.
+    """
+    try:
+        return _HINTS[factory]
+    except KeyError:
+        pass
+    except TypeError:  # pragma: no cover - an unhashable factory, which nothing here is
+        return {}
+
+    try:
+        hints = dict(typing.get_type_hints(factory))
+        wanted = set(inspect.signature(factory).parameters)
+        resolved: Mapping[str, Any] = {k: v for k, v in hints.items() if k in wanted}
+    except Exception:
+        # Any resolution failure at all means "cannot judge this one", which is the safe
+        # answer: not validating a parameter costs less than refusing to build a good plugin.
+        resolved = {}
+
+    _HINTS[factory] = resolved
+    return resolved
+
+
+def _simple_types_in(annotation: Any) -> frozenset[type] | None:
+    """The set of plain types an annotation admits, or None when it is not that simple.
+
+    `int` and `int | None` are answerable. `str | Tokenizer | None` and `tuple[str, ...]` are
+    not, and returning None for them is what keeps this from second-guessing a plugin that
+    takes a real object.
+    """
+    if annotation in _SIMPLE:
+        return frozenset({annotation})
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        members = typing.get_args(annotation)
+        if all(member in _SIMPLE for member in members):
+            return frozenset(members)
+    return None
+
+
+def _acceptable(value: Any, allowed: frozenset[type]) -> bool:
+    """Whether a coerced spec value fits. Numeric widening only, and only upwards.
+
+    An `int` where a `float` is wanted is fine -- that is ordinary Python. A `float` where an
+    `int` is wanted is not: `recursive:1.5` is a chunk size somebody meant to type differently,
+    and silently truncating it would make the manifest disagree with the config file.
+    """
+    if value is None:
+        return type(None) in allowed
+    if isinstance(value, bool):
+        return bool(allowed & {bool, int, float})
+    if isinstance(value, int):
+        return bool(allowed & {int, float, bool})
+    if isinstance(value, float):
+        return float in allowed
+    if isinstance(value, str):
+        return str in allowed
+    return True  # pragma: no cover - `_coerce` produces nothing else
+
+
+def _wanted(allowed: frozenset[type]) -> str:
+    """What the parameter takes, in words, since the reader is not looking at the signature."""
+    names = {int: "a whole number", float: "a number", str: "text", bool: "true or false"}
+    kinds = [names[kind] for kind in (int, float, str, bool) if kind in allowed]
+    if type(None) in allowed:
+        kinds.append("none")
+    if not kinds:  # pragma: no cover - an annotation of bare `None`, which nothing uses
+        return "nothing"
+    if len(kinds) == 1:
+        return kinds[0]
+    return " or ".join([", ".join(kinds[:-1]), kinds[-1]])
 
 
 def _coerce(value: str) -> Any:

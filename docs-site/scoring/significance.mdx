@@ -188,11 +188,25 @@ questions is not the same as the aggregate gap being real.
 
 ```python
 print(result.verdict())
-# bm25 and dense are not distinguishable on this eval set (n=8). The gap of +0.250 on
-# recall@5 sits inside the confidence interval +0.062 to +0.500, so it is consistent with
-# no difference at all. Settling a gap this size would take roughly 63 questions -- on a
-# two-sided test at alpha 0.05 with 80% power, assuming per-question scores vary as much as
-# a 0-1 score possibly can. It is an order of magnitude, not a count.
+# bm25 and dense are not distinguishable on this eval set (n=8). The gap of +0.250 on recall@5
+# has a confidence interval of +0.062 to +0.500, which does stay clear of zero, but the
+# p-value of 0.245 is not below alpha 0.05. Both have to hold before this package will name a
+# winner, so on this evidence the ranking could still come down to which questions were asked.
+# Settling a gap this size would take roughly 63 questions -- on a two-sided test at alpha
+# 0.05 with 80% power, assuming per-question scores vary as much as a 0-1 score possibly can.
+# It is an order of magnitude, not a count.
+```
+
+Note which half of the rule failed here, because the sentence says so. The interval
+`+0.062 to +0.500` never touches zero, so `excludes_zero` is `True`; it's the p-value that
+doesn't clear `alpha`. When the *interval* is the half that fails, the wording changes to match:
+
+```python
+print(compare({"q1": 1.0, "q2": 0.0}, {"q1": 0.0, "q2": 1.0}, left="bm25", right="dense").verdict())
+# bm25 and dense are not distinguishable on this eval set (n=2). The gap of +0.000 on recall@5
+# sits inside the confidence interval -1.000 to +1.000, so it is consistent with no difference
+# at all. They average exactly the same score while disagreeing on individual questions, so no
+# number of questions like these would separate them.
 ```
 
 The negative case gets the longer explanation on purpose — a reader who's told "not
