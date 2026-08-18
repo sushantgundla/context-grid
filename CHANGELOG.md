@@ -6,7 +6,37 @@ called out here when it does.
 
 ## [Unreleased]
 
-Nothing yet.
+Nothing here changes the package. Every entry is a documentation page or a check that was
+supposed to be watching one, and they are grouped together because they share a cause: three
+separate things reported success while the thing they measured was broken.
+
+### Fixed
+
+- **`/reference/reports` had 404'd since the site was created.** The page was written, listed in
+  `docs.json` navigation, and linked from five other pages. It contained one JSX attribute with
+  a backslash escape — `default="\"\""` — which MDX will not parse, so the build refused that
+  page, published the other thirty-seven, and reported success. The only symptom anywhere was a
+  404 behind five working links. Single quotes hold an empty string without an escape.
+- **The docs check raced the deploy it was checking.** Its first real run failed seven seconds
+  after a push, against a page that went live forty-five seconds later. It now retries to a
+  twelve-minute deadline, so a site that rebuilds slowly passes and only a site that never
+  rebuilds fails.
+- **The release smoke check kept failing on releases that worked.** v0.9.4 uploaded correctly and
+  installed everywhere it was tried, and the workflow still went red: one runner's PyPI mirror
+  sat out all twelve attempts. This was the second time the budget was too small and the third
+  value it has had, each set from how long propagation took on the previous release — which is
+  the mistake, because one sample says nothing about the upper bound. It is now a twenty-minute
+  deadline.
+
+### Added
+
+- **A docs workflow.** Nothing deployed or checked the documentation site, which is how it served
+  0.9.0 pages for two releases without anyone noticing. It now checks that every page in
+  `docs.json` exists, that every internal link resolves, that no page carries MDX a build would
+  refuse, and that the version printed in the docs matches the package — then fetches the
+  published site and fails when a navigation page 404s or the published version is behind. The
+  source-side checks passed the entire time the site was broken, which is why the job that reads
+  the real site is the one that matters.
 
 ## [0.9.4] — 2026-08-18
 
