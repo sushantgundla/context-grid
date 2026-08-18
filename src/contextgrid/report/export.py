@@ -30,6 +30,19 @@ if TYPE_CHECKING:  # pragma: no cover - import only for the annotation
     from contextgrid.config.schema import ExperimentConfig
 
 
+#: What a leaderboard cell holds when the run never computed that metric.
+#:
+#: A word rather than a dash or a blank, and the same word in the terminal table and in
+#: `report.md`, because the two used to print `0.000` there and a reader has no way to tell a
+#: measured nought from a metric nobody ran. `RunResult.row` omits such a metric deliberately
+#: -- "A number nobody measured is the most dangerous thing this package can print" -- and both
+#: renderers restored it with a zero default. Greppable, and it does not read as a score.
+#:
+#: The em dash used for the generation columns is left alone: there, absence means "this sweep
+#: had no generator", which is an expected shape of run rather than a hole in the headline.
+NOT_MEASURED = "NOT_MEASURED"
+
+
 def config_to_yaml(config: Config, *, manifest: Manifest | None = None) -> str:
     """The configuration as YAML, hand-written rather than via a dependency.
 
@@ -285,7 +298,11 @@ def results_to_markdown(
     align += "---:|---:|---:|"
     lines += [header, align]
     for row in results.leaderboard(metric, extra=generation_columns)[:limit]:
-        cells = f"| `{row['config']}` | {row.get(metric, 0):.3f} |"
+        # `NOT_MEASURED` rather than `0.000` for a metric this run never computed -- the same
+        # word the terminal table prints, so the captured leaderboard and the report a decision
+        # gets pasted into cannot say different things about the same empty cell.
+        headline = f"{row[metric]:.3f}" if metric in row else NOT_MEASURED
+        cells = f"| `{row['config']}` | {headline} |"
         for name in generation_columns:
             cells += f" {row[name]:.3f} |" if name in row else " — |"
         cells += (
@@ -657,9 +674,16 @@ def _manifest_from_paths(
 
     Three things have to be there: a winning configuration, the documents and the questions.
     They are exactly the three `contextgrid sweep --bundle` passes to `build_manifest`, and
-    the resolution policy and seeds are left at their defaults for the same reason it leaves
-    them -- so a bundle written by hand and a bundle written by the CLI hash identically for
-    the same run.
+    the resolution policy is left at its default for the same reason it leaves it -- so a
+    bundle written by hand and a bundle written by the CLI hash identically for the same run.
+
+    The seed is not left at its default, it is read off the sweep. It used to be omitted for
+    that same "hash identically" reason, and the reasoning was wrong: the sweep did run with a
+    seed, and a manifest that records everything which could change a number cannot leave out
+    one it was handed. `contextgrid run` wrote `"seeds": {"run": 0}` and this wrote
+    `"seeds": {}`, so `contextgrid diff` between a `run` bundle and a `sweep` bundle reported
+    `seeds.run: 0 -> None` -- a change that never happened, from the one command whose job is
+    saying what changed. Both routes read `Results.seed`, so they still agree to the hash.
 
     Reading the corpus off disk assumes it still holds what the sweep read, which is the
     assumption `winning-config.yaml` in the same directory already makes when it names that
@@ -680,7 +704,7 @@ def _manifest_from_paths(
     except (OSError, ValueError, ContextGridError):
         return None
 
-    return build_manifest(winner.config, documents, questions)
+    return build_manifest(winner.config, documents, questions, seeds={"run": results.seed})
 
 
 def _experiment_from_paths(
@@ -756,6 +780,13 @@ def format_leaderboard(results: Results, metric: str = "recall@5", limit: int = 
     hold any metric name misaligned on `hit_rate@10` -- a built-in, not something exotic -- and
     on any custom name past that: the heading overflowed its column, the numbers stayed put
     underneath, and the rule under both was a third column's width short of either.
+
+    A metric cell a run never measured prints `NOT_MEASURED`, not `0.000`. `RunResult.row`
+    leaves such a metric out of the row on purpose, and this function put it straight back with
+    `row.get(metric, 0)` -- so a sweep whose every anchor pointed at a document not in the
+    corpus printed five configurations tied at `0.000`, which reads as five measured failures
+    rather than five things nobody managed to measure. The row is the honest one; this was the
+    renderer disagreeing with it.
     """
     rows = results.leaderboard(metric)[:limit]
     if not rows:
@@ -764,7 +795,10 @@ def format_leaderboard(results: Results, metric: str = "recall@5", limit: int = 
     # Widths come off the rendered text, headings included. A heading is as much a cell as a
     # value is, and it is the one that varies.
     width = max([len("configuration"), *(len(str(row["config"])) for row in rows)])
-    metric_width = max(len(metric), 8)
+    # Wide enough for the absent-value word, but only when a row actually needs it, so an
+    # ordinary leaderboard of numbers keeps the width it has always had.
+    unmeasured = any(metric not in row for row in rows)
+    metric_width = max(len(metric), len(NOT_MEASURED) if unmeasured else 0, 8)
     p95_width = max(len("p95 ms"), 8)
     cost_width = max(len("$/1k"), 8)
 
@@ -776,8 +810,13 @@ def format_leaderboard(results: Results, metric: str = "recall@5", limit: int = 
     # drift away from it the way a hand-added `+ 28` did.
     lines = [header, "-" * len(header)]
     for row in rows:
+        score = (
+            f"{row[metric]:{metric_width}.3f}"
+            if metric in row
+            else f"{NOT_MEASURED:>{metric_width}}"
+        )
         lines.append(
-            f"{row['config']:{width}} {row.get(metric, 0):{metric_width}.3f} "
+            f"{row['config']:{width}} {score} "
             f"{row.get('p95_ms', 0):{p95_width}.1f} {row.get('cost_per_1k', 0):{cost_width}.4f}"
         )
     return "\n".join(lines)

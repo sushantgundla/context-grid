@@ -192,7 +192,17 @@ def generate(
 
     The result is a draft. It has not been filtered and no human has seen it, and the
     warnings say so.
+
+    `sample` is a number of chunks; `None` means every usable one. `0` means none of them --
+    it used to mean all of them, because `if sample` cannot tell zero from `None`, while
+    `sample=-1` quietly returned an empty draft. The two ends of the nonsense disagreed.
     """
+    if sample is not None and sample < 0:
+        raise ValueError(
+            f"sample must be 0 or more, or None for every usable chunk, got {sample}. "
+            "A negative sample is not a smaller sample, it is a slice that means something else."
+        )
+
     log = WarningLog()
     usable = [chunk for chunk in chunks if len(_WORD.findall(chunk.text)) >= min_chunk_words]
     skipped = len(chunks) - len(usable)
@@ -207,7 +217,7 @@ def generate(
         )
         return Generation(EvalSet(id=evalset_id, items=()), log, 0, skipped)
 
-    chosen = _spread_sample(usable, sample, seed) if sample else usable
+    chosen = usable if sample is None else _spread_sample(usable, sample, seed)
 
     fit = getattr(generator, "fit", None)
     if callable(fit):

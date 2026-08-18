@@ -110,9 +110,18 @@ def test_a_bundle_built_by_hand_matches_the_one_the_cli_builds(tmp_path: Path) -
     evalset = EvalSet(id="quiz", items=(EvalItem(id="q1", question="What is the notice?"),))
     questions = write_jsonl(evalset, tmp_path / "quiz.jsonl")
 
-    write_bundle(one_run(), tmp_path / "bundle", metric="recall@3", corpus=docs, evalset=questions)
+    results = one_run()
+    write_bundle(results, tmp_path / "bundle", metric="recall@3", corpus=docs, evalset=questions)
 
-    by_hand = build_manifest(Config(index="bm25"), Corpus.from_dir(docs), evalset)
+    # The seed is one of the inputs, so the hand-built side has to be handed it too. Read off
+    # the same `Results` rather than written as a literal `0`, so this keeps checking that the
+    # two routes agree rather than that they both happen to match a number typed here.
+    by_hand = build_manifest(
+        Config(index="bm25"),
+        Corpus.from_dir(docs),
+        evalset,
+        seeds={"run": results.seed},
+    )
     in_bundle = Manifest.load(tmp_path / "bundle" / "manifest.json")
     assert in_bundle.hash() == by_hand.hash()
 
@@ -640,7 +649,14 @@ def test_a_match_that_failed_on_its_index_knows_the_quote_was_there() -> None:
 
 
 def _printed_floor(quality: EvalSetQuality) -> float:
-    match = re.search(r"detects differences of ([0-9.]+) and above", quality.summary())
+    """The noise floor as `summary()` prints it.
+
+    The sentence changed in 0.9.4 -- "detects differences of X and above" was a promise the
+    paired test in `compare()` does not keep, so it now reads "differences below about X are
+    noise". The property this test is about did not change: the number printed still has to be
+    one `can_support` accepts.
+    """
+    match = re.search(r"differences below about ([0-9.]+) are noise", quality.summary())
     assert match is not None, quality.summary()
     return float(match.group(1))
 

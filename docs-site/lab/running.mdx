@@ -379,28 +379,44 @@ the {generator_name!r} generator failed on {question_id!r}: {error}. That questi
 rather than failing the run
 ```
 
-**A configuration that cannot be built at all stops the whole sweep.** Give `grid()` a chunker,
-embedder, index or reranker spec that does not exist, and `lab.run()` raises — it does not skip
-that one configuration and continue to the next:
+**A configuration that cannot be built is one lost row, not a lost sweep.** Give `grid()` a
+chunker, embedder, index or reranker spec that does not exist, and that configuration is left
+out of the leaderboard with a `configuration_failed` warning saying so. Every other
+configuration still runs:
 
 ```python
 lab = cg.Lab(corpus=corpus)
 lab.grid(chunker=["recursive:512", "not-a-real-chunker:512"], index="dense")
-try:
-    lab.run(evalset, mode="ofat")
-except Exception as error:
-    print(f"{type(error).__name__}: {error}")
+results = lab.run(evalset, mode="ofat")
+
+print(len(results.runs), "of 2 configurations ran")
+for w in results.warnings:
+    if w.code.name == "CONFIGURATION_FAILED":
+        print(w.message)
 ```
 
 ```text
-UnknownPluginError: no chunker named 'not-a-real-chunker'. Available: chonkie:code,
-chonkie:recursive, chonkie:sentence, chonkie:token, fixed, langchain:character,
-langchain:markdown, langchain:recursive, recursive, semantic, sentence, structural
+1 of 2 configurations ran
+markdown · not-a-real-chunker:512 · tfidf · dense could not be run: UnknownPluginError: no
+chunker named 'not-a-real-chunker'. Available: chonkie:code, chonkie:recursive,
+chonkie:sentence, chonkie:token, fixed, langchain:character, langchain:markdown,
+langchain:recursive, recursive, semantic, sentence, structural. That configuration is absent
+from the leaderboard rather than scored zero -- a zero is a measurement, and nothing here
+measured it. The rest of the sweep carried on
 ```
 
-There is no per-configuration try/except around building a pipeline — a typo in a spec string,
-or a plugin that genuinely cannot run in this environment (a missing extra, for instance), takes
-the whole sweep down with it rather than showing up as a gap on the leaderboard. Impossible
-*combinations* of otherwise-valid values (a dense index with no embedder) are the exception:
-those are dropped before the sweep starts, not discovered by trying to build them — see
-[Defining a Sweep](/lab/grid).
+The same containment covers a plugin that genuinely cannot run in this environment — a missing
+extra, for instance. `contextgrid run` prints the reason on **stdout** as well as stderr when
+the failure leaves nothing measured at all, and exits `1`, so a matrix whose every cell needs
+an uninstalled extra cannot come back green with an empty leaderboard.
+
+<Note>
+  Absent, not zero. A failed configuration has no row rather than a row of `0.000`, because a
+  zero is a measurement and nothing here measured anything. The same rule governs a metric no
+  run computed: `leaderboard()` omits the key, and both the terminal table and `report.md`
+  print `NOT_MEASURED` in that cell.
+</Note>
+
+Impossible *combinations* of otherwise-valid values (a dense index with no embedder) are the
+exception in the other direction: those are dropped before the sweep starts, not discovered by
+trying to build them — see [Defining a Sweep](/lab/grid).

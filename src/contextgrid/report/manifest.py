@@ -8,7 +8,10 @@ versions, the seeds.
 Two properties follow, and both are load-bearing.
 
 **Two runs with the same manifest hash must produce identical numbers.** If they do not,
-something outside the manifest is affecting results, and that is a bug worth finding.
+something outside the manifest is affecting results, and that is a bug worth finding. Read the
+other way round, two runs that must produce identical numbers should not be told they differ:
+an axis value that names the same run as leaving the axis out is folded before anything is
+compared, so `retrieval: simple` and no retrieval at all are one manifest, not two.
 
 **When a metric drops, diff the manifest against the last passing run.** The changed line is
 the suspect. That turns regression triage from an investigation into a comparison, and it is
@@ -21,6 +24,7 @@ import hashlib
 import json
 import platform
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,7 +64,10 @@ class Manifest:
         run's manifest unique, which would defeat the point.
         """
         payload = {
-            "config": self.config,
+            # Normalised, so that two spellings of one configuration hash the same. The
+            # stored `config` is left exactly as the run wrote it; only the comparison is
+            # folded. See `_same_run`.
+            "config": _same_run(self.config),
             "corpus_hash": self.corpus_hash,
             "evalset_id": self.evalset_id,
             "evalset_version": self.evalset_version,
@@ -164,11 +171,71 @@ def evalset_hash(evalset: EvalSet) -> str:
     return digest.hexdigest()
 
 
+#: Axis values that name the same run as leaving the axis out.
+#:
+#: Every one of these is folded by `grid.matrix._fold`, which is where the claim that they are
+#: identical lives. `retrieval: "simple"` is the one `_fold` declines to fold, and it says why
+#: in the same breath as saying the two are the same run: folding it would make `simple`
+#: unusable as an explicit baseline name, which is how it is mostly written. That is a good
+#: reason to keep both spellings in a sweep and no reason at all to call them a difference.
+_SAME_AS_UNSET: dict[str, str] = {
+    "ingestion": "plain",
+    "transform": "none",
+    "reranker": "none",
+    "retrieval": "simple",
+}
+
+
+def _same_run(config: Mapping[str, Any]) -> dict[str, Any]:
+    """One configuration written one way, whichever way it was spelled.
+
+    For comparing only. The manifest keeps recording what the user actually wrote, because
+    `manifest.json` is the record of the run and rewriting `simple` to `null` in it would make
+    the file disagree with the `winning-config.yaml` written beside it.
+
+    The symptom this exists for: `contextgrid run` over a starter config naming
+    `retrieval: [simple]`, and `contextgrid sweep` over the same corpus, wrote manifests that
+    diffed as `config.retrieval: 'simple' -> None`. Both ran `SimpleRetrieval`. `Config.label`
+    already renders them as one row -- `if self.retrieval and self.retrieval != "simple"` --
+    so the leaderboard, the report and the bundle filename all agreed the two were one
+    configuration, and `diff` alone said otherwise.
+    """
+    normalised = dict(config)
+    for axis, alias in _SAME_AS_UNSET.items():
+        if normalised.get(axis) == alias:
+            normalised[axis] = None
+
+    # Candidate depth is only read when something reranks the candidates, so without a
+    # reranker it cannot change a number. `_fold` resets it for the same reason, and leaving
+    # it out here would let `candidates: 80` with no reranker read as a difference from
+    # `candidates: 50` with no reranker -- two runs that do the identical search.
+    if normalised.get("reranker") is None:
+        normalised["candidates"] = 50
+
+    return normalised
+
+
+#: The prefix `Results.manifest_note` stamps on a bundle whose sweep did not finish.
+PARTIAL_PREFIX = "PARTIAL RUN"
+
+
+def is_partial(manifest: Manifest) -> bool:
+    """Whether this manifest's bundle was written by a sweep that stopped early."""
+    return manifest.notes.startswith(PARTIAL_PREFIX)
+
+
 def diff(before: Manifest, after: Manifest) -> dict[str, tuple[Any, Any]]:
     """Everything that changed between two runs.
 
     The regression-triage tool. When a metric drops, this names the suspect instead of
     leaving somebody to reconstruct what was different from memory.
+
+    `notes` is compared like anything else, and it is the one field here that is not a
+    setting. It carries the `PARTIAL RUN` stamp, and leaving it out meant a complete sweep and
+    a sweep the budget cut off after one configuration compared as identical -- `explain_diff`
+    then said the two "should have produced identical numbers", about a run that never
+    measured most of its matrix. The most important difference between two bundles was the one
+    difference this function could not see.
     """
     changes: dict[str, tuple[Any, Any]] = {}
 
@@ -177,6 +244,7 @@ def diff(before: Manifest, after: Manifest) -> dict[str, tuple[Any, Any]]:
         ("evalset_id", before.evalset_id, after.evalset_id),
         ("evalset_version", before.evalset_version, after.evalset_version),
         ("evalset_hash", before.evalset_hash, after.evalset_hash),
+        ("notes", before.notes, after.notes),
     ]:
         if old != new:
             changes[key] = (old, new)
@@ -184,18 +252,62 @@ def diff(before: Manifest, after: Manifest) -> dict[str, tuple[Any, Any]]:
     for section in ("config", "resolution", "versions", "seeds"):
         old_section = getattr(before, section)
         new_section = getattr(after, section)
-        for key in sorted(set(old_section) | set(new_section)):
-            old_value = old_section.get(key)
-            new_value = new_section.get(key)
-            if old_value != new_value:
-                changes[f"{section}.{key}"] = (old_value, new_value)
+        # Whether an axis changed is decided on the folded values, the same way `hash()` folds
+        # them, so `matches()` and `diff` cannot give two answers about one pair of manifests
+        # -- one from the API and the other from `contextgrid diff`.
+        #
+        # What gets *printed* is what each manifest actually recorded. Deciding and reporting
+        # on the folded values would swap the user's own word for the fold's: somebody who
+        # swept `retrieval: simple` against `widened` would read
+        # `config.retrieval: None -> 'widened'` and go looking for the run that set it to
+        # null. There isn't one.
+        old_compared = _same_run(old_section) if section == "config" else old_section
+        new_compared = _same_run(new_section) if section == "config" else new_section
+        for key in sorted(set(old_compared) | set(new_compared)):
+            if old_compared.get(key) != new_compared.get(key):
+                changes[f"{section}.{key}"] = (old_section.get(key), new_section.get(key))
 
     return changes
 
 
 def explain_diff(before: Manifest, after: Manifest) -> str:
-    """The difference between two runs, in plain English."""
+    """The difference between two runs, in plain English.
+
+    Opens with the partial-run warning whenever there is one, ahead of the change list,
+    because it changes what every line under it is worth. Comparing a finished sweep against
+    one that ran a third of its matrix is not a comparison of two experiments, and the reader
+    has to know that before they read which axis moved.
+    """
+    partial = [
+        f"the {side} run" for side, m in (("before", before), ("after", after)) if is_partial(m)
+    ]
+    warning: list[str] = []
+    if partial:
+        both = len(partial) == 2
+        warning = [
+            f"**{' and '.join(partial).capitalize()} did not finish.** "
+            f"{'Both bundles were' if both else 'That bundle was'} written by a sweep that "
+            f"stopped early, so {'neither describes' if both else 'it does not describe'} the "
+            "whole matrix. Anything below is a comparison of the winning configurations these "
+            "two runs happened to reach, not of the two experiments.",
+            "",
+        ]
+        for side, manifest in (("before", before), ("after", after)):
+            if is_partial(manifest):
+                warning.insert(-1, f"  {side}: {manifest.notes}")
+
     changes = diff(before, after)
+    if warning and set(changes) <= {"notes"}:
+        # Nothing else moved, so there is no change list worth printing under the warning --
+        # but "nothing is different" would be exactly the wrong sentence to end on here.
+        return "\n".join(
+            [
+                *warning,
+                "Nothing else in these two manifests is different: same winning configuration, "
+                "corpus, eval set, resolution policy, versions and seeds.",
+            ]
+        )
+
     if not changes:
         # The old wording here said "these two runs should have produced identical numbers",
         # which claims more than a manifest can support. A manifest records the configuration
@@ -218,8 +330,12 @@ def explain_diff(before: Manifest, after: Manifest) -> str:
             "the manifest is affecting results and that is worth finding."
         )
 
-    lines = [f"{len(changes)} thing(s) changed between these runs:"]
-    for key, (old, new) in changes.items():
+    # `notes` is prose, and it is already spelled out in full in the warning above. Repeating
+    # a two-sentence PARTIAL RUN stamp inside a list of `axis: old -> new` lines makes the
+    # short lines around it unreadable.
+    listed = {key: value for key, value in changes.items() if key != "notes"}
+    lines = [*warning, f"{len(listed)} thing(s) changed between these runs:"]
+    for key, (old, new) in listed.items():
         lines.append(f"  {key}: {old!r} -> {new!r}")
 
     if "corpus_hash" in changes:

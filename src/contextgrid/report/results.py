@@ -40,7 +40,24 @@ class RunResult:
     scored_queries: int = 0
     unresolved_gold: int = 0
     run: dict[str, list[str]] = field(default_factory=dict)
+    #: Per-question scores for the headline metric, named by `headline`.
+    #:
+    #: Kept flat and kept under this name because `results.json` has always carried it and a
+    #: bundle written by an older version still has to read back. The whole table lives in
+    #: `per_query_by_metric`; this is the one column of it that predates the table.
     per_query: dict[str, float] = field(default_factory=dict)
+    #: Per-question scores for every `metric@k` this run computed, keyed by that same label.
+    #:
+    #: There used to be no table -- only the flat `per_query` above -- and every paired test
+    #: read it whatever metric it had been asked for. `significance(metric="recall@1")` came
+    #: back with the recall@5 means, the recall@5 interval and `metric='recall@1'` stamped on
+    #: the result, so a configuration retrieving nearly three times as well at k=1 was reported
+    #: as indistinguishable from its rival. A metric argument that reaches the label and not
+    #: the arithmetic is worse than no metric argument at all.
+    per_query_by_metric: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: Which `metric@k` `per_query` holds, so a run that predates `per_query_by_metric` can
+    #: still say which single metric it is able to answer for.
+    headline: str = "recall@5"
     #: How many searches and model calls the retrieval strategy made, across every question.
     #:
     #: Two strategies with the same recall and different `model_calls` are a decision, not a
@@ -70,16 +87,40 @@ class RunResult:
     #: honoured on a re-run. It exists so the row a person reads says which arm it stands for.
     folded_from: str | None = None
 
-    def interval(self, *, confidence: float = 0.95, seed: int | None = None) -> Interval | None:
-        """A confidence interval on the headline metric.
+    def per_query_for(self, metric: str) -> dict[str, float] | None:
+        """This run's per-question scores for one `metric@k`, or `None` if it has none.
+
+        `None` is the honest answer and the important one. Returning the headline's scores
+        instead is exactly what made `significance(metric=...)` answer about a metric nobody
+        asked about, so every caller here checks for `None` and refuses rather than
+        substituting a column that happens to be lying around.
+        """
+        scores = self.per_query_by_metric.get(metric)
+        if scores is not None:
+            return scores
+        # A run built before the table existed -- or by hand in a test -- can still answer for
+        # the one metric it kept.
+        if metric == self.headline and self.per_query:
+            return self.per_query
+        return None
+
+    def interval(
+        self, *, metric: str | None = None, confidence: float = 0.95, seed: int | None = None
+    ) -> Interval | None:
+        """A confidence interval on one metric, the headline by default.
 
         A single number with no interval is an opinion. This is what turns 0.71 into
         "0.71, and it could plausibly be anywhere from 0.63 to 0.79".
+
+        `metric` exists because a leaderboard ranked on `recall@1` printed `ci_low` and
+        `ci_high` beside it that had been resampled from the headline's scores -- an interval
+        that need not even contain the number it sat next to.
         """
-        if not self.per_query:
+        scores = self.per_query if metric is None else self.per_query_for(metric)
+        if not scores:
             return None
         seed = self.seed if seed is None else seed
-        return bootstrap_interval(list(self.per_query.values()), confidence=confidence, seed=seed)
+        return bootstrap_interval(list(scores.values()), confidence=confidence, seed=seed)
 
     @property
     def label(self) -> str:
@@ -127,7 +168,7 @@ class RunResult:
 
         return _composite(self.metrics, k=k)
 
-    def row(self, metrics: Sequence[str]) -> dict[str, Any]:
+    def row(self, metrics: Sequence[str], *, interval_metric: str | None = None) -> dict[str, Any]:
         """One leaderboard row.
 
         A metric this run never computed is left **out**, not filled with zero. It used to be
@@ -135,13 +176,17 @@ class RunResult:
         confident `0.0`, and a `0.0` fed to `composite()` is a measurement rather than a gap --
         so a configuration with perfect recall came back as 0/100. A number nobody measured is
         the most dangerous thing this package can print.
+
+        `interval_metric` names which column `ci_low`/`ci_high` describe. `leaderboard()`
+        passes the metric it ranked on, because an interval printed beside a number has to be
+        an interval on *that* number.
         """
         row: dict[str, Any] = {"config": self.label}
         row.update({name: self.metrics[name] for name in metrics if name in self.metrics})
         row["p95_ms"] = self.timings.percentile(0.95)
         row["cost_per_1k"] = self.cost.query_usd_per_1k
         row["chunks"] = self.chunk_count
-        interval = self.interval()
+        interval = self.interval(metric=interval_metric)
         if interval is not None:
             row["ci_low"] = interval.low
             row["ci_high"] = interval.high
@@ -258,7 +303,7 @@ class Results:
 
         columns = [metric, *wanted]
         ordered = sorted(self.runs, key=lambda r: -r.metric(metric))
-        return [run.row(columns) for run in ordered]
+        return [run.row(columns, interval_metric=metric) for run in ordered]
 
     def composite(self, metric: str = "recall@5", *, k: int | None = None) -> CompositeScore | None:
         """The leading configuration's 0-100 score, over what it actually measured.
@@ -307,9 +352,10 @@ class Results:
             missing = left if first is None else right
             raise KeyError(f"no run labelled {missing!r}")
 
+        left_scores, right_scores = _paired_scores(first, second, left, right, metric)
         differences = {
-            query_id: first.per_query[query_id] - second.per_query.get(query_id, 0.0)
-            for query_id in first.per_query
+            query_id: left_scores[query_id] - right_scores.get(query_id, 0.0)
+            for query_id in left_scores
         }
         disagreed = {q: d for q, d in differences.items() if abs(d) > 1e-9}
 
@@ -352,9 +398,14 @@ class Results:
         # with 0, so the manifest made a reproducibility claim the run did not honour.
         seed = self.seed if seed is None else seed
 
+        # The per-question scores for *this* metric, or a refusal. Reading `per_query`
+        # regardless of `metric` is what let this function answer about the headline while
+        # labelling the answer with whatever it had been asked for.
+        left_scores, right_scores = _paired_scores(first, second, left, right, metric)
+
         return compare_scores(
-            first.per_query,
-            second.per_query,
+            left_scores,
+            right_scores,
             left=left,
             right=right,
             metric=metric,
@@ -402,10 +453,24 @@ class Results:
         # "across 1 configurations" is the sort of thing that makes a reader wonder what else
         # was not proofread, and a sweep of one is a normal thing to run.
         swept = f"{len(self.runs)} configuration" + ("" if len(self.runs) == 1 else "s")
-        lines = [
-            f"{winner.label} scored best on {metric} at {winner.metric(metric):.3f}, "
-            f"across {swept}, scored on {winner.scored_queries} questions."
-        ]
+
+        # A ranking sentence only when there is a ranking. `metric()` defaults to 0.0 for a
+        # metric a run never computed, so a sweep where nothing could be scored used to open
+        # "X scored best on recall@5 at 0.000" -- naming a winner of a contest none of them
+        # entered, with a number the leaderboard beside it refuses to print. `best()` picks the
+        # first row by the same zero default, so the label was arbitrary too.
+        if not any(run.has(metric) for run in self.runs):
+            lines = [
+                f"No configuration produced a {metric} score, so there is no ranking here and "
+                f"nothing scored best. {swept.capitalize()} ran and "
+                f"{'it' if len(self.runs) == 1 else 'each'} scored "
+                f"{winner.scored_queries} questions."
+            ]
+        else:
+            lines = [
+                f"{winner.label} scored best on {metric} at {winner.metric(metric):.3f}, "
+                f"across {swept}, scored on {winner.scored_queries} questions."
+            ]
 
         # First, ahead of the winner sentence in every reader's eye, because "scored best
         # across 11 configurations" is a claim about a matrix of 18 and reads as the answer.
@@ -455,7 +520,11 @@ class Results:
             else:
                 lines.append(f"{stem} ({named}), because {gap_reason}.")
 
-        if len(ranked) > 1:
+        # Only when there is a ranking to talk about. With the metric absent everywhere, both
+        # sides of the fallback gap are `metric()`'s zero default, so the paragraph ended on
+        # "That is +0.000 against ..." -- a measured tie between two rows that measured
+        # nothing, which is the same false precision the leaderboard cell was fixed for.
+        if len(ranked) > 1 and any(run.has(metric) for run in self.runs):
             try:
                 verdict = self.is_the_winner_real(metric)
             except (KeyError, SignificanceError):
@@ -464,7 +533,7 @@ class Results:
                 verdict = None
             if verdict is not None:
                 lines.append(verdict.verdict())
-            else:
+            elif ranked[1].has(metric):
                 gap = winner.metric(metric) - ranked[1].metric(metric)
                 lines.append(f"That is {gap:+.3f} against {ranked[1].label}.")
 
@@ -520,6 +589,38 @@ class Results:
             )
 
         return " ".join(lines)
+
+
+def _paired_scores(
+    first: RunResult, second: RunResult, left: str, right: str, metric: str
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Both runs' per-question scores for one metric, or a refusal naming what is missing.
+
+    Refusing is the whole point. Every paired view in this module used to read `per_query`,
+    which holds the headline metric and nothing else, so asking about `recall@1` got an
+    answer computed from `recall@5` with `recall@1` written on it. An error a caller can read
+    is worth more than a confident number about the wrong question -- especially here, where
+    the number decides whether somebody ships a configuration.
+    """
+    scores = (first.per_query_for(metric), second.per_query_for(metric))
+    if scores[0] is not None and scores[1] is not None:
+        return scores[0], scores[1]
+
+    missing = [label for label, s in zip((left, right), scores, strict=True) if s is None]
+    raise SignificanceError(
+        f"no per-question scores for {metric!r} on {', '.join(repr(m) for m in missing)}, so "
+        f"this comparison cannot be tested on {metric!r}. A run keeps per-question scores for "
+        f"the metrics it computed; this one kept {_kept(first, second)}. Re-run the sweep with "
+        f"{metric!r} among its metrics, or compare on one of those."
+    )
+
+
+def _kept(first: RunResult, second: RunResult) -> str:
+    """Which metrics both runs can actually be tested on."""
+    shared = sorted(set(first.per_query_by_metric) & set(second.per_query_by_metric))
+    if not shared:
+        shared = sorted({first.headline} & {second.headline})
+    return ", ".join(repr(name) for name in shared) if shared else "none"
 
 
 #: The sentence `contextgrid.score.significance._sample_size_note` produces when a gap is real

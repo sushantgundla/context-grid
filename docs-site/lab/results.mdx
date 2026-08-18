@@ -293,9 +293,10 @@ print(sig.verdict())
 markdown · recursive:512 · tfidf · dense and markdown · recursive:16 · tfidf · dense are not
 distinguishable on this eval set (n=13). The gap of +0.192 on recall@5 sits inside the
 confidence interval +0.000 to +0.423, so it is consistent with no difference at all. Settling
-a gap this size would take roughly 110 questions -- on a two-sided test at alpha 0.05 with 80%
-power, assuming per-question scores vary as much as a 0-1 score possibly can. It is an order of
-magnitude, not a count.
+a gap this size would take at least roughly 110 questions -- on a two-sided test at alpha 0.05
+with 80% power. That estimate assumes an unpaired test while this one is paired, so it is a
+lower bound: the more the two configurations disagree question by question, the more you need.
+It is an order of magnitude, not a count.
 ```
 
 A 0.192 gap (1.000 against 0.808) looks decisive on a leaderboard. Tested question by question

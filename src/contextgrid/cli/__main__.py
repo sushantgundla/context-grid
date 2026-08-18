@@ -199,7 +199,8 @@ def _run_config(args: argparse.Namespace) -> int:
     # showing an empty leaderboard as if the matrix had been covered", and stdout is the
     # report most people read. It printed "no results" and "No configurations were run."
     # with the reason on stderr, so a redirect, a pipe or a scrollback lost it.
-    reasons = _why_nothing_ran(config, results) if not results.runs else []
+    measured = _measured_something(results)
+    reasons = _why_nothing_ran(config, results) if not measured else []
 
     print()
     # Over the table, on stdout, because this is the one place the reader has both in front of
@@ -222,20 +223,44 @@ def _run_config(args: argparse.Namespace) -> int:
     # `reasons` is already on the console, immediately under the leaderboard it explains.
     _print_warnings(results, already_shown=reasons)
 
-    if not results.runs:
+    if not measured:
         # A sweep that measured nothing is a failure, not a result. `budget_usd: 0.0`, and a
         # matrix whose only cell cannot be built, both printed "No configurations were run."
         # and exited 0 -- a green CI build for an experiment that ran nothing at all.
+        #
+        # "Nothing was measured" now includes the case where every configuration built and ran
+        # and none of them scored a question -- an eval set with no questions in it is the way
+        # to get there, and it exited 0 with a leaderboard of five rows. That leaderboard is
+        # not a partial result; it is the whole matrix reporting on nothing. `cli.mdx` argued
+        # for exactly this rule and then carved out the empty eval set as "not an error `run`
+        # itself raises"; the rule wins.
         #
         # Only *nothing* is non-zero. A sweep that ran some of its configurations and was then
         # stopped by its budget did measure something: the leaderboard it printed is real, and
         # failing there would make `budget_seconds` unusable in CI, which is where it earns its
         # keep. The runner already marks that case CAUTION and says the table is partial.
-        print("error: no configurations were run, so nothing was measured", file=sys.stderr)
+        headline = (
+            "no configurations were run, so nothing was measured"
+            if not results.runs
+            else "no configuration scored a single question, so nothing was measured"
+        )
+        print(f"error: {headline}", file=sys.stderr)
         for reason in reasons:
             print(f"error: {reason}", file=sys.stderr)
         return 1
     return 0
+
+
+def _measured_something(results: Results) -> bool:
+    """Did this sweep produce a single scored question anywhere?
+
+    Two ways to fail it, and they used to be judged differently. No configuration ran at all
+    was already a non-zero exit. Every configuration running and scoring nothing was not --
+    so an empty `questions.jsonl` swept the whole matrix, parsed, chunked, embedded and
+    indexed every document, printed a full leaderboard and exited 0. Both are the same event
+    from where the user stands: the command produced no measurement.
+    """
+    return any(run.scored_queries for run in results.runs)
 
 
 def _print_if_partial(results: Results) -> None:
@@ -252,11 +277,23 @@ def _print_if_partial(results: Results) -> None:
 
 
 def _why_nothing_ran(config: ExperimentConfig, results: Results) -> list[str]:
-    """The reasons the sweep is empty, in the words the runner already used for them.
+    """The reasons the sweep measured nothing, in the words the runner already used for them.
 
-    The reasons are recorded as warnings, and warnings only reach the written report -- so on
-    a console the exit code would have been the only signal, and "why" would have been left to
-    guesswork.
+    The reasons are recorded as warnings, and warnings only reach the written report and
+    stderr -- so on a captured console the exit code would have been the only signal, and
+    "why" would have been left to guesswork.
+
+    `CONFIGURATION_FAILED` is here because it was the reason most often lost. A matrix whose
+    every cell needs an extra that is not installed printed exactly `No configurations were
+    run.` to stdout, and the `pip install "context-grid[index]"` that fixes it went to stderr
+    alone -- so `contextgrid run x.yaml > leaderboard.txt`, the redirect `/reference/cli`
+    teaches, captured a failure with no reason in it at all. The budget case had been echoed
+    here since 0.9.2; this is the same courtesy for the case that is somebody's first run on a
+    fresh machine.
+
+    `GOLD_SPAN_UNREACHABLE` is here for the eval set with no questions in it: every
+    configuration ran, so none of the codes above fires, and the only line that named the
+    cause was a warning on stderr.
 
     `BUDGET_REACHED` needs no guard any more. It used to mean three things -- a sweep stopping,
     an unpriced model, and a plugin with no ceiling -- so this had to check that the config set
@@ -267,12 +304,35 @@ def _why_nothing_ran(config: ExperimentConfig, results: Results) -> list[str]:
     del config
     from contextgrid.core.warnings import WarningCode
 
-    return [
-        w.message
-        for w in results.warnings.of_code(
-            WarningCode.IMPOSSIBLE_COMBINATION, WarningCode.BUDGET_REACHED
+    seen: set[str] = set()
+    reasons: list[str] = []
+    for warning in results.warnings.of_code(
+        WarningCode.IMPOSSIBLE_COMBINATION,
+        WarningCode.BUDGET_REACHED,
+        WarningCode.CONFIGURATION_FAILED,
+        WarningCode.GOLD_SPAN_UNREACHABLE,
+    ):
+        # One line per distinct reason. A missing extra fails every configuration in the
+        # matrix, and printing the identical install command eleven times buries it.
+        if warning.message not in seen:
+            seen.add(warning.message)
+            reasons.append(warning.message)
+
+    # Capped, because the two per-configuration codes here say the same thing once per row: a
+    # 24-cell matrix that could not resolve any evidence produced 24 near-identical paragraphs
+    # under a leaderboard with nothing in it. Three is enough to show what kind of failure it
+    # is, and the full set is on stderr and in `report.md` either way.
+    if len(reasons) > _REASON_LIMIT:
+        hidden = len(reasons) - _REASON_LIMIT
+        reasons = reasons[:_REASON_LIMIT]
+        reasons.append(
+            f"and {hidden} more like these, one per configuration -- all in the warnings"
         )
-    ]
+    return reasons
+
+
+#: How many distinct reasons for an empty leaderboard get printed under it on stdout.
+_REASON_LIMIT = 3
 
 
 def _print_warnings(results: Results, *, already_shown: Sequence[str] = ()) -> None:
@@ -696,8 +756,20 @@ def _sweep(args: argparse.Namespace) -> int:
         # `notes` carries the partial-run line into `manifest.json`, so a bundle kept from a
         # sweep the budget cut short cannot later be read as a complete experiment. Empty
         # string for a sweep that finished, which is what `notes` already defaults to.
+        #
+        # `seeds` carries the seed the sweep actually ran with. It was omitted, so this wrote
+        # `"seeds": {}` while `contextgrid run` wrote `"seeds": {"run": 0}` -- and
+        # `contextgrid diff` between the two then reported a seed change between two runs that
+        # used the same seed. `write_bundle` reads the same value the same way, so a bundle
+        # written by either route still hashes the same.
         manifest = (
-            build_manifest(winner.config, lab.corpus, evalset, notes=results.manifest_note())
+            build_manifest(
+                winner.config,
+                lab.corpus,
+                evalset,
+                seeds={"run": results.seed},
+                notes=results.manifest_note(),
+            )
             if winner is not None
             else None
         )
@@ -938,7 +1010,21 @@ def _validate(args: argparse.Namespace) -> int:
 
     print()
     reference = {"recall@10": args.recall_at_10} if args.recall_at_10 is not None else None
-    print(validate(corpus, evalset, reference=reference).report())
+    result = validate(corpus, evalset, reference=reference)
+    print(result.report())
+
+    # A published number that was not reproduced is a failure, not a remark. The report says
+    # so in as many words -- "outside the 0.05 tolerance", "anything left over is a problem
+    # with our scoring, not with the benchmark" -- and this returned 0 underneath it, so in
+    # CI a scorer that missed the benchmark was a green build. That is the same trap `run`
+    # closed when it stopped exiting 0 for a sweep that measured nothing.
+    #
+    # Only when a number was supplied. `ValidationResult.agrees` is `False` for an empty
+    # reference, because there is nothing to agree with -- reading it as a verdict would fail
+    # every run that just reports its own numbers, which is what this command does without
+    # `--recall-at-10`.
+    if reference is not None and not result.agrees:
+        return 1
     return 0
 
 

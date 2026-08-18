@@ -36,7 +36,7 @@ options:
 ```
 
 Running `contextgrid` with no command prints this same help and exits `1`. `contextgrid
---version` prints `context-grid <version>` (e.g. `context-grid 0.9.3`) and exits `0`.
+--version` prints `context-grid <version>` (e.g. `context-grid 0.9.4`) and exits `0`.
 
 Every command catches its own exceptions and prints `error: <message>` to stderr rather than a
 Python traceback, then exits `1`. **`Ctrl-C` counts** — it prints one line and exits `130`, the
@@ -125,8 +125,9 @@ vector, build an index or call a model:
   just that the path is present — an empty `./documents` from a clone without its data fails
   here, not four stages into `run`).
 - Confirms `evalset:` exists, parses, and has at least one question in it. An eval set that
-  parses fine but is empty is not an error `run` itself raises — it would sweep the whole
-  matrix to score zero questions and report every metric as zero. `check` catches it first.
+  parses fine but is empty is caught by `run` too — it exits `1`, because a sweep that scored
+  no questions measured nothing — but only after building and indexing the whole matrix to
+  find out. `check` catches it for the price of opening one small text file.
 - Builds one instance of every ingestion strategy, parser, chunker, embedder, index, transform,
   retrieval strategy, reranker and generator the matrix actually names, so a typo'd spec string
   (`chunker: banana:999`) or an out-of-range one (`chunker: recursive:-5`, `candidates: -3`) is
@@ -205,15 +206,20 @@ writes the formats named under `report.formats` there and prints `wrote N files 
 
 | Exit | When |
 |---|---|
-| `0` | At least one configuration ran, whether or not any of them scored well. |
-| `1` | The config file itself is invalid (same errors `check` would catch), or the matrix ran zero configurations — every combination was impossible, or a budget was already spent before the first one started. |
+| `0` | At least one configuration ran **and** scored at least one question. |
+| `1` | The config file itself is invalid (same errors `check` would catch), or the sweep measured nothing — no configuration ran at all, or every one of them ran and scored zero questions. |
 | `130` | Stopped by `Ctrl-C`. One line on stderr, no traceback, and no report written. |
 
-That second `1` case matters for CI: a matrix whose only cell can't be built, or a
-`run.budget_usd: 0.0` that leaves nothing to spend, both used to print "No configurations were
-run." and still exit `0` — a green build for a sweep that measured nothing. `run` treats
-*nothing measured* as a failure and prints why on stderr, once as `error: no configurations
-were run, so nothing was measured` and again for each specific reason:
+That `1` case matters for CI: a matrix whose only cell can't be built, a `run.budget_usd: 0.0`
+that leaves nothing to spend, and an eval set with no questions in it all used to print a
+leaderboard and still exit `0` — a green build for a sweep that measured nothing. `run` treats
+*nothing measured* as a failure, whichever way it got there.
+
+The reasons go to **stdout**, under the empty leaderboard they explain, and to stderr as
+`error:` lines. Both, deliberately: `contextgrid run contextgrid.yaml > leaderboard.txt` is the
+capture this page recommends, and a captured failure with no reason in it is worse than no
+capture at all. At most three distinct reasons print under the table; the rest are in the
+warnings.
 
 A matrix whose only cell cannot be built — say `embedder: [null]` with `index: [dense]`, a dense
 index with nothing to search:
@@ -222,6 +228,17 @@ index with nothing to search:
 error: no configurations were run, so nothing was measured
 error: 1 combination(s) in this matrix cannot be built and were skipped -- a dense index with no embedder has nothing to search. The axes you wrote are almost certainly what you meant; this is just the product of them that is not
 ```
+
+A matrix that ran every configuration and scored none of them — an empty `questions.jsonl`, or
+one whose every anchor names a document the corpus does not hold:
+
+```text
+error: no configuration scored a single question, so nothing was measured
+error: the eval set 'support-kb' has no questions in it, so every configuration was built and indexed and then scored nothing. Every metric is absent rather than zero, and none of them says anything about any configuration. Add questions to the eval set, or point `evalset:` at the file you meant
+```
+
+The leaderboard above those lines prints `NOT_MEASURED` in the metric column rather than
+`0.000`, for the same reason: a zero is a measurement, and nothing there measured anything.
 
 <Note>
 Needing a model is **not** the same as being impossible, and the two fail in different ways. An
@@ -248,7 +265,7 @@ what it's for.
 | `contextgrid sweep <corpus> <evalset.jsonl> [--parser ...] [--chunker ...] ...` | A one-shot sweep from flags alone, no YAML file — the CLI equivalent of building a `cg.Lab` and calling `.grid()` in Python. See [The Lab](/lab/overview). |
 | `contextgrid plugins [--family parser]` | List every registered name on every axis, for this installation specifically — a name whose optional package is missing is marked `-` and the `pip install` line that fixes it is printed underneath. |
 | `contextgrid evalset <path>` | Load a JSONL or CSV eval set and print its quality summary and question-type distribution, without running a sweep. See [Eval Set Quality](/evalsets/quality). |
-| `contextgrid diff <before.json> <after.json>` | Explain what changed between two `manifest.json` files from earlier bundled runs. |
+| `contextgrid diff <before.json> <after.json>` | Explain what changed between two `manifest.json` files from earlier bundled runs. Two spellings of one configuration are not a change: `retrieval: simple` and no retrieval at all run the same search, so they are folded before anything is compared, along with `ingestion: plain`, `transform: none` and `reranker: none`. |
 | `contextgrid validate <benchmark.json> <corpus> [--limit N] [--recall-at-10 N]` | Check this package's own scorer against a published benchmark (LegalBench-RAG format) — a sanity check on the tool, not on your pipeline. |
 
 **Sweeping an axis from flags: repeat the flag.** `--parser`, `--chunker`, `--embedder`,
@@ -264,6 +281,31 @@ contextgrid sweep ./corpus ./questions.jsonl \
 A comma-separated list is not supported and is not a silent no-op — `--chunker
 recursive:128,recursive:256` reads as a single chunker named `recursive` with a stray second
 parameter, and the command says so and exits `1` before running anything.
+
+### `contextgrid validate` exit codes
+
+`validate` is meant to be run in CI, so its verdict is in the exit code and not only in the
+report it prints.
+
+| Exit | When |
+|---|---|
+| `0` | Every metric you supplied a published number for is within `0.05` of it — or you supplied none, in which case the command only reports its own numbers and there is nothing to miss. |
+| `1` | A published number was supplied and was not reproduced, **or** fewer than 95% of the benchmark's gold spans fall inside the documents as loaded. |
+
+The second `1` comes first and stops the run: if the corpus is not the one the annotations
+were made against, nothing measured afterwards means anything, and the cause is loading rather
+than retrieval.
+
+The first used to be a `0`. `contextgrid validate bench.json ./docs --recall-at-10 0.90`
+printed **`recall@10 differs by +0.100, outside the 0.05 tolerance`** and "anything left over
+is a problem with our scoring, not with the benchmark" — and then exited `0`, so a scorer that
+missed the benchmark was a green build. That is the same trap `run` closed when it stopped
+exiting `0` for a sweep that measured nothing.
+
+<Note>
+Without `--recall-at-10` there is no claim to check, so the command always exits `0`. Passing
+it is what turns `validate` from a report into an assertion.
+</Note>
 
 <Warning>
 A config's `plugins:` key — used to load your own custom Chunker, Embedder, or other plugin

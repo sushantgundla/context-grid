@@ -1,0 +1,212 @@
+name: Docs
+
+# The documentation site went stale without anyone noticing. For several releases it served
+# `context-grid 0.9.0` on the installation page while the repository said `0.9.3`, and
+# `/reference/reports` returned 404 even though `reference/reports.mdx` had been written and
+# listed in `docs.json` navigation since the site was created. Five other pages linked to it.
+#
+# Nothing was watching, because nothing here deployed the docs at all: no workflow, no Mintlify
+# check run on any commit, no deployment other than `pypi`. The site had been published once by
+# hand and then left alone. A reader could not tell -- a stale page looks exactly like a fresh
+# one -- and the only people who found it were three agents driving the released package
+# against documentation a release and a half out of date.
+#
+# Deploying is Mintlify's GitHub App's job, not this file's. This file is the thing that was
+# missing either way -- proof that the deploy happened and produced what the repository says:
+#
+#   `nav`   -- checks the source is internally consistent, before anything is published.
+#   `live`  -- checks the published site actually matches the source, after.
+#
+# `nav` alone would not have caught this. `reference/reports` was correct in `docs.json` and
+# correct on disk; it was missing only from the built site. Only fetching the real site finds
+# that, which is why `live` also runs on a schedule rather than only on push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs-site/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs-site/**"
+      - ".github/workflows/docs.yml"
+  # A docs site can go stale without a commit -- a failed build on Mintlify's side, a project
+  # disconnected from the repository, an expired install. Push-triggered checks never fire in
+  # any of those cases, which is exactly how this went unnoticed for as long as it did.
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+env:
+  DOCS_URL: https://context-grid.mintlify.site
+
+jobs:
+  # Everything here is true or false without touching the network, so it also runs on pull
+  # requests, where the live site is by definition not yet updated.
+  nav:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every page in the navigation exists, and every page is in the navigation
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          root = pathlib.Path("docs-site")
+          config = json.loads((root / "docs.json").read_text())
+
+          def walk(node):
+              """Page slugs, from a navigation tree that may nest groups inside groups."""
+              if isinstance(node, str):
+                  yield node
+              elif isinstance(node, list):
+                  for item in node:
+                      yield from walk(item)
+              elif isinstance(node, dict):
+                  for key in ("groups", "pages", "tabs", "anchors", "navigation"):
+                      if key in node:
+                          yield from walk(node[key])
+
+          listed = list(walk(config["navigation"]))
+          on_disk = {str(p.relative_to(root).with_suffix("")) for p in root.rglob("*.mdx")}
+
+          problems = []
+          for slug in listed:
+              if slug not in on_disk:
+                  problems.append(f"docs.json lists {slug!r}, but docs-site/{slug}.mdx does not exist")
+
+          # An orphan is not automatically wrong -- a page can be reachable by link alone --
+          # but it is never deliberate here, and an unlisted page is one Mintlify may not build.
+          for slug in sorted(on_disk - set(listed)):
+              problems.append(f"docs-site/{slug}.mdx exists, but nothing in docs.json navigation lists it")
+
+          duplicates = {s for s in listed if listed.count(s) > 1}
+          for slug in sorted(duplicates):
+              problems.append(f"docs.json lists {slug!r} more than once")
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          print(f"{len(listed)} pages listed, {len(on_disk)} on disk, {len(problems)} problem(s)")
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: Every internal link points at a page that exists
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+
+          root = pathlib.Path("docs-site")
+          pages = {str(p.relative_to(root).with_suffix("")) for p in root.rglob("*.mdx")}
+
+          # Markdown links to an absolute in-site path: [Reports](/reference/reports).
+          link = re.compile(r"\]\((/[^)#?\s]*)")
+          problems = []
+          for page in sorted(root.rglob("*.mdx")):
+              for line_number, line in enumerate(page.read_text().splitlines(), start=1):
+                  for target in link.findall(line):
+                      slug = target.strip("/")
+                      if slug and slug not in pages:
+                          where = f"{page}:{line_number}"
+                          problems.append(f"{where} links to {target}, which is not a page")
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          print(f"{len(pages)} pages, {len(problems)} broken internal link(s)")
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: The version printed in the docs matches the package
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys, tomllib
+
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          stale = re.compile(r"context-grid (\d+\.\d+\.\d+)")
+
+          problems = []
+          for page in sorted(pathlib.Path("docs-site").rglob("*.mdx")):
+              for line_number, line in enumerate(page.read_text().splitlines(), start=1):
+                  for found in stale.findall(line):
+                      if found != version:
+                          problems.append(
+                              f"{page}:{line_number} shows context-grid {found}, "
+                              f"but pyproject.toml says {version}"
+                          )
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
+  # The check that would actually have caught this. Everything above passed the whole time the
+  # site was broken.
+  live:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every navigation page is reachable on the published site
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys, urllib.error, urllib.request
+
+          base = "${{ env.DOCS_URL }}".rstrip("/")
+          config = json.loads(pathlib.Path("docs-site/docs.json").read_text())
+
+          def walk(node):
+              if isinstance(node, str):
+                  yield node
+              elif isinstance(node, list):
+                  for item in node:
+                      yield from walk(item)
+              elif isinstance(node, dict):
+                  for key in ("groups", "pages", "tabs", "anchors", "navigation"):
+                      if key in node:
+                          yield from walk(node[key])
+
+          problems = []
+          for slug in walk(config["navigation"]):
+              url = f"{base}/{slug}"
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      status = response.status
+              except urllib.error.HTTPError as error:
+                  status = error.code
+              except OSError as error:
+                  problems.append(f"{url} could not be fetched: {error}")
+                  continue
+              if status != 200:
+                  problems.append(f"{url} returned {status} -- the page is in docs.json but is not published")
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: The published site is not behind the repository
+        run: |
+          python - <<'PY'
+          import re, sys, tomllib, urllib.request
+
+          base = "${{ env.DOCS_URL }}".rstrip("/")
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+
+          # `.md` gives the page as source rather than as a rendered app shell, so the version
+          # string is visible without parsing HTML.
+          with urllib.request.urlopen(f"{base}/installation.md", timeout=30) as response:
+              published = response.read().decode("utf-8", "replace")
+
+          found = set(re.findall(r"context-grid (\d+\.\d+\.\d+)", published))
+          if found != {version}:
+              print(
+                  f"::error::{base}/installation shows context-grid "
+                  f"{', '.join(sorted(found)) or '(no version)'}, but this repository is at {version}. "
+                  "The docs site has not rebuilt from the current main."
+              )
+              sys.exit(1)
+          print(f"published docs are at {version}, matching the repository")
+          PY

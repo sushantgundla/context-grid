@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,12 +83,7 @@ class Corpus:
 
         ordered = sorted(p for p in matched if _is_candidate(p, root))
         if not ordered:
-            raise CorpusError(
-                f"no files under {root} matched {list(patterns)}."
-                f"{_why_nothing_matched(root, matched, recursive=recursive)} "
-                "(Widening the list is Python-API only: "
-                "`Corpus.from_dir(path, patterns=[...])`. There is no `patterns:` config key.)"
-            )
+            raise CorpusError(_nothing_loaded(root, matched, patterns, recursive=recursive))
         if max_files is not None:
             ordered = ordered[:max_files]
 
@@ -215,17 +211,88 @@ def _read_bytes(path: Path) -> bytes:
         ) from error
 
 
-def _why_nothing_matched(root: Path, matched: set[Path], *, recursive: bool) -> str:
-    """Say why the corpus came out empty, checking each claim before making it.
+def _unlistable(root: Path, *, recursive: bool) -> list[tuple[Path, str]]:
+    """Directories at or under `root` that this user cannot list, and why.
+
+    `Path.glob` swallows `PermissionError` and yields nothing, which is the right behaviour
+    for a glob and a trap for the caller: a directory nobody can open looks exactly like a
+    directory with nothing in it. Asked explicitly, so the difference can be reported.
+
+    Error path only, like everything else here, so the walk costs nothing anybody waits for.
+    """
+    blocked: list[tuple[Path, str]] = []
+
+    def note(error: OSError) -> None:
+        blocked.append((Path(error.filename or root), error.strerror or str(error)))
+
+    if recursive:
+        for _walked in os.walk(root, onerror=note):
+            pass
+    else:
+        try:
+            with os.scandir(root) as entries:
+                next(entries, None)
+        except OSError as error:
+            note(error)
+    return blocked
+
+
+def _nothing_loaded(
+    root: Path, matched: set[Path], patterns: Sequence[str], *, recursive: bool
+) -> str:
+    """The whole message for a corpus that came out empty. Two shapes, not one with a rider.
+
+    A directory this user cannot open is not a directory whose contents were read and found
+    wanting, and the message must not open as if it were. It used to: the caller always led
+    with "no files under X matched [...patterns]" and this function appended the correction
+    after it, so the permission case read "no files matched these patterns. ... the patterns
+    were never matched against anything" -- two sentences that cannot both be true, with the
+    false one first. The trailing advice about widening the pattern list belongs to the same
+    misdiagnosis, and cannot fix a permission bit either.
+
+    So the unlistable case gets its own message from the first word: no pattern list, no
+    "matched", no widening note. `_read_bytes` says the same thing for a single unreadable
+    file; this is the directory that file lives in.
+    """
+    blocked = _unlistable(root, recursive=recursive)
+    unreadable_root = next((why for where, why in blocked if where == root), None)
+    if unreadable_root is not None:
+        return (
+            f"{root} could not be listed: {unreadable_root}. Nothing can be said about what is "
+            "in it, so no corpus can be loaded from it. The directory has to be readable by "
+            "the user running contextgrid -- fix its permissions, or point the corpus at a "
+            "directory that user can read."
+        )
+
+    return (
+        f"no files under {root} matched {list(patterns)}."
+        f"{_why_nothing_matched(root, matched, blocked, recursive=recursive)} "
+        "(Widening the list is Python-API only: "
+        "`Corpus.from_dir(path, patterns=[...])`. There is no `patterns:` config key.)"
+    )
+
+
+def _why_nothing_matched(
+    root: Path, matched: set[Path], blocked: Sequence[tuple[Path, str]], *, recursive: bool
+) -> str:
+    """Say why a readable directory matched nothing, checking each claim before making it.
 
     Error path only, so the extra walk costs nothing anybody waits for. An empty directory,
     a directory full of `.parquet`, and a directory whose files are all hidden are three
     different mistakes and deserve three different sentences.
+
+    `blocked` is the already-computed list of directories that could not be listed. The root
+    is not among them -- `_nothing_loaded` handles that case and never reaches here -- so
+    anything in it is a subdirectory, and every count below is a floor rather than a total.
     """
     glob = "**/*" if recursive else "*"
     present = [p for p in root.glob(glob) if p.is_file()]
+    # Appended to whatever the rest of this decides, because a subdirectory nobody can open
+    # means every count below it is a floor rather than a total.
+    hidden_from_us = _unlistable_note(root, blocked)
+
     if not present:
-        return f" The directory holds no files at all. {_ADVICE}"
+        return f" The directory holds no files at all.{hidden_from_us} {_ADVICE}"
 
     if matched:
         count = len(matched)
@@ -242,15 +309,35 @@ def _why_nothing_matched(root: Path, matched: set[Path], *, recursive: bool) -> 
     if not visible:
         return (
             f" It holds {total} {noun}, none matching the patterns, and every one hidden. "
-            f"{_HIDDEN_RULE} {_ADVICE}"
+            f"{_HIDDEN_RULE}{hidden_from_us} {_ADVICE}"
         )
 
     suffixes = sorted({p.suffix for p in visible if p.suffix})
     if not suffixes:
-        return f" It holds {total} {noun}, none with a file extension. {_ADVICE}"
+        return f" It holds {total} {noun}, none with a file extension.{hidden_from_us} {_ADVICE}"
     listed = ", ".join(suffixes[:5])
     more = "" if len(suffixes) <= 5 else f" and {len(suffixes) - 5} more"
-    return f" It holds {total} {noun}: {listed}{more}. {_ADVICE}"
+    return f" It holds {total} {noun}: {listed}{more}.{hidden_from_us} {_ADVICE}"
+
+
+def _unlistable_note(root: Path, blocked: Sequence[tuple[Path, str]]) -> str:
+    """One sentence naming the subdirectories that could not be opened, or `""`.
+
+    Without it the counts above read as the whole story: "It holds 1 file: .log" is true and
+    complete-sounding, while the documents somebody is looking for sit under a directory this
+    process was refused. Named rather than counted, because the fix is a `chmod` on a
+    particular path.
+    """
+    if not blocked:
+        return ""
+    names = sorted(str(where.relative_to(root)) if where != root else "." for where, _ in blocked)
+    listed = ", ".join(names[:3])
+    more = "" if len(names) <= 3 else f" and {len(names) - 3} more"
+    was = "directory below it" if len(names) == 1 else "directories below it"
+    return (
+        f" {len(names)} {was} could not be listed ({listed}{more}), so there may be matching "
+        "files this could not see -- check their permissions before trusting the count above."
+    )
 
 
 def _is_candidate(path: Path, root: Path) -> bool:

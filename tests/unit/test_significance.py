@@ -163,7 +163,7 @@ def test_a_small_gap_says_how_many_questions_would_settle_it() -> None:
     right = [0.0 if i < 220 else 1.0 for i in range(400)]
     result = compare(scores(left), scores(right), left="a", right="b")
     assert not result.distinguishable
-    assert "would take roughly" in result.verdict()
+    assert "would take at least roughly" in result.verdict()
     # Two significant figures, and the assumptions named beside the number.
     assert "alpha 0.05" in result.verdict()
 
@@ -173,7 +173,7 @@ def test_a_small_gap_says_how_many_questions_would_settle_it() -> None:
     [
         (0.0, 30, 30, "behaving the same way"),
         (0.0, 30, 0, "disagreeing on individual questions"),
-        (0.02, 40, 10, "would take roughly"),
+        (0.02, 40, 10, "would take at least roughly"),
         (0.5, 400, 10, "defeated by how much the scores vary"),
     ],
 )

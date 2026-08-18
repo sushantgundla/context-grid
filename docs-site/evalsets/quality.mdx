@@ -57,8 +57,8 @@ for w in quality.warnings().entries:
 EvalSetQuality(size=3, answerable=3, reviewed=0, portable=3, types={'factoid': 3}, mean_discriminating_power=None, non_discriminating=0)
 reviewed_fraction: 0.0
 detectable_difference: 1.0
-3 questions (3 with evidence, unchecked against a corpus), 0% reviewed, detects differences of 1.00 and above
-CAUTION [evalset]: 3 questions carry evidence, unchecked against a corpus, so this set can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
+3 questions (3 with evidence, unchecked against a corpus), 0% reviewed, differences below about 1.00 are noise
+CAUTION [evalset]: 3 questions carry evidence, unchecked against a corpus, so anything below about 1.00 is noise on this set -- it cannot reliably detect a gap that small. A gap above that is worth testing rather than assuming; `is_the_winner_real()` settles it
 CAUTION [evalset]: only 0% of this set is marked as checked by a human. Ground truth nobody has read is the weakest link in any retrieval comparison. If you wrote these questions yourself, say so with `"meta": {"reviewed": true}` on each one; otherwise the review queue is the cheapest place to fix it
 ```
 
@@ -108,23 +108,43 @@ EvalSetQuality(
 | `.detectable_difference` | `minimum_detectable_difference(self.answerable)` — the exact floor |
 | `.reported_detectable_difference` | the same floor rounded **up** to 2 decimals; this is the number `.summary()` and `.warnings()` print |
 | `.is_portable` | `portable == answerable` |
-| `.can_support(difference) -> bool` | can this set reliably see a gap of this size — tested against the exact `.detectable_difference` |
+| `.can_support(difference) -> bool` | is this gap above the noise floor — tested against the exact `.detectable_difference`. `False` is reliable; `True` is a necessary condition, not a verdict (see the warning below) |
 | `.summary() -> str` | the one-line summary shown above |
 | `.warnings() -> WarningLog` | CAUTION/INFO messages: small size, low review coverage, non-discriminating questions, non-portable gold, one question type dominating (>70% of a set of 10+) |
 
 <Note>
-The printed floor is rounded **up**, not to nearest, so that the sentence is true as written
-and the number can be handed straight back. On 24 questions the exact floor is `0.404145`:
-`.summary()` says `detects differences of 0.41 and above`, and `can_support(0.41)` is `True`.
-It used to print `0.40` — the number the same object then rejected.
+The printed floor is rounded **up**, not to nearest, so that the number can be handed straight
+back. On 24 questions the exact floor is `0.404145`: `.summary()` says `differences below about
+0.41 are noise`, and `can_support(0.41)` is `True`. It used to print `0.40` — the number the
+same object then rejected.
 </Note>
 
-`minimum_detectable_difference(n, *, power=0.8, alpha=0.05)` is an approximate two-sided
-sample-size formula, worst-case variance. It uses two-value lookup tables for the
-significance constants, not a real inverse-normal computation — passing e.g. `alpha=0.10`
-doesn't smoothly move the answer, it just switches to the other bucket's constant. `n < 2`
-returns `1.0` rather than erroring. It isn't `cg.X`; import it as
+`minimum_detectable_difference(n, *, power=0.8, alpha=0.05)` computes
+`(z_alpha + z_power) * sqrt(2 * 0.25 / n)` — the standard error for the difference between two
+**independent** proportions at `p = 0.5`. It uses two-value lookup tables for the significance
+constants, not a real inverse-normal computation, so passing e.g. `alpha=0.10` doesn't smoothly
+move the answer; it just switches to the other bucket's constant. `n < 2` returns `1.0` rather
+than erroring. It isn't `cg.X`; import it as
 `contextgrid.evalset.minimum_detectable_difference` if you want to call it directly.
+
+<Warning>
+**It assumes an unpaired test, and [`significance()`](/scoring/significance) runs a paired
+one.** That is the thing to know about this number.
+
+The formula charges the difference a standard deviation of `sqrt(0.5)` = 0.707. A *paired*
+difference scores −1, 0 or +1 on each question and can reach a standard deviation of 1.0 —
+which at `n = 20` puts the honest floor at `2.8 / sqrt(20)` = 0.626, not the `0.443` printed.
+The formula understates, and a gap of exactly the printed size comes back
+`distinguishable=False` from `compare()` at `n` = 20, 30, 50 and 100 when every per-question
+difference sits at ±1.
+
+So read it as a **floor, not a guarantee**. `can_support(x)` returning `False` is the reliable
+half: the gap is too small for a set this size, full stop. `True` means only that it is not
+obviously too small — whether `compare()` will call it still depends on how much the
+per-question scores vary, which nothing on `EvalSetQuality` has seen. Use the floor to decide
+how many questions to write; use `is_the_winner_real()` to decide whether a particular gap is
+real.
+</Warning>
 
 ## Filtering an auto-generated draft
 

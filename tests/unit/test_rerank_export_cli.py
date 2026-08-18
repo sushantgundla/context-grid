@@ -553,7 +553,7 @@ def test_evalset_reports_what_the_set_can_support(
     workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["evalset", str(workspace / "evalset.jsonl")]) == 0
-    assert "detects differences of" in capsys.readouterr().out
+    assert "differences below about" in capsys.readouterr().out
 
 
 def test_evalset_reads_the_csv_a_domain_expert_hands_you(
@@ -568,7 +568,7 @@ def test_evalset_reads_the_csv_a_domain_expert_hands_you(
     )
 
     assert main(["evalset", str(questions)]) == 0
-    assert "detects differences of" in capsys.readouterr().out
+    assert "differences below about" in capsys.readouterr().out
 
 
 def test_sweep_runs_and_writes_a_bundle(

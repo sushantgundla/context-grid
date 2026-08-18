@@ -276,11 +276,15 @@ def _is_scorable(judgements: Mapping[str, int]) -> bool:
     return any(grade > 0 for grade in judgements.values())
 
 
-def _check_ks(ks: Sequence[int]) -> None:
+def check_cutoffs(ks: Sequence[int]) -> None:
     """Reject cut-offs below 1, rather than handing them to a slice that accepts anything.
 
     `ranked[:-1]` is valid Python and means "all but the last", so `ks=[-1]` used to come
     back as a plausible number for a cut-off nobody could describe.
+
+    Public because `diagnose()` reads the same `k` off the same call and did not apply it:
+    `k=0` produced "the evidence was retrieved at rank 1, just outside the top 0", which
+    calls a rank-1 hit a failure and recommends a reranker for it. One guard, both doors.
     """
     bad = sorted({k for k in ks if k < 1})
     if bad:
@@ -290,8 +294,12 @@ def _check_ks(ks: Sequence[int]) -> None:
         )
 
 
-def _check_no_duplicates(run: Mapping[str, Sequence[str]], scored: Sequence[str]) -> None:
+def check_no_duplicate_ids(run: Mapping[str, Sequence[str]], scored: Sequence[str]) -> None:
     """Refuse a ranking that returns the same chunk id twice.
+
+    Public for the same reason as `check_cutoffs`: `diagnose()` reads the same `run` and used
+    to score it, and a duplicate earlier in the ranking pushes everything after it down a
+    place -- evidence at rank 5 read as rank 6, and a success reported as "buy a reranker".
 
     Rejected rather than quietly de-duplicated, and rejected rather than clamped. A retriever
     handing back the same chunk twice is broken, and the whole point of a metric is to say so
@@ -352,13 +360,13 @@ def evaluate(
             f"Available: {', '.join(METRICS.names())}"
         )
 
-    _check_ks(ks)
+    check_cutoffs(ks)
 
     scored = [query_id for query_id, judgements in qrels.items() if _is_scorable(judgements)]
     if not scored:
         return {}
 
-    _check_no_duplicates(run, scored)
+    check_no_duplicate_ids(run, scored)
 
     results: dict[str, float] = {}
     for metric in metrics:
@@ -402,9 +410,9 @@ def per_query(
     """
     if metric not in METRICS:
         raise ValueError(f"unknown metric {metric!r}. Available: {', '.join(METRICS.names())}")
-    _check_ks([k])
+    check_cutoffs([k])
     scored = [query_id for query_id, judgements in qrels.items() if _is_scorable(judgements)]
-    _check_no_duplicates(run, scored)
+    check_no_duplicate_ids(run, scored)
 
     instance = METRICS.create(metric)
     return {

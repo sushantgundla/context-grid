@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from contextgrid.core.evalset import EvalItem, EvalSet, Qrels
+from contextgrid.score.metrics import check_cutoffs, check_no_duplicate_ids
 
 
 class FailurePoint(str, Enum):
@@ -207,7 +208,19 @@ def diagnose(
     `deep_k` is how far down the ranking to look before concluding the evidence was never
     retrieved at all. It is what separates "ranked too low" from "not in the index", and
     those two have completely different fixes.
+
+    Takes the same `qrels` and `run` as `evaluate()` and now applies the same two guards to
+    them. It used to apply neither, so one call refused a ranking and the other read it: a
+    repeated chunk id shifted every rank below it by one and turned evidence at rank 5 into
+    `MISSED_TOP_RANKED` at rank 6, and `k=0` produced a sentence about "the top 0" that
+    called a rank-1 hit a failure. A diagnosis is advice about what to go and fix, so a
+    diagnosis computed from a broken ranking sends somebody to fix the wrong stage.
     """
+    check_cutoffs([k, deep_k])
+    # Every question with ground truth, whether or not this run judged anything relevant for
+    # it -- `diagnose` reads the ranking for all of them, so all of them have to be sound.
+    check_no_duplicate_ids(run, [item.id for item in evalset if item.gold or item.anchors])
+
     report = FailureReport(k=k, observed_generation=False)
 
     for item in evalset:

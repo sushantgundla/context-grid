@@ -256,9 +256,9 @@ Before trusting a leaderboard, know what the eval set underneath it can actually
 ```
 $ contextgrid evalset questions.jsonl
 policy-questions v1 (manual)
-3 questions (3 with evidence, unchecked against a corpus), 0% reviewed, detects differences of 1.00 and above
+3 questions (3 with evidence, unchecked against a corpus), 0% reviewed, differences below about 1.00 are noise
 types: {'unlabelled': 3}
-  - 3 questions carry evidence, unchecked against a corpus, so this set can only detect differences of about 1.00 or larger. Anything smaller than that on a leaderboard built from this set is noise
+  - 3 questions carry evidence, unchecked against a corpus, so anything below about 1.00 is noise on this set -- it cannot reliably detect a gap that small. A gap above that is worth testing rather than assuming; `is_the_winner_real()` settles it
   - only 0% of this set is marked as checked by a human. Ground truth nobody has read is the weakest link in any retrieval comparison. If you wrote these questions yourself, say so with `"meta": {"reviewed": true}` on each one; otherwise the review queue is the cheapest place to fix it
 ```
 
@@ -271,11 +271,17 @@ It reads straight from the file:
 {"id": "q1", "question": "How much notice to terminate?", "anchors": [...], "meta": {"reviewed": true}}
 ```
 
-The number that matters most: **detects differences of X and above**. A 3-question set can
-only detect a near-total reversal (here, 1.00 — meaning nothing smaller than a complete flip is
+The number that matters most: **differences below about X are noise**. A 3-question set can
+only see a near-total reversal (here, 1.00 — meaning nothing smaller than a complete flip is
 distinguishable from noise). Below 30 answerable questions, treat every leaderboard gap as
-noise unless it's large; 100+ starts to detect differences around 0.1. This is what the
-"not distinguishable on this eval set" line in a report's summary is checking — see
+noise unless it's large; 100+ gets the floor down around 0.1.
+
+Read it as a floor and not as a threshold. A gap *below* X is noise on this set, reliably. A
+gap *above* X is not thereby real — the floor assumes an **unpaired** test, while the test
+that decides is the **paired** one behind `is_the_winner_real()`. The unpaired formula charges
+the difference a standard deviation of 0.707; a paired difference can reach 1.0, so the floor
+understates and a gap of exactly X can still come back "not distinguishable". Use the floor to
+size an eval set; use `is_the_winner_real()` on the pair you actually care about — see
 [getting-started.md](getting-started.md#reading-the-leaderboard).
 
 ## See also

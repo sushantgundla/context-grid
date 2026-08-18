@@ -362,9 +362,16 @@ def _sample_size_note(difference: float, n: int, ties: int) -> str:
             "so no number of questions like these would separate them."
         )
 
-    # The same worst-case power calculation the eval-set quality score uses, so the two
-    # numbers agree with each other. 1.96 is a two-sided test at alpha 0.05, 0.84 is 80%
-    # power, and 0.25 is the largest variance a 0-1 score can have.
+    # The same power calculation `minimum_detectable_difference` uses, so the two numbers
+    # agree with each other. 1.96 is a two-sided test at alpha 0.05, 0.84 is 80% power, and
+    # 0.25 is the largest variance of a single 0-1 score.
+    #
+    # It is an *unpaired* formula, and the test above is paired -- so it charges the
+    # difference a standard deviation of sqrt(0.5) where a paired difference, scoring -1, 0
+    # or +1 per question, can reach 1.0. The count that comes out is therefore a lower bound.
+    # This used to be described as "assuming per-question scores vary as much as a 0-1 score
+    # possibly can", which is true of one score and false of the difference between two, and
+    # pointed the reader the wrong way: it reads as a ceiling on the work, and it is a floor.
     needed = _rounded(int(((1.96 + 0.84) ** 2 * 2 * 0.25) / (gap**2)) + 1)
     if needed <= n:
         return (
@@ -372,9 +379,11 @@ def _sample_size_note(difference: float, n: int, ties: int) -> str:
             f"the {n} here are being defeated by how much the scores vary between them."
         )
     return (
-        f"Settling a gap this size would take roughly {needed:,} questions -- on a two-sided "
-        "test at alpha 0.05 with 80% power, assuming per-question scores vary as much as a "
-        "0-1 score possibly can. It is an order of magnitude, not a count."
+        f"Settling a gap this size would take at least roughly {needed:,} questions -- on a "
+        "two-sided test at alpha 0.05 with 80% power. That estimate assumes an unpaired test "
+        "while this one is paired, so it is a lower bound: the more the two configurations "
+        "disagree question by question, the more you need. It is an order of magnitude, not "
+        "a count."
     )
 
 

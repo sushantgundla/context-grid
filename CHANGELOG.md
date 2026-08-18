@@ -8,6 +8,104 @@ called out here when it does.
 
 Nothing yet.
 
+## [0.9.4] — 2026-08-18
+
+0.9.3 was installed from PyPI into containers and driven by three independent readers, each
+using only the published documentation site and none of them allowed to see the source. They
+covered install and the quickstart, the ten axes, metric arithmetic, eval-set generation,
+statistical significance, cost and latency, runs that stop early, and deliberately hostile
+input. Fifteen things were wrong. Every one was reproduced before anything changed.
+
+The theme is the same as last time and cuts deeper: **the tool answered questions it had not
+asked.** A significance test that reported a different metric's numbers under the name you
+requested. A confidence interval printed beside a score it was not computed from. A sample-size
+floor derived from the wrong test. Each one is a number that looks like an answer and is not.
+
+The drive also found something no amount of reading the source would have shown: the
+documentation site had never redeployed. It had been serving 0.9.0 pages for two releases, and
+`/reference/reports` — written, listed in navigation, linked from five other pages — had never
+been published at all. Four of the fifteen findings were readers hitting that, not bugs.
+
+### Fixed — numbers that answered a different question
+
+- **`Results.significance(metric=…)` ignored the metric.** Asking about `recall@1` tested the
+  headline metric's per-question scores and stamped `recall@1` on the result. On one drive's
+  corpus the leaderboard gap at `recall@1` was `+0.682` while `significance` reported
+  `0.318 [0.091, 0.545]` — an interval that does not contain the true answer. On another it
+  called a near-threefold difference "not distinguishable". `RunResult` now keeps per-question
+  scores for every metric it computed, and a metric it cannot test raises instead of answering
+  about another one.
+- **Leaderboard confidence intervals came from the headline metric.** A row printed for
+  `recall@1` carried an interval resampled from `recall@5`, so the interval beside a number need
+  not have contained it. `interval()` and `row()` now take the metric.
+- **`compare()`'s per-question fields were the headline's too.** The aggregate was always right;
+  the disagreement counts were not.
+- **The sample-size floor was derived from the wrong test.** `minimum_detectable_difference`
+  uses the formula for two independent proportions, but `significance()` runs a paired test, so
+  "detects differences of 0.45 and above" was not true as written — a real 0.45 gap at twenty
+  questions came back undetectable. The same claim appeared in the "roughly 63 questions"
+  sentence the documentation tells you to paste into a pull request. All three now say the
+  estimate assumes an unpaired test and is a floor rather than a guarantee.
+
+### Fixed — results that looked measured and were not
+
+- **A metric no run computed printed as `0.000`.** With evidence that resolved nowhere, the
+  scores were absent from `results.json` entirely, yet the terminal table and `report.md` filled
+  the column with `0.000` and the summary named a winner "at 0.000". The Python `leaderboard()`
+  already left it out, as documented; the two renderers did not. They now print `NOT_MEASURED`,
+  and the summary says there is no ranking rather than inventing one.
+- **An empty eval set was a green build.** Every configuration was built, indexed, scored
+  nothing, and `run` exited `0` with a full leaderboard of zeros. It now exits `1` whenever
+  nothing was scored. The warning also blamed the parser or the eval set's quotes for evidence
+  it could not resolve; when the eval set has no questions, it says so and names the file.
+- **The only reason a sweep failed was lost by the documented redirect.** `contextgrid run …
+  > out.txt` with a missing extra kept `No configurations were run.` and discarded the
+  `MissingExtraError` naming the `pip install` command, because that went to stderr alone. The
+  reason is now on stdout under the empty table, as the budget case already did.
+- **`contextgrid diff` hid a partial run.** Comparing a complete run against one stopped by
+  `budget_seconds` printed "Nothing in these two manifests is different" and went on to say the
+  two should have produced identical numbers, while the second manifest's `notes` recorded
+  `PARTIAL RUN: 1 of 3 configurations ran`. `notes` is now compared, and an unfinished run is
+  named before anything else.
+
+### Fixed — differences that were not differences
+
+- **A bundle written by `sweep` recorded no seed.** `contextgrid run` wrote `"seeds":
+  {"run": 0}` and `contextgrid sweep --bundle` wrote `{}`, so `contextgrid diff` reported
+  `seeds.run: 0 -> None` between two runs that used the same seed. The one command whose job is
+  saying what changed named a change that never happened.
+- **Two spellings of one configuration read as a change.** `diff` reported
+  `config.retrieval: 'simple' -> None` although `get_retriever(None)` returns `SimpleRetrieval()`
+  and every other surface — the leaderboard, the report, the bundle — treats them as one row.
+  `diff` and `Manifest.hash()` now fold the same aliases the matrix folds, and still print what
+  each manifest actually recorded.
+
+### Fixed — messages that were wrong about themselves
+
+- **An unreadable directory was reported as empty.** A directory the process could not list was
+  described as holding "no files at all", with advice to rename files it had never seen. It now
+  leads with the permission failure and drops the pattern list it could not have matched.
+- **`contextgrid validate` failed its own tolerance and exited `0`.** It printed "recall@10
+  differs by +0.100, outside the 0.05 tolerance" and "a problem with our scoring", then returned
+  success — a green build for a failed validation, the exact trap the CLI page argues against.
+  It now exits `1`, and the page documents its exit codes.
+- **`diagnose()` accepted input `evaluate()` rejects.** A ranking containing the same chunk
+  twice pushed the evidence down a rank and turned a success into "just outside the top 5"; a
+  cut-off of `0` or below produced "retrieved at rank 1, just outside the top 0". Both now raise
+  the same errors, in the same words, that `evaluate()` already did.
+- **`generate(sample=0)` returned every chunk.** `sample=-1` returned none and `sample=0`
+  returned all, from a check that could not tell zero from absent. Zero now means zero, and a
+  negative sample raises.
+
+### Added
+
+- **A docs workflow, because nothing was watching the documentation site.** `.github/workflows/
+  docs.yml` checks that every page in `docs.json` exists, that every internal link resolves, and
+  that the version printed in the docs matches the package — then fetches the published site and
+  fails when a page in navigation 404s or the published version is behind. The source checks
+  passed the entire time the site was broken; only fetching the real site catches it, which is
+  why that job also runs on a schedule.
+
 ## [0.9.3] — 2026-08-17
 
 0.9.2 was installed from PyPI into containers and driven by seven independent readers, each

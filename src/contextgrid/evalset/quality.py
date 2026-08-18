@@ -46,12 +46,26 @@ def round_up(value: float, places: int = FLOOR_PLACES) -> float:
 
 
 def minimum_detectable_difference(n: int, *, power: float = 0.8, alpha: float = 0.05) -> float:
-    """The smallest difference in a proportion this many questions could detect.
+    """Roughly the smallest difference in a proportion this many questions could detect.
 
-    Standard two-sided test at the worst-case variance (p = 0.5), which is the honest
-    assumption when you do not yet know what the scores will be. Approximate, and its job is
-    to make the size of an eval set concrete: "you can detect 0.28" lands harder than
-    "n is small".
+    **This assumes an unpaired test, and `significance()` runs a paired one.** That mismatch
+    is the thing to know about this number. `(z_alpha + z_power) * sqrt(2 * 0.25 / n)` is the
+    standard error for the difference between two *independent* proportions at p = 0.5, so the
+    standard deviation it charges the difference is `sqrt(0.5)` = 0.707. A paired difference
+    scores -1, 0 or +1 on each question and can reach a standard deviation of 1.0, which at
+    n = 20 would put the floor at `2.8 / sqrt(20)` = 0.626 rather than the 0.443 printed here.
+
+    So it is a **floor, not a guarantee**: a gap below it is noise, and a gap at or above it
+    has not thereby been detected. Checked at n = 20, 30, 50 and 100 -- a gap of exactly this
+    size, with every per-question difference at ±1, comes back `distinguishable=False` from
+    `compare()` at all four.
+
+    Making the number match the paired test is not the fix, because there is no single number
+    to match. What `compare()` can actually call depends on how much the scores vary between
+    questions, and at n = 20 that ranges from ~0.45 when every difference is at ±1 down to
+    effectively 0 when every question moves by the same amount. A figure that swings that far
+    is no longer the flat "your eval set is this small" reading every message here is built
+    on. The arithmetic stays; the sentences around it say "below about", never "and above".
 
     Returns 1.0 for a set too small to detect anything short of a total reversal.
     """
@@ -110,10 +124,16 @@ class EvalSetQuality:
         return self.portable == self.answerable
 
     def can_support(self, difference: float) -> bool:
-        """Whether a claimed difference of this size is bigger than the noise floor.
+        """Whether a claimed difference of this size clears the noise floor.
 
         Tested against the exact floor, not the printed one. The number in `summary()` is
         rounded up precisely so that handing it back here answers True.
+
+        Clearing the floor is a necessary condition, not a sufficient one. `True` here means
+        the gap is not obviously too small for a set this size; whether `compare()` will call
+        it also depends on how much the per-question scores vary, which nothing on this object
+        has seen. `False` is the reliable half of this answer -- see
+        `minimum_detectable_difference`.
         """
         return difference >= self.detectable_difference
 
@@ -125,10 +145,17 @@ class EvalSetQuality:
         # appears nowhere at all. The word the tool uses for *scorable* had been lent to a
         # weaker claim. `contextgrid run` is where evidence meets documents, and it says so
         # there with `anchor_not_found`.
+        # "detects differences of 0.45 and above" was a promise, and the paired test this
+        # number describes does not keep it: a gap of exactly 0.45 over 20 questions, with the
+        # per-question differences at their widest, comes back `distinguishable=False`. The
+        # floor is a magnitude -- the right one to plan an eval set around -- and stating it as
+        # a threshold invited somebody to read 0.46 off a leaderboard and call it settled.
+        # Phrased downwards for the same reason `round_up` rounds that way: the safe half of
+        # this claim is the half about what the set *cannot* see.
         parts = [
             f"{self.size} questions ({self.answerable} with evidence, unchecked against a corpus)",
             f"{self.reviewed_fraction:.0%} reviewed",
-            f"detects differences of {self.reported_detectable_difference:.2f} and above",
+            f"differences below about {self.reported_detectable_difference:.2f} are noise",
         ]
         return ", ".join(parts)
 
@@ -150,9 +177,9 @@ class EvalSetQuality:
             log.add(
                 WarningCode.SMALL_EVAL_SET,
                 f"{self.answerable} questions carry evidence, unchecked against a corpus, so "
-                f"this set can only detect differences of about "
-                f"{self.reported_detectable_difference:.2f} or larger. Anything smaller than "
-                "that on a leaderboard built from this set is noise",
+                f"anything below about {self.reported_detectable_difference:.2f} is noise on "
+                "this set -- it cannot reliably detect a gap that small. A gap above that is "
+                "worth testing rather than assuming; `is_the_winner_real()` settles it",
                 severity=Severity.CAUTION,
                 stage="evalset",
                 answerable=self.answerable,
@@ -161,7 +188,7 @@ class EvalSetQuality:
             log.add(
                 WarningCode.SMALL_EVAL_SET,
                 f"{self.answerable} questions carry evidence, unchecked against a corpus, so "
-                f"this set detects differences of about "
+                f"it will not reliably detect anything below about "
                 f"{self.reported_detectable_difference:.2f}. Enough to choose between clearly "
                 "different configurations, not enough to rank close ones",
                 severity=Severity.INFO,

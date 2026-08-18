@@ -60,7 +60,7 @@ markdown · recursive:256,overlap=32 · tfidf · dense   0.877
 markdown · recursive:256,overlap=32 · hash:512 · dense  0.836
 markdown · recursive:256,overlap=32 · length · dense  0.164
 
-markdown · recursive:256,overlap=32 · tfidf · dense scored best on recall@5 at 0.877, across 3 configurations, scored on 73 questions. The eval set holds 74 questions in all; the other 1 was not scored, because no chunk in this index held its evidence. markdown · recursive:256,overlap=32 · tfidf · dense and markdown · recursive:256,overlap=32 · hash:512 · dense are not distinguishable on this eval set (n=73). The gap of +0.041 on recall@5 sits inside the confidence interval -0.027 to +0.110, so it is consistent with no difference at all. Settling a gap this size would take roughly 2,300 questions -- on a two-sided test at alpha 0.05 with 80% power, assuming per-question scores vary as much as a 0-1 score possibly can. It is an order of magnitude, not a count. It runs locally at no cost per query, answering at under 1 ms p95. Note that 1 piece of evidence could not be located in this parse at all, so that question was unanswerable whatever the retriever did. 10 of 74 questions failed. 100% of those are fp1_missing_content: the evidence is not in this index at all. Either the parser lost it, the chunker dropped it, or the corpus does not contain it. No retriever can fix this. This was a retrieval-only run, so failure points four to seven -- the ones about what the generator did with the context -- cannot be seen from here.
+markdown · recursive:256,overlap=32 · tfidf · dense scored best on recall@5 at 0.877, across 3 configurations, scored on 73 questions. The eval set holds 74 questions in all; the other 1 was not scored, because no chunk in this index held its evidence. markdown · recursive:256,overlap=32 · tfidf · dense and markdown · recursive:256,overlap=32 · hash:512 · dense are not distinguishable on this eval set (n=73). The gap of +0.041 on recall@5 sits inside the confidence interval -0.027 to +0.110, so it is consistent with no difference at all. Settling a gap this size would take at least roughly 2,300 questions -- on a two-sided test at alpha 0.05 with 80% power. That estimate assumes an unpaired test while this one is paired, so it is a lower bound: the more the two configurations disagree question by question, the more you need. It is an order of magnitude, not a count. It runs locally at no cost per query, answering at under 1 ms p95. Note that 1 piece of evidence could not be located in this parse at all, so that question was unanswerable whatever the retriever did. 10 of 74 questions failed. 100% of those are fp1_missing_content: the evidence is not in this index at all. Either the parser lost it, the chunker dropped it, or the corpus does not contain it. No retriever can fix this. This was a retrieval-only run, so failure points four to seven -- the ones about what the generator did with the context -- cannot be seen from here.
 ```
 
 ### How to read it
@@ -71,14 +71,16 @@ below `tfidf`'s 0.877. That's the sanity check passing: the eval set can tell a 
 none.
 
 `tfidf` beats `hash:512` by 0.041 — and the tool says plainly that gap is noise: **"Settling a
-gap this size would take roughly 2,300 questions -- on a two-sided test at alpha 0.05 with 80%
-power, assuming per-question scores vary as much as a 0-1 score possibly can. It is an order of
-magnitude, not a count."** That number is doing real work. It isn't "maybe with more data"
-hand-waving — it's the eval set's own quality assessment telling you how far you are from a
-trustworthy answer, and 2,300 against this set's 74 is far enough that nobody should act on this
-gap. Note that the tool calls it an order of magnitude rather than a count, and means it: the
-estimate assumes the worst possible per-question variance, so treat "thousands, not dozens" as
-the claim. Report the leaderboard order if you like; don't report a winner.
+gap this size would take at least roughly 2,300 questions -- on a two-sided test at alpha 0.05
+with 80% power. That estimate assumes an unpaired test while this one is paired, so it is a
+lower bound: the more the two configurations disagree question by question, the more you need.
+It is an order of magnitude, not a count."** That number is doing real work. It isn't "maybe
+with more data" hand-waving — it's the eval set's own quality assessment telling you how far you
+are from a trustworthy answer, and 2,300 against this set's 74 is far enough that nobody should
+act on this gap. Note that the tool calls it an order of magnitude rather than a count, and
+means it: the estimate comes from an unpaired formula and the test is paired, so 2,300 is the
+floor rather than the target. Treat "thousands, not dozens" as the claim. Report the
+leaderboard order if you like; don't report a winner.
 
 ### Real models: what it takes, and the offline stand-in
 

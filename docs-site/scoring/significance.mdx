@@ -192,9 +192,10 @@ print(result.verdict())
 # has a confidence interval of +0.062 to +0.500, which does stay clear of zero, but the
 # p-value of 0.245 is not below alpha 0.05. Both have to hold before this package will name a
 # winner, so on this evidence the ranking could still come down to which questions were asked.
-# Settling a gap this size would take roughly 63 questions -- on a two-sided test at alpha
-# 0.05 with 80% power, assuming per-question scores vary as much as a 0-1 score possibly can.
-# It is an order of magnitude, not a count.
+# Settling a gap this size would take at least roughly 63 questions -- on a two-sided test at
+# alpha 0.05 with 80% power. That estimate assumes an unpaired test while this one is paired,
+# so it is a lower bound: the more the two configurations disagree question by question, the
+# more you need. It is an order of magnitude, not a count.
 ```
 
 Note which half of the rule failed here, because the sentence says so. The interval

@@ -164,7 +164,7 @@ from contextgrid.transform import (
 )
 from contextgrid.validate import ValidationResult, load_benchmark, self_check, validate
 
-__version__ = "0.9.3"
+__version__ = "0.9.4"
 
 __all__ = [
     "CHUNKERS",

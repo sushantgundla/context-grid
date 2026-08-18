@@ -205,7 +205,7 @@ one and the section looks like this:
 - Corpus: `deadbeefdead` (12 files)
 - Eval set: `support-tickets` v3 (`abc123abc123`)
 - Resolution: coverage at 0.5
-- context-grid 0.9.3 on Python 3.13.0
+- context-grid 0.9.4 on Python 3.13.0
 
 Two runs with the same manifest hash must produce identical numbers.
 ```

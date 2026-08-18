@@ -205,6 +205,22 @@ class Runner:
         headline_k = int(k_text or 5)
         scores = per_query(qrels, run, metric_name, headline_k)
 
+        # The same per-question scores for every metric this run actually computed, so a
+        # paired test can be run on any of them. Without the table, `Results.significance`
+        # read `scores` above whatever metric it was asked for and reported the headline's
+        # arithmetic under the requested metric's name.
+        #
+        # Keyed off `metrics` rather than off `self.metric_names`, so a metric that raised and
+        # was dropped from the results does not get a per-question column either -- the two
+        # views agree on what was measured.
+        per_query_by_metric = {
+            label: per_query(qrels, run, name, k)
+            for name in self.metric_names
+            for k in self.ks
+            for label in [f"{name}@{k}"]
+            if label in metrics
+        }
+
         # Character-level precision is the honest check on chunk-level recall. A config
         # returning enormous chunks can score recall@5 of 1.0 while filling the context
         # window with text that has nothing to do with the question.
@@ -259,7 +275,28 @@ class Runner:
         if quality is not None:
             metrics["embedding_quality"] = quality
 
-        if not qrels:
+        if not qrels and not len(evalset):
+            # An eval set with no questions in it is not an evidence problem, and saying it is
+            # sends somebody to debug a parser that did nothing wrong. The message below names
+            # two causes -- the parse lost the text, or the quotes are not in the documents --
+            # and neither can be true of a file that holds no quotes to begin with. An empty
+            # `questions.jsonl` parses perfectly, so this is a mistake somebody makes without
+            # any sign that they made it.
+            # Deliberately without the configuration's label, unlike its sibling below. The
+            # fault is one file, not one configuration, and every configuration in the sweep
+            # hits it -- so an unlabelled message is identical across all of them and collapses
+            # to the single line the reader needs instead of being repeated per row.
+            warnings.add(
+                WarningCode.GOLD_SPAN_UNREACHABLE,
+                f"the eval set {evalset.id!r} has no questions in it, so every configuration "
+                "was built and indexed and then scored nothing. Every metric is absent rather "
+                "than zero, and none of them says anything about any configuration. Add "
+                "questions to the eval set, or point `evalset:` at the file you meant",
+                severity=Severity.INVALID,
+                stage="score",
+                subject=evalset.id,
+            )
+        elif not qrels:
             # What it is not, and then plainly that it cannot say which of the two causes it
             # is. The old wording -- "for reasons that have nothing to do with retrieval" --
             # is true and stops there, and it fires just as readily when the eval set quotes
@@ -304,6 +341,8 @@ class Runner:
             unresolved_gold=unresolved,
             run=run,
             per_query=scores,
+            per_query_by_metric=per_query_by_metric,
+            headline=self.headline,
             answers=answers,
             retrieval={
                 "searches": pipeline.trace.searches,
