@@ -63,6 +63,8 @@ Give it, in the prompt:
 - The documentation site — `https://context-grid.mintlify.site` — as its **only** manual
 - The three rules above, stated as rules
 - A scratch directory on the host, under the session scratchpad, never inside the repo
+- The container name to use, sharing a prefix with every other container this drive creates
+  (`cg-drive-a`, `cg-drive-b`, …) so step 7 can remove them all without touching anything else
 - Which features to cover (see below)
 - The reporting style block from `~/.claude/CLAUDE.md`
 
@@ -122,6 +124,28 @@ would have hit, not what the diff shows. Then tag, and let the workflow publish.
 PyPI never allows a version to be reused, so the metadata in a released version is frozen
 forever. 0.9.0 permanently carries a `Documentation` URL pointing at the wrong docs, because
 that was noticed an hour too late.
+
+### Step 7 — tear the containers down
+
+**Every container this drive created must be removed before the work is reported finished.**
+Not stopped, removed:
+
+```bash
+docker rm -f cg-drive-a cg-drive-b cg-drive-c cg-verify   # whatever you actually named them
+docker ps -a --format '{{.Names}}' | grep -E '^cg-'       # must print nothing
+```
+
+The containers are deliberately kept alive through steps 4 and 5 — verification needs them, and
+the fixing agent still has its corpus in one — so nothing may be removed until the fixes are in
+and the gates are green. After that they are only cost. A drive leaves three or four containers
+holding a Python image and a corpus each, and they survive until something removes them.
+
+Remove only what this drive made. Name them with a common prefix at creation so the sweep at the
+end cannot take anything else with it: there are usually unrelated containers on the machine,
+and one of them is somebody's database.
+
+This is the last step and it is not optional. A drive that fixed everything and left four
+containers running did not finish.
 
 ## Traps that have produced false findings
 
