@@ -99,21 +99,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # Twelve attempts with a 30s gap, not five. 0.9.1 uploaded fine and this job still failed:
-      # the 3.10 runner's mirror had the release, the 3.13 runner's did not, and 2.5 minutes was
-      # not enough for PyPI's CDN to agree with itself. A red X on a release that actually
-      # succeeded is worse than a slow green one -- it teaches you to ignore the check.
+      # Twenty minutes, and this is the third budget this step has had. Five attempts was not
+      # enough for 0.9.1: the 3.10 runner's mirror had the release, the 3.13 runner's did not,
+      # and 2.5 minutes was too short for PyPI's CDN to agree with itself. Twelve attempts was
+      # not enough for 0.9.4 either -- the same 3.10 runner sat through all six minutes while
+      # 0.9.4 installed fine everywhere else, including a local 3.10 container minutes later.
+      #
+      # The pattern is that this budget keeps being set from how long propagation took last
+      # time, and propagation has no upper bound worth guessing at. So it is now generous enough
+      # that exhausting it means something is actually wrong rather than merely slow. A red X on
+      # a release that succeeded is worse than a slow green one: it teaches you to ignore the
+      # check, and by 0.9.4 it had.
       - name: Install from PyPI and use it
         run: |
           version="${GITHUB_REF_NAME#v}"
+          deadline=$(( SECONDS + 20 * 60 ))
           installed=""
-          for attempt in $(seq 1 12); do
+          attempt=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            attempt=$(( attempt + 1 ))
             if pip install "context-grid==$version"; then installed=yes; break; fi
             echo "attempt $attempt: not on this mirror yet, waiting 30s"
             sleep 30
           done
           if [ -z "$installed" ]; then
-            echo "::error::context-grid==$version did not become installable within 6 minutes" >&2
+            echo "::error::context-grid==$version did not become installable within 20 minutes, over $attempt attempts" >&2
             exit 1
           fi
           python -c "import contextgrid as cg; print(cg.__version__)"
