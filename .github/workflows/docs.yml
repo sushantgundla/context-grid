@@ -118,6 +118,39 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
+      - name: No page contains MDX a build would refuse
+        # `reference/reports.mdx` carried `default="\\"\\""` -- a backslash escape inside a JSX
+        # attribute, which MDX does not accept. Mintlify dropped that one page, kept building the
+        # other 37, and reported the deploy successful, so the only visible symptom was a 404 on a
+        # page five others linked to. This is not a full MDX parse; it is the one shape that has
+        # actually bitten, checked without needing Node in this workflow. The `live` job below is
+        # the backstop for everything it does not know about.
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+
+          attribute_with_backslash = re.compile(r'="[^"]*\\')
+          problems = []
+          for page in sorted(pathlib.Path("docs-site").rglob("*.mdx")):
+              fenced = False
+              for line_number, line in enumerate(page.read_text().splitlines(), start=1):
+                  if line.lstrip().startswith("```"):
+                      fenced = not fenced
+                      continue
+                  if fenced:
+                      continue
+                  if attribute_with_backslash.search(line):
+                      problems.append(
+                          f"{page}:{line_number} has a backslash inside a JSX attribute, "
+                          f"which MDX will not parse: {line.strip()}"
+                      )
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          print(f"{len(problems)} page(s) with unparseable MDX")
+          sys.exit(1 if problems else 0)
+          PY
+
       - name: The version printed in the docs matches the package
         run: |
           python - <<'PY'
