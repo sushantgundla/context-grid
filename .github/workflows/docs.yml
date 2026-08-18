@@ -176,18 +176,26 @@ jobs:
 
   # The check that would actually have caught this. Everything above passed the whole time the
   # site was broken.
+  #
+  # This job races the deploy it is checking. Mintlify rebuilds when GitHub tells it to, which is
+  # its own pipeline on its own clock: the first run of this job failed 7 seconds after a push
+  # against a page that went live 45 seconds later. So it retries to a deadline rather than
+  # reading the site once. `publish.yml` learned the same lesson from PyPI's CDN and wrote it
+  # down there: a red X on something that actually worked is worse than a slow green one,
+  # because it teaches you to ignore the check.
   live:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Every navigation page is reachable on the published site
+      - name: The published site matches this commit
         run: |
           python - <<'PY'
-          import json, pathlib, sys, urllib.error, urllib.request
+          import json, pathlib, re, sys, time, tomllib, urllib.error, urllib.request
 
           base = "${{ env.DOCS_URL }}".rstrip("/")
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
           config = json.loads(pathlib.Path("docs-site/docs.json").read_text())
 
           def walk(node):
@@ -201,45 +209,60 @@ jobs:
                       if key in node:
                           yield from walk(node[key])
 
-          problems = []
-          for slug in walk(config["navigation"]):
-              url = f"{base}/{slug}"
+          slugs = list(walk(config["navigation"]))
+
+          def fetch(url):
+              """(status, body). A body only when the response was readable."""
               try:
                   with urllib.request.urlopen(url, timeout=30) as response:
-                      status = response.status
+                      return response.status, response.read().decode("utf-8", "replace")
               except urllib.error.HTTPError as error:
-                  status = error.code
+                  return error.code, ""
               except OSError as error:
-                  problems.append(f"{url} could not be fetched: {error}")
-                  continue
+                  return None, str(error)
+
+          def what_is_wrong():
+              problems = []
+              for slug in slugs:
+                  url = f"{base}/{slug}"
+                  status, detail = fetch(url)
+                  if status is None:
+                      problems.append(f"{url} could not be fetched: {detail}")
+                  elif status != 200:
+                      problems.append(
+                          f"{url} returned {status} -- the page is in docs.json but is not published"
+                      )
+              status, body = fetch(f"{base}/installation.md")
               if status != 200:
-                  problems.append(f"{url} returned {status} -- the page is in docs.json but is not published")
+                  problems.append(f"{base}/installation.md returned {status}")
+              else:
+                  found = set(re.findall(r"context-grid (\d+\.\d+\.\d+)", body))
+                  if found != {version}:
+                      shown = ", ".join(sorted(found)) or "(no version)"
+                      problems.append(
+                          f"{base}/installation shows context-grid {shown}, "
+                          f"but this repository is at {version}"
+                      )
+              return problems
+
+          # Twelve minutes. A deploy normally lands inside one, but a queued build on a bad day
+          # takes several, and this job exists to catch a site that never rebuilds -- not one
+          # that rebuilt slowly.
+          deadline = time.monotonic() + 12 * 60
+          attempt = 0
+          while True:
+              attempt += 1
+              problems = what_is_wrong()
+              if not problems:
+                  print(f"published site matches {version}, all {len(slugs)} pages reachable")
+                  sys.exit(0)
+              if time.monotonic() >= deadline:
+                  break
+              print(f"attempt {attempt}: {len(problems)} problem(s), the deploy may still be running")
+              time.sleep(30)
 
           for problem in problems:
               print(f"::error::{problem}")
-          sys.exit(1 if problems else 0)
-          PY
-
-      - name: The published site is not behind the repository
-        run: |
-          python - <<'PY'
-          import re, sys, tomllib, urllib.request
-
-          base = "${{ env.DOCS_URL }}".rstrip("/")
-          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
-
-          # `.md` gives the page as source rather than as a rendered app shell, so the version
-          # string is visible without parsing HTML.
-          with urllib.request.urlopen(f"{base}/installation.md", timeout=30) as response:
-              published = response.read().decode("utf-8", "replace")
-
-          found = set(re.findall(r"context-grid (\d+\.\d+\.\d+)", published))
-          if found != {version}:
-              print(
-                  f"::error::{base}/installation shows context-grid "
-                  f"{', '.join(sorted(found)) or '(no version)'}, but this repository is at {version}. "
-                  "The docs site has not rebuilt from the current main."
-              )
-              sys.exit(1)
-          print(f"published docs are at {version}, matching the repository")
+          print(f"still wrong after {attempt} attempts over twelve minutes")
+          sys.exit(1)
           PY
