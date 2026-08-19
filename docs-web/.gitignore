@@ -1,0 +1,6 @@
+# Downloaded, never committed: `npm install` puts ~12,000 files here.
+node_modules/
+
+# Build output and Astro's generated types.
+dist/
+.astro/

@@ -1,0 +1,18 @@
+---
+// Only a wrapper: it exists so consecutive accordions sit together without doubled margins.
+---
+<div class="accordion-group"><slot /></div>
+
+<style>
+  .accordion-group { margin: 1rem 0; }
+  .accordion-group :global(details) { margin: 0 0 -1px; border-radius: 0; }
+  .accordion-group :global(details:first-child) {
+    border-top-left-radius: 0.5rem;
+    border-top-right-radius: 0.5rem;
+  }
+  .accordion-group :global(details:last-child) {
+    margin-bottom: 0;
+    border-bottom-left-radius: 0.5rem;
+    border-bottom-right-radius: 0.5rem;
+  }
+</style>

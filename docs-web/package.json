@@ -1,0 +1,20 @@
+{
+  "name": "context-grid-docs",
+  "version": "1.0.0",
+  "description": "The context-grid documentation site, built from the MDX in ../docs-site.",
+  "scripts": {
+    "sync": "node scripts/sync-navigation.mjs",
+    "dev": "npm run sync && astro dev",
+    "build": "npm run sync && astro build",
+    "preview": "astro preview"
+  },
+  "type": "module",
+  "dependencies": {
+    "@astrojs/mdx": "^7.0.6",
+    "@astrojs/starlight": "^0.41.7",
+    "acorn": "^8.18.0",
+    "astro": "^7.2.3",
+    "sharp": "^0.35.3"
+  },
+  "private": true
+}

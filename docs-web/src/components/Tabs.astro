@@ -1,0 +1,16 @@
+---
+// Deliberately not tabs. Astro cannot enumerate slotted children, so a real tab strip would mean
+// either reaching into Starlight's internals or shipping JavaScript, and there are six Tab uses
+// in the whole site. Stacked labelled panels show the same content, need no JavaScript, and
+// cannot desynchronise from their labels.
+---
+<div class="tabs"><slot /></div>
+
+<style>
+  .tabs {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    margin: 1rem 0;
+    overflow: hidden;
+  }
+</style>

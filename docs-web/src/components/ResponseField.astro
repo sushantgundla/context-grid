@@ -1,0 +1,7 @@
+---
+// The same row as ParamField, for values coming back rather than going in. Mintlify names the
+// prop `name` here and `path` there; nothing else differs, so the markup is deliberately shared.
+import ParamField from './ParamField.astro'
+const { name, type, default: fallback } = Astro.props
+---
+<ParamField path={name} type={type} default={fallback}><slot /></ParamField>

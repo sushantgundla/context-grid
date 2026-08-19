@@ -1,0 +1,9 @@
+---
+// The numbering is CSS counters rather than an <ol>, because each Step carries its own heading
+// and wrapping headings in list items reads badly to a screen reader.
+---
+<div class="steps"><slot /></div>
+
+<style>
+  .steps { counter-reset: step; margin: 1rem 0; }
+</style>
