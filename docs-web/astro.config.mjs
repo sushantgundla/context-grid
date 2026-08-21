@@ -22,6 +22,12 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'context-grid',
+      customCss: ['./src/styles/theme.css'],
+      logo: {
+        light: './public/logo-light.svg',
+        dark: './public/logo-dark.svg',
+        replacesTitle: true,
+      },
       description:
         'A lab for grounding pipelines: sweep parser x chunker x embedder x index x reranker ' +
         'over your own documents and score every combination on quality, latency and cost.',

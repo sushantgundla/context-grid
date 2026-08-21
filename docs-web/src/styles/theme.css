@@ -1,0 +1,277 @@
+/* The look of the site.
+ *
+ * Starlight's defaults are sound but generic, and the pages they render came from Mintlify,
+ * where the reader had a denser, warmer, more designed page. This closes that gap: the brand
+ * teal from docs.json, a real type scale, and component styling that treats a parameter list --
+ * 201 of the 372 component uses on this site -- as the primary reading surface it actually is.
+ *
+ * Everything is defined in both themes. Starlight puts `data-theme="light"` on the root for
+ * light and nothing for dark, so the dark values are the bare `:root` and light overrides them.
+ */
+
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+:root {
+  --cg-teal-100: #ccfbf1;
+  --cg-teal-300: #5eead4;
+  --cg-teal-400: #2dd4bf;
+  --cg-teal-500: #14b8a6;
+  --cg-teal-600: #0d9488;
+  --cg-teal-700: #0f766e;
+  --cg-teal-900: #134e4a;
+
+  --sl-font: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --sl-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Slightly larger than Starlight's default and noticeably looser. Reference prose is read
+   * slowly and in long stretches; the default line-height is tuned for shorter pages. */
+  --sl-text-body: 1rem;
+  --sl-line-height: 1.75;
+  --sl-content-width: 50rem;
+  --sl-sidebar-width: 17.5rem;
+  --sl-nav-height: 3.75rem;
+}
+
+/* Dark, the default. A near-black with a blue cast rather than pure grey: pure #000 makes the
+ * teal look acidic, and a slight cool tint keeps code blocks from reading as brown. */
+:root {
+  --sl-color-accent-low: #0b2f2c;
+  --sl-color-accent: var(--cg-teal-600);
+  --sl-color-accent-high: var(--cg-teal-300);
+  --sl-color-text-accent: var(--cg-teal-400);
+
+  --sl-color-white: #f8fafc;
+  --sl-color-gray-1: #e2e8f0;
+  --sl-color-gray-2: #cbd5e1;
+  --sl-color-gray-3: #94a3b8;
+  --sl-color-gray-4: #64748b;
+  --sl-color-gray-5: #2b3444;
+  --sl-color-gray-6: #1a2130;
+  --sl-color-gray-7: #141a26;
+  --sl-color-black: #0d121c;
+
+  --sl-color-bg: #0d121c;
+  --sl-color-bg-nav: rgba(13, 18, 28, 0.72);
+  --sl-color-bg-sidebar: #0d121c;
+  --sl-color-bg-inline-code: #1c2534;
+  --sl-color-hairline: #1e2635;
+  --sl-color-hairline-light: #2b3444;
+  --sl-color-hairline-shade: #161d2a;
+
+  --cg-code-bg: #10161f;
+  --cg-surface: #121926;
+  --cg-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.6);
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: var(--cg-teal-100);
+  --sl-color-accent: var(--cg-teal-600);
+  --sl-color-accent-high: var(--cg-teal-900);
+  --sl-color-text-accent: var(--cg-teal-700);
+
+  --sl-color-white: #0f172a;
+  --sl-color-gray-1: #1e293b;
+  --sl-color-gray-2: #334155;
+  --sl-color-gray-3: #64748b;
+  --sl-color-gray-4: #94a3b8;
+  --sl-color-gray-5: #e2e8f0;
+  --sl-color-gray-6: #f1f5f9;
+  --sl-color-gray-7: #f8fafc;
+  --sl-color-black: #ffffff;
+
+  --sl-color-bg: #ffffff;
+  --sl-color-bg-nav: rgba(255, 255, 255, 0.75);
+  --sl-color-bg-sidebar: #fcfdfe;
+  --sl-color-bg-inline-code: #f1f5f9;
+  --sl-color-hairline: #e8edf3;
+  --sl-color-hairline-light: #dde4ec;
+  --sl-color-hairline-shade: #eef2f7;
+
+  --cg-code-bg: #f8fafc;
+  --cg-surface: #ffffff;
+  --cg-shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 24px -12px rgb(15 23 42 / 0.12);
+}
+
+/* ---------- typography ---------- */
+
+body {
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
+}
+
+.sl-markdown-content {
+  font-size: var(--sl-text-body);
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+.sl-markdown-content h4,
+.content-panel h1 {
+  letter-spacing: -0.022em;
+  font-weight: 650;
+}
+
+.sl-markdown-content h2 {
+  margin-top: 2.75rem;
+  padding-top: 1.75rem;
+  border-top: 1px solid var(--sl-color-hairline);
+}
+
+/* A heading whose whole text is code -- `write_bundle: everything, in one call` -- was rendering
+ * as a grey slab the width of the line. Inside a heading the code is the subject, not a quote. */
+.sl-markdown-content :is(h1, h2, h3, h4) code {
+  background: none;
+  padding: 0;
+  font-size: 0.92em;
+  color: var(--sl-color-text-accent);
+  border: none;
+}
+
+.sl-markdown-content a:not(:where(.not-content *)) {
+  text-decoration-color: color-mix(in srgb, var(--sl-color-text-accent) 45%, transparent);
+  text-underline-offset: 0.2em;
+  transition: text-decoration-color 0.15s ease;
+}
+
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  text-decoration-color: var(--sl-color-text-accent);
+}
+
+.sl-markdown-content :not(pre) > code {
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 0.3rem;
+  padding: 0.1em 0.35em;
+  font-size: 0.85em;
+  font-weight: 450;
+}
+
+/* ---------- code blocks ---------- */
+
+.sl-markdown-content .expressive-code,
+.sl-markdown-content pre {
+  border-radius: 0.6rem;
+}
+
+.expressive-code .frame pre {
+  background: var(--cg-code-bg) !important;
+  border: 1px solid var(--sl-color-hairline) !important;
+  border-radius: 0.6rem !important;
+}
+
+.expressive-code .frame {
+  box-shadow: none !important;
+}
+
+/* ---------- chrome ---------- */
+
+header.header {
+  border-bottom: 1px solid var(--sl-color-hairline);
+  backdrop-filter: blur(12px);
+}
+
+.sidebar-pane {
+  border-inline-end: 1px solid var(--sl-color-hairline);
+}
+
+/* The sidebar is a map, not a menu: group labels sit back, the current page sits forward, and
+ * everything between them is quiet enough to scan in one pass. */
+#starlight__sidebar .top-level > li > details > summary,
+#starlight__sidebar summary .group-label .large {
+  font-size: var(--sl-text-xs);
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--sl-color-gray-3);
+}
+
+#starlight__sidebar a {
+  border-radius: 0.4rem;
+  padding-block: 0.3rem;
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-2);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#starlight__sidebar a:hover {
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-white);
+}
+
+#starlight__sidebar a[aria-current='page'] {
+  background: color-mix(in srgb, var(--sl-color-accent) 16%, transparent);
+  color: var(--sl-color-text-accent);
+  font-weight: 600;
+}
+
+/* The table of contents is a secondary index; it should never compete with the prose. */
+starlight-toc a {
+  font-size: var(--sl-text-xs);
+  border-inline-start: 2px solid transparent;
+}
+
+starlight-toc a[aria-current='true'] {
+  border-inline-start-color: var(--sl-color-accent);
+  font-weight: 600;
+}
+
+/* ---------- component overrides ---------- */
+
+/* Starlight's summary chevron is the one the Accordion uses. It is tinted to the accent here so
+ * it reads as part of the component rather than as a stray glyph, and pulled in slightly because
+ * the component supplies its own padding. */
+.sl-markdown-content .accordion > summary::before {
+  color: var(--sl-color-text-accent);
+  margin-inline-start: -0.15rem;
+}
+
+/* Asides carry the sharpest sentences in these docs -- the warnings about numbers that are not
+ * measurements. Starlight's default is a full-bleed tinted block; a rule and a tinted surface
+ * reads closer to the page and puts the emphasis on the text rather than the container. */
+.sl-markdown-content .starlight-aside {
+  border-radius: 0.6rem;
+  border-inline-start-width: 3px;
+  padding: 0.9rem 1.1rem;
+  background: color-mix(in srgb, var(--sl-color-asides-text-accent) 8%, var(--cg-surface));
+}
+
+.sl-markdown-content .starlight-aside__title {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sl-markdown-content .starlight-aside__content {
+  font-size: 0.94rem;
+}
+
+/* Tables are used for real comparisons here -- which chunker, at what cost -- so they get a
+ * header that holds still and enough padding to scan a column without losing the row. */
+.sl-markdown-content table:not(:where(.not-content *)) {
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 0.6rem;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  font-size: 0.9rem;
+}
+
+.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.sl-markdown-content th:not(:where(.not-content *)) {
+  background: var(--sl-color-gray-7);
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-2);
+}
+
+.sl-markdown-content tr:last-child td:not(:where(.not-content *)) {
+  border-bottom: none;
+}

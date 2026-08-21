@@ -1,52 +1,79 @@
 ---
-// Mintlify's parameter row: the name, its type, and an optional default, above the prose.
-// 167 uses across the docs, so this is the component the migration actually rests on.
+// Mintlify's parameter row. 167 uses across the docs, and with ResponseField it is 201 of the
+// 372 component uses on the site -- so on a reference page this, not the prose, is what the
+// reader is actually scanning. It is styled as a scannable list: the name first and in mono so
+// it lines up with the code above it, the type as a quiet badge, the default further back
+// still, and the description indented under all three.
 const { path, type, default: fallback } = Astro.props
 ---
 <div class="field">
-  <p class="field-head">
+  <div class="field-head">
     <code class="field-name">{path}</code>
     {type && <span class="field-type">{type}</span>}
     {fallback !== undefined && (
-      <span class="field-default">default: <code>{fallback}</code></span>
+      <span class="field-default">default <code>{fallback}</code></span>
     )}
-  </p>
+  </div>
   <div class="field-body"><slot /></div>
 </div>
 
 <style>
   .field {
     border-top: 1px solid var(--sl-color-hairline);
-    padding: 0.85rem 0;
+    padding: 0.9rem 0 0.9rem 0.9rem;
+    margin-inline-start: -0.9rem;
+    border-inline-start: 2px solid transparent;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  /* Hovering a row picks it out of a long list without moving anything. */
+  .field:hover {
+    border-inline-start-color: var(--sl-color-accent);
+    background: linear-gradient(
+      to right,
+      color-mix(in srgb, var(--sl-color-accent) 7%, transparent),
+      transparent 40%
+    );
   }
   .field-head {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem;
-    margin: 0;
+    align-items: center;
+    gap: 0.45rem;
   }
   .field-name {
+    font-family: var(--sl-font-mono);
+    font-size: 0.9rem;
     font-weight: 600;
-    background: none;
-    padding: 0;
     color: var(--sl-color-white);
+    background: none;
+    border: none;
+    padding: 0;
   }
   .field-type {
     font-family: var(--sl-font-mono);
-    font-size: var(--sl-text-xs);
+    font-size: 0.7rem;
+    line-height: 1;
+    padding: 0.25rem 0.4rem;
+    border-radius: 0.3rem;
     color: var(--sl-color-text-accent);
+    background: color-mix(in srgb, var(--sl-color-accent) 14%, transparent);
   }
   .field-default {
-    font-size: var(--sl-text-xs);
+    font-size: 0.72rem;
     color: var(--sl-color-gray-3);
+    letter-spacing: 0.01em;
   }
   .field-default code {
     background: none;
+    border: none;
     padding: 0;
     font-size: inherit;
+    color: var(--sl-color-gray-2);
   }
-  /* The prose under a field is secondary to the field itself, so it sits tighter than body text. */
-  .field-body :global(> :first-child) { margin-top: 0.35rem; }
+  .field-body {
+    font-size: 0.94rem;
+    color: var(--sl-color-gray-2);
+  }
+  .field-body :global(> :first-child) { margin-top: 0.4rem; }
   .field-body :global(> :last-child) { margin-bottom: 0; }
 </style>
