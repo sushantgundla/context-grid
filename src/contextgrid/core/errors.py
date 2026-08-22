@@ -33,10 +33,27 @@ class MissingExtraError(ContextGridError, ImportError):
     rather than leaving the user to guess which extra a module belongs to.
     """
 
-    def __init__(self, feature: str, extra: str, package: str | None = None) -> None:
+    def __init__(
+        self,
+        feature: str,
+        extra: str,
+        package: str | None = None,
+        *,
+        detail: str | None = None,
+    ) -> None:
         self.feature = feature
         self.extra = extra
         self.package = package
+        self.detail = detail
         hint = f'pip install "context-grid[{extra}]"'
-        detail = f" (needs {package})" if package else ""
-        super().__init__(f"{feature} requires the '{extra}' extra{detail}. Install it with: {hint}")
+        needs = f" (needs {package})" if package else ""
+        # `feature` is the subject of the sentence this finishes, so it has to be a noun phrase
+        # -- "The docling parser", not a sentence of its own. Anything explanatory goes in
+        # `detail`, which lands after the install hint where a full sentence reads correctly.
+        # A sentence in the subject slot used to render "...needs network once requires the
+        # 'embed' extra", which is not English.
+        # The hint ends on a quote, not a full stop, so `detail` supplies the sentence break.
+        tail = f". {detail}" if detail else ""
+        super().__init__(
+            f"{feature} requires the '{extra}' extra{needs}. Install it with: {hint}{tail}"
+        )

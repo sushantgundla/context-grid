@@ -35,7 +35,7 @@ def _splitter_class(class_name: str) -> Any:
         import langchain_text_splitters
     except ImportError as error:  # pragma: no cover - exercised by the extras test
         raise ChunkerError(
-            "langchain chunkers need langchain-text-splitters. Install with: "
+            "langchain chunkers need langchain-text-splitters. Install it with: "
             "pip install 'context-grid[chunk]'"
         ) from error
 

@@ -76,6 +76,25 @@ canonicalise(Config(reranker="lexical", candidates=100)).candidates
 100
 ```
 
+Which means a sweep of `candidates: [5, 20, 50]` with no reranker anywhere on the grid comes
+back as **one row**, not three — the three depths are one configuration. The sweep says so
+rather than leaving you to work it out from a leaderboard shorter than the shape you were
+quoted:
+
+```
+CAUTION [rerank]: the candidates axis was swept over 5, 20, 50 with no reranker on the matrix,
+so every depth ran the identical search and they were folded into one row. ...
+Nothing here measures `candidates`.
+```
+
+Pair the two axes and both become real:
+
+```yaml
+grid:
+  reranker: [null, lexical, mmr]
+  candidates: [10, 50, 100]
+```
+
 ## The five rerankers
 
 | name | spec | extra needed | when to use it |

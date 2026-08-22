@@ -155,7 +155,7 @@ run:
 | name | spec | needs a model | what it does |
 |---|---|---|---|
 | `none` | `none` | no | Search with the question as asked. The arm to beat. |
-| `expand` | `expand` | no | Spell out configured acronyms before searching. |
+| `expand` | `expand:RPO=recovery point objective` | no | Spell out configured acronyms before searching. |
 | `hyde` | `hyde` | yes | Invent a hypothetical answer and search with that instead of the question. |
 | `multi-query` | `multi-query` or `multi-query:5` | yes | Paraphrase the question several ways and fuse the results. |
 | `decompose` | `decompose` or `decompose:2` | yes | Split a compound question into sub-questions. |
@@ -195,16 +195,36 @@ ExpandAcronyms(expansions={"RPO": "recovery point objective"}).transform("What i
 ('What is our RPO recovery point objective?',)
 ```
 
-With no expansions configured, or nothing in the query to expand, it's the identity —
-`is_identity` is `True` and no extra query is produced:
+From a spec string — a config file, or `Lab.grid(transform=...)` — each acronym is one
+`key=value` pair, and several are separated by commas:
 
 ```python
-r = ExpandAcronyms().transform("What is our RPO?")
-r.queries, r.is_identity
+import contextgrid as cg
+
+cg.get_transform("expand:RPO=recovery point objective,RTO=recovery time objective")
 ```
 
 ```
-(('What is our RPO?',), True)
+ExpandAcronyms(expansions={'RPO': 'recovery point objective', 'RTO': 'recovery time objective'})
+```
+
+<Warning>
+Bare `expand`, with no pairs after it, builds an **empty** table — and an empty table is the
+identity. It searches with the question exactly as asked, scores an exact tie with `none`, and
+still gets its own `+expand` row on the leaderboard. Sweeping `transform: [null, expand]` is
+therefore a sweep of one arm written twice. If you want to know whether expanding acronyms
+helps, the acronyms have to be in the spec.
+</Warning>
+
+With no expansions configured, or nothing in the query to expand, it's the identity — no extra
+query is produced:
+
+```python
+cg.get_transform("expand").transform("What is our RPO?").queries
+```
+
+```
+('What is our RPO?',)
 ```
 
 ### `hyde` — `HyDE`

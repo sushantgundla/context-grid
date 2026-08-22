@@ -482,12 +482,15 @@ class Runner:
         _warn_if_unbounded(matrix, budget)
 
         if chosen is SweepMode.STAGED:
-            return self._staged(matrix, evalset, budget, on_progress)
+            staged = self._staged(matrix, evalset, budget, on_progress)
+            _warn_if_depth_does_nothing(matrix, staged)
+            return staged
 
         configs, report = matrix.expand_with_report(chosen)
         dropped = report.impossible
         results = self._flat(configs, evalset, chosen, budget, on_progress, report.folded)
 
+        _warn_if_depth_does_nothing(matrix, results)
         _warn_if_approximate_alone(matrix, results)
         self._warn_if_at_ceiling(results)
         _warn_about_rewrites(results, report.rewrites)
@@ -596,7 +599,9 @@ class Runner:
         on_progress: Progress | None,
         folded: Mapping[Config, str] | None = None,
     ) -> Results:
-        results = Results(mode=mode.value, seed=self.seed, planned=len(configs))
+        results = Results(
+            mode=mode.value, seed=self.seed, planned=len(configs), headline=self.headline
+        )
         budget.start()
 
         for index, config in enumerate(configs, start=1):
@@ -672,7 +677,12 @@ class Runner:
         called the second of two, and a denominator that moved three times while the header's
         number never moved at all.
         """
-        results = Results(mode="staged", seed=self.seed, planned=matrix.count(SweepMode.STAGED))
+        results = Results(
+            mode="staged",
+            seed=self.seed,
+            planned=matrix.count(SweepMode.STAGED),
+            headline=self.headline,
+        )
         budget.start()
         current = matrix.baseline()
         seen: dict[Config, RunResult] = {}
@@ -855,6 +865,45 @@ def _warn_about_rewrites(results: Results, rewrites: Sequence[str]) -> None:
             severity=Severity.CAUTION,
             stage="retrieve",
         )
+
+
+def _warn_if_depth_does_nothing(matrix: Matrix, results: Results) -> None:
+    """Say so when several candidate depths were asked for and no reranker can read them.
+
+    `candidates` is how deep the reranker looks before it reorders, so with no reranker on the
+    matrix it changes nothing downstream and the normaliser folds every depth onto one
+    configuration. That fold is right -- running the same search three times under three names
+    would credit the depth axis with differences it did not cause -- and it happened in
+    silence. `estimate()` printed `shape ... = 3`, the leaderboard came back with one row, and
+    `results.warnings` was empty, so the two arms the user asked for went missing with nothing
+    anywhere saying they had.
+
+    The same `ARM_NOT_MEASURED` as the folded `widened` arm, for the same reason: a fold that is
+    deliberate, provable and repeatable is not a non-determinism, and it still has to be said
+    out loud. `CAUTION` rather than `INFO` because the CLI drops INFO whenever a run produced
+    results, and this only ever fires on a run that produced results.
+
+    Only when the axis was actually swept. One depth with no reranker is a setting that did
+    nothing, not a measurement that went missing, and a warning there would be noise on
+    ordinary sweeps.
+    """
+    depths = sorted(set(matrix.candidates))
+    if len(depths) < 2:
+        return
+    if any(value not in (None, "none") for value in matrix.reranker):
+        return
+
+    results.warnings.add(
+        WarningCode.ARM_NOT_MEASURED,
+        f"the candidates axis was swept over {', '.join(str(d) for d in depths)} with no "
+        "reranker on the matrix, so every depth ran the identical search and they were folded "
+        "into one row. Depth is how far down the reranker reads before it reorders; with "
+        "nothing reranking, the extra candidates are fetched and dropped. Nothing here "
+        "measures `candidates`. Put a reranker on the matrix -- `reranker: mmr`, or `lexical` "
+        "-- and it becomes a real axis again",
+        severity=Severity.CAUTION,
+        stage="rerank",
+    )
 
 
 def _warn_if_approximate_alone(matrix: Matrix, results: Results) -> None:

@@ -461,7 +461,7 @@ for dtype in ["f32", "f16", "i8"]:
     print(f"usearch:{dtype:4s} is_exact={idx.is_exact!s:5s} recall@10={recall:.3f} size={idx.size_bytes()}")
 ```
 
-Output:
+Output, from one run:
 
 ```
 usearch:f32  is_exact=False recall@10=1.000 size=768000
@@ -470,10 +470,18 @@ usearch:i8   is_exact=False recall@10=0.900 size=384000
 ```
 
 <Note>
-  usearch builds its graph with more than one thread, so recall@10 for this exact code moved
-  between 0.900 and 1.000 across repeated runs while writing this page — `f32` and `f16` stayed
-  at 1.000 every time, `i8` was the one that varied. Don't read a single run's number as exact;
-  run it more than once before trusting a specific figure.
+  Only `size_bytes()` is stable there. usearch builds its graph with more than one thread, so
+  recall@10 for this exact code moves between 0.900 and 1.000 from run to run — and **which**
+  dtype moves is not fixed either. Over 15 fresh processes on one machine: `f32` scored 1.000
+  twelve times and 0.900 three times, `f16` scored 1.000 thirteen times and 0.900 twice, and
+  `i8` scored 0.900 every single time. So on that machine the quantized arm was the *steady*
+  one and the two float arms were the ones that wandered, which is the opposite of what a
+  single run suggests.
+
+  This is the whole reason `recall_against_exact` exists, and the reason to run it more than
+  once. A recall figure you measured one time on an approximate index is a sample, not a
+  property of the index — a 0.900 and a 1.000 an hour apart are the same index behaving
+  normally, not a regression.
 </Note>
 
 `size_bytes()` is computed from `dtype` width (4/2/1 bytes) plus a graph-neighbour estimate,

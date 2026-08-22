@@ -4,13 +4,58 @@ Notable changes to context-grid. This project follows [Semantic Versioning](http
 with the usual pre-1.0 caveat: the public API can still change in a minor release, and will be
 called out here when it does.
 
-## [Unreleased]
+## [0.9.5] — 2026-08-22
 
-Nothing here changes the package. Every entry is a documentation page or a check that was
-supposed to be watching one, and they are grouped together because they share a cause: three
-separate things reported success while the thing they measured was broken.
+0.9.4 was installed from PyPI into containers and driven by three independent readers, each
+working from the published documentation site alone and none of them allowed to see the source.
+They covered install, the quickstart and the command line; statistical significance, eval-set
+generation, exports and error paths; and every axis page. Everything they reported was
+reproduced before a line changed, and two of their findings did not survive that — one was a
+documentation sample that had been right all along.
 
-### Fixed
+The theme this time is **silence**. The tool has always been good at saying when a number it
+just printed did not measure anything, and that is still true — it caught a chunker axis that
+never chunked, an eval set answered perfectly by everything, and an arm that was folded away.
+What it did in these four cases was the opposite: it took an instruction, dropped it, and
+carried on in a voice that sounded certain. A `headline` metric accepted and then ignored by
+every view that reads a result. A sweep that measured nothing and exited zero, which is a green
+build. An axis that could not be configured by any spelling and still got its own leaderboard
+row. Two swept values folded into one with nothing anywhere admitting it.
+
+The first two are the ones worth upgrading for. `contextgrid sweep` is the flags-only one-shot
+most likely to be sitting in a CI job, and it was the one telling that job everything was fine.
+
+### Fixed — a green build for a sweep that measured nothing
+
+- **`contextgrid sweep` exited `0` when nothing had been measured.** The identical experiment
+  through `contextgrid run` exited `1`. The rule, and the helper that decides it, had been
+  written for exactly this and wired into `run` alone — so a sweep over an eval set with no
+  questions in it printed a leaderboard of `NOT_MEASURED` rows, said in plain English that
+  nothing scored best, and then reported success to whatever was watching. `sweep` now applies
+  the same rule and prints the same reasons, on stdout under the empty leaderboard and on stderr
+  as `error:` lines. A sweep stopped partway by `run.budget_seconds` still exits `0`: it scored
+  questions, so it measured something, and the leaderboard it printed is real.
+
+### Fixed — the sentences the package writes when something is missing
+
+- **A missing extra told three of fifteen plugins to "Install with:" and the rest "Install it
+  with:".** The message is assembled in more than one place and the copies drifted, so grepping
+  a log for the sentence the documentation shows you missed three of them.
+- **Six of those messages read as a plural in front of a singular verb** — "faiss indexes
+  requires the 'index' extra". The template puts the feature name straight in front of
+  `requires`, so the name has to be something that *requires*. All six now are.
+- **One of them told you to install something you already had.** When `tiktoken` imported fine
+  but the encoding failed to load, the whole explanation was passed as the feature name, giving
+  "...so this needs network once requires the 'embed' extra". `MissingExtraError` now takes a
+  separate `detail=`, and that message says the true thing: the extra is present and the
+  encoding is what failed.
+
+  None of these could fail a test before this release, and the reason is worth recording: a
+  missing-extra message is only reachable when the extra is *absent*, and the test environment
+  installs `[dev]`. The suites covering those paths never rendered their strings. The new tests
+  block the import instead, which reproduces a bare install inside a full one.
+
+### Fixed — the documentation site and the checks around it
 
 - **`/reference/reports` had 404'd since the site was created.** The page was written, listed in
   `docs.json` navigation, and linked from five other pages. It contained one JSX attribute with
@@ -28,6 +73,83 @@ separate things reported success while the thing they measured was broken.
   the mistake, because one sample says nothing about the upper bound. It is now a twenty-minute
   deadline.
 
+### Fixed — axes that took a name and then measured something else
+
+- **`headline` was accepted and then ignored by everything that reads the result.**
+  `lab.run(evalset, headline="recall@1")` ranked, summarised and reported on `recall@5`, because
+  `Results` had no idea which metric the sweep had been run on — every view on it fell back to
+  its own hardcoded default. The paragraph then *named* the metric it had used, so
+  "scored best on recall@5 at 0.615" read as an answer to the question that was asked, and was
+  an answer to a different one. `summary()`, `best()`, `leaderboard()`, `pareto()`,
+  `axis_effect()`, `compare()`, `significance()`, `is_the_winner_real()`, `by_type()` and
+  `composite()` now all default to the headline the sweep ran on, and an explicit `metric=`
+  still overrides. `contextgrid run` never had this — it passed `run.headline` into every call
+  by hand — so the bug was only ever reachable from the Python API the quickstart teaches.
+- **The `expand` transform could not be configured, and still got its own leaderboard row.**
+  There was no spelling that worked. Bare `expand` built an empty acronym table, which searches
+  with the question exactly as asked; the arm tied with plain search on every question and the
+  leaderboard labelled it `+expand` anyway, so `transform: [null, expand]` was one arm written
+  twice. `expand:RPO=recovery point objective` parsed into exactly the right pair and then died
+  in the constructor, and `expand:expansions=RPO` built with a string where the table goes and
+  died several steps later on `'str' object has no attribute 'items'`. Each acronym is now its
+  own `key=value` pair — `expand:RPO=recovery point objective,RTO=recovery time objective` —
+  and the old spellings raise an error naming the one that works.
+- **Sweeping `candidates` with no reranker returned one row and said nothing.** Depth is how far
+  down the reranker reads before it reorders, so with nothing reranking every depth runs the
+  identical search, and folding the arms together is right. But `estimate()` had already quoted
+  a shape of three, the leaderboard came back with one row, and `warnings` was empty — the two
+  arms went missing with nothing anywhere admitting it. It now raises the same
+  `ARM_NOT_MEASURED` the folded `widened` arm raises, and says what to add to make the axis
+  real.
+- **A mistyped parameter in any spec string raised a bare `TypeError` naming a class.**
+  `recursive:512,overlop=64` came back as
+  `RecursiveChunker.__init__() got an unexpected keyword argument 'overlop'` — the inside of a
+  class, from a tool whose premise is that nobody has to read its source. A bad *value* had
+  always been caught properly; only a bad *key* fell through, and it fell through in every
+  family at once. It is now a `SpecValueError` that leads with the parameter you got wrong,
+  suggests the one you meant, and lists what the plugin actually takes.
+
+### Fixed — documentation
+
+- **`/axes/indexes` had the usearch dtypes the wrong way round.** The page said `f32` and `f16`
+  held steady at recall 1.000 and `i8` was the one that wandered. Measured over fifteen fresh
+  processes, `i8` returned 0.900 every single time while `f32` and `f16` were the two that
+  moved. A recall figure from an approximate index measured once is a sample, not a property,
+  and the page now says which numbers were seen and how often.
+- **`/axes/parsers` printed an error a reader could not reproduce.** The block showing
+  `DocumentError` on a `SourceFile` with no bytes uses the `pymupdf` parser, which needs
+  `context-grid[parse]`; on a plain install it fails earlier with `MissingExtraError` instead.
+  The block now says which extra it needs.
+- **`/axes/parsers` wrote a stray document into whatever directory you ran it from.** Its example
+  created `corpus/policy.md`, which silently joined any real corpus kept at that path and turned
+  up in every sweep afterwards. The example directory is now called `parser-demo`.
+- **`/axes/overview`, titled "The Ten Axes", did not mention the eleventh argument.**
+  `Lab().grid(...)` also takes `k`, how many chunks a search returns. It is deliberately not an
+  axis — sweeping it would move the ruler and the thing being measured at the same time — and
+  the page now says so rather than leaving it out.
+- **`/reference/reports` showed one warning where the run prints three.** The two it left out
+  were the two that mattered: both chunkers on that page's own fixture turned each of the two
+  documents into a single chunk, so the leaderboard compares one pipeline against itself under
+  two names, and the identical `1.000` scores are what that looks like. The page had a note
+  half-admitting the eval set was saturated and said nothing about the chunkers. It now shows
+  all three warnings and reads them, because a reference page for exporting runs demonstrating
+  the tool catching itself is worth more than one quietly edited to look clean.
+- **`/reference/reports` made `formats` look like an argument to `write_bundle`.** It is the
+  `report.formats` config key; `write_bundle` has no such parameter and always writes the full
+  set.
+- **`/reference/cli` was missing exit code `2`,** which is what an unknown flag or subcommand
+  gives — `argparse` exits before the config file is read. It also said only `run` treats
+  *nothing measured* as a failure, which stopped being true in this release, and gave `sweep` no
+  exit codes at all.
+- **`/installation` promised a numpy a bare install does not get** — the table said `2.5.2`
+  against an actual `2.4.6`.
+- **`/quickstart` was missing a key from its `estimate()` output.** Real output also carries
+  `machine_usd_per_hour`.
+- **`/reference/caching` never said where the disk cache goes.** It lands in
+  `<report.out>/.contextgrid-cache`, so `rm -rf results` throws away the cache that the message
+  printed on `Ctrl-C` tells you to rely on. Measured: 24% reused, then 100%, then the delete,
+  then back to 24%.
+
 ### Added
 
 - **A docs workflow.** Nothing deployed or checked the documentation site, which is how it served
@@ -37,6 +159,13 @@ separate things reported success while the thing they measured was broken.
   published site and fails when a navigation page 404s or the published version is behind. The
   source-side checks passed the entire time the site was broken, which is why the job that reads
   the real site is the one that matters.
+
+### Known gap
+
+- **Nothing checks the published documentation.** `scripts/check_docs.py` runs the examples under
+  `docs/**/*.md` and never walks `docs-site/**/*.mdx`, and no workflow calls it. The pages people
+  actually read are the ones with no check on them, which is how most of the documentation
+  findings above survived to be found by hand.
 
 ## [0.9.4] — 2026-08-18
 

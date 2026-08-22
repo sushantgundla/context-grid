@@ -168,3 +168,83 @@ def test_run_fails_when_the_matrix_had_no_runnable_combination(
     errors = capsys.readouterr().err
     assert "no configurations were run" in errors
     assert "cannot be built and were skipped" in errors
+
+
+# ---------------------------------------------------------------------------
+# sweep
+# ---------------------------------------------------------------------------
+#
+# `sweep` is the same experiment as `run` with the axes on the command line instead of in a
+# file, and it printed the same empty leaderboard for the same reasons -- and exited 0 while
+# `run` exited 1. `_measured_something` was written for this rule and wired into one of the
+# two commands. `sweep` is the flags-only one-shot, which is the one most likely to be sitting
+# in a CI job, so it is the worse of the two places to leave a green build for a sweep that
+# measured nothing.
+
+
+def test_sweep_succeeds_when_it_measured_something(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(
+        ["sweep", str(workspace / "docs"), str(workspace / "evalset.jsonl"), "--metric", "recall@2"]
+    )
+    assert exit_code == 0
+    assert "scored best" in capsys.readouterr().out
+
+
+def test_sweep_fails_when_no_configuration_scored_a_question(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An eval set with no questions in it swept the whole matrix and exited 0."""
+    empty = workspace / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+
+    assert main(["sweep", str(workspace / "docs"), str(empty)]) == 1
+
+    captured = capsys.readouterr()
+    assert "no configuration scored a single question" in captured.err
+    # And the reason, on stdout, under the leaderboard it explains -- `sweep` writes no report
+    # unless `--bundle` is passed, so stderr and the console are all there is.
+    assert "has no questions in it" in captured.out
+
+
+def test_sweep_still_succeeds_when_the_budget_stopped_it_partway(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A partial leaderboard is a real result, and `--budget-seconds` has to stay usable in CI.
+
+    The stop is forced rather than timed, for the reason `test_drive_cost_findings` gives: a
+    budget small enough to bite is a race between a warm machine and a cold one, and what is
+    being pinned here is the exit code, not the clock.
+    """
+    from unittest.mock import patch
+
+    from contextgrid.grid.runner import Budget
+
+    calls = {"n": 0}
+
+    def exceeded(self: Budget) -> str | None:
+        calls["n"] += 1
+        return "the 30s budget ran out" if calls["n"] > 1 else None
+
+    with patch.object(Budget, "exceeded", exceeded):
+        exit_code = main(
+            [
+                "sweep",
+                str(workspace / "docs"),
+                str(workspace / "evalset.jsonl"),
+                "--metric",
+                "recall@2",
+                "--chunker",
+                "recursive:512",
+                "--chunker",
+                "sentence:2",
+                "--chunker",
+                "sentence:3",
+                "--budget-seconds",
+                "30",
+            ]
+        )
+
+    assert exit_code == 0, "the leaderboard it printed is real, just partial"
+    assert "budget ran out" in capsys.readouterr().err

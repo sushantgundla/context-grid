@@ -214,7 +214,27 @@ class Results:
     #: The seed the run was configured with. Every resampling here defaults to it, so a
     #: significance verdict is reproducible from the manifest rather than from a hidden zero.
     seed: int = 0
+    #: The metric this sweep was ranked on. Every view below defaults to it.
+    #:
+    #: `RunResult` has carried this since the per-metric table was added; `Results` did not, so
+    #: `Lab.run(evalset, headline="recall@1")` reached every row and none of the views over
+    #: them. `summary()` and `best()` fell back to their own `recall@5` default, and the
+    #: paragraph named the metric it had used -- "scored best on recall@5 at 0.615" -- which is
+    #: worse than saying nothing, because it reads as an answer to the question that was asked.
+    #: The CLI never had the bug: `config/loader.py` passes `run.headline` into every call by
+    #: hand. This is what makes the Python API, which the quickstart teaches, agree with it.
+    headline: str = "recall@5"
     meta: dict[str, Any] = field(default_factory=dict)
+
+    def _metric(self, metric: str | None) -> str:
+        """The metric a view should use: the one it was given, or this sweep's headline.
+
+        `None` rather than a `"recall@5"` default on each signature, so an explicit
+        `summary("recall@5")` still overrides a headline of something else. A default in the
+        signature cannot tell "the caller asked for recall@5" from "the caller asked for
+        nothing", and those have to mean different things for the override to work at all.
+        """
+        return self.headline if metric is None else metric
 
     def __iter__(self) -> Iterator[RunResult]:
         return iter(self.runs)
@@ -279,17 +299,19 @@ class Results:
 
     # -- the obvious view ----------------------------------------------------
 
-    def best(self, metric: str = "recall@5") -> RunResult | None:
-        return max(self.runs, key=lambda r: r.metric(metric), default=None)
+    def best(self, metric: str | None = None) -> RunResult | None:
+        wanted = self._metric(metric)
+        return max(self.runs, key=lambda r: r.metric(wanted), default=None)
 
     def leaderboard(
-        self, metric: str = "recall@5", extra: Sequence[str] = ()
+        self, metric: str | None = None, extra: Sequence[str] = ()
     ) -> list[dict[str, Any]]:
         """Configurations ranked by one metric, with latency and cost beside it.
 
         Latency and cost are not optional columns. A leaderboard that omits them invites
         exactly the mistake this tool exists to prevent.
         """
+        ranked_on = self._metric(metric)
         wanted = list(extra)
         unknown = [name for name in wanted if not any(run.has(name) for run in self.runs)]
         if unknown:
@@ -301,11 +323,13 @@ class Results:
                 stage="report",
             )
 
-        columns = [metric, *wanted]
-        ordered = sorted(self.runs, key=lambda r: -r.metric(metric))
-        return [run.row(columns, interval_metric=metric) for run in ordered]
+        columns = [ranked_on, *wanted]
+        ordered = sorted(self.runs, key=lambda r: -r.metric(ranked_on))
+        return [run.row(columns, interval_metric=ranked_on) for run in ordered]
 
-    def composite(self, metric: str = "recall@5", *, k: int | None = None) -> CompositeScore | None:
+    def composite(
+        self, metric: str | None = None, *, k: int | None = None
+    ) -> CompositeScore | None:
         """The leading configuration's 0-100 score, over what it actually measured.
 
         `k=None` reads the cut-off off the winner's own metrics. See `RunResult.composite`.
@@ -315,44 +339,47 @@ class Results:
 
     # -- the views worth having ----------------------------------------------
 
-    def pareto(self, quality: str = "recall@5", cost: str = "cost_per_1k") -> list[RunResult]:
+    def pareto(self, quality: str | None = None, cost: str = "cost_per_1k") -> list[RunResult]:
         """Configurations nothing else beats on both quality and cost.
 
         The frontier is the honest answer to "which should I use?": everything on it is a
         legitimate choice at some budget, and everything off it is beaten outright by
         something cheaper *and* better.
         """
+        wanted = self._metric(quality)
         cheaper = _cost_getter(cost)
         frontier: list[RunResult] = []
-        for run in sorted(self.runs, key=lambda r: (cheaper(r), -r.metric(quality))):
-            if not frontier or run.metric(quality) > frontier[-1].metric(quality):
+        for run in sorted(self.runs, key=lambda r: (cheaper(r), -r.metric(wanted))):
+            if not frontier or run.metric(wanted) > frontier[-1].metric(wanted):
                 frontier.append(run)
         return frontier
 
-    def axis_effect(self, axis: str, metric: str = "recall@5") -> dict[str, float]:
+    def axis_effect(self, axis: str, metric: str | None = None) -> dict[str, float]:
         """Mean score for each value of one axis, across every run that used it.
 
         The interpretable summary of a sweep: "structural chunking averaged 0.71 against
         recursive's 0.63" is a sentence somebody can act on, where a table of 48 rows is not.
         """
+        wanted = self._metric(metric)
         grouped: dict[str, list[float]] = {}
         for run in self.runs:
             value = getattr(run.config, axis, None)
-            grouped.setdefault(str(value), []).append(run.metric(metric))
+            grouped.setdefault(str(value), []).append(run.metric(wanted))
         return {value: statistics.fmean(scores) for value, scores in sorted(grouped.items())}
 
-    def compare(self, left: str, right: str, metric: str = "recall@5") -> dict[str, Any]:
+    def compare(self, left: str, right: str, metric: str | None = None) -> dict[str, Any]:
         """Two configurations, their difference, and where they disagreed.
 
         The per-query disagreement is the useful part. Two configs with the same mean can
         succeed on completely different questions, and that is invisible from the leaderboard.
         """
+        wanted = self._metric(metric)
         first, second = self.get(left), self.get(right)
         if first is None or second is None:
             missing = left if first is None else right
             raise KeyError(f"no run labelled {missing!r}")
 
-        left_scores, right_scores = _paired_scores(first, second, left, right, metric)
+        left_scores, right_scores = _paired_scores(first, second, left, right, wanted)
         differences = {
             query_id: left_scores[query_id] - right_scores.get(query_id, 0.0)
             for query_id in left_scores
@@ -362,10 +389,10 @@ class Results:
         return {
             "left": left,
             "right": right,
-            "metric": metric,
-            "left_score": first.metric(metric),
-            "right_score": second.metric(metric),
-            "difference": first.metric(metric) - second.metric(metric),
+            "metric": wanted,
+            "left_score": first.metric(wanted),
+            "right_score": second.metric(wanted),
+            "difference": first.metric(wanted) - second.metric(wanted),
             "queries_compared": len(differences),
             "queries_disagreed": len(disagreed),
             "left_wins": sum(1 for d in disagreed.values() if d > 0),
@@ -378,7 +405,7 @@ class Results:
         left: str,
         right: str,
         *,
-        metric: str = "recall@5",
+        metric: str | None = None,
         alpha: float = 0.05,
         seed: int | None = None,
     ) -> Comparison:
@@ -388,6 +415,7 @@ class Results:
         own control, which removes the large variance that comes from some questions simply
         being harder than others.
         """
+        wanted = self._metric(metric)
         first, second = self.get(left), self.get(right)
         if first is None or second is None:
             missing = left if first is None else right
@@ -401,47 +429,55 @@ class Results:
         # The per-question scores for *this* metric, or a refusal. Reading `per_query`
         # regardless of `metric` is what let this function answer about the headline while
         # labelling the answer with whatever it had been asked for.
-        left_scores, right_scores = _paired_scores(first, second, left, right, metric)
+        left_scores, right_scores = _paired_scores(first, second, left, right, wanted)
 
         return compare_scores(
             left_scores,
             right_scores,
             left=left,
             right=right,
-            metric=metric,
+            metric=wanted,
             alpha=alpha,
             seed=seed,
         )
 
     def is_the_winner_real(
-        self, metric: str = "recall@5", *, alpha: float = 0.05, seed: int | None = None
+        self, metric: str | None = None, *, alpha: float = 0.05, seed: int | None = None
     ) -> Comparison | None:
         """Test the top configuration against the runner-up.
 
         The question a leaderboard implicitly answers and never actually checks.
         """
-        ranked = sorted(self.runs, key=lambda r: -r.metric(metric))
+        wanted = self._metric(metric)
+        ranked = sorted(self.runs, key=lambda r: -r.metric(wanted))
         if len(ranked) < 2:
             return None
         return self.significance(
-            ranked[0].label, ranked[1].label, metric=metric, alpha=alpha, seed=seed
+            ranked[0].label, ranked[1].label, metric=wanted, alpha=alpha, seed=seed
         )
 
-    def by_type(self, metric: str = "recall@5") -> dict[str, dict[str, float]]:
+    def by_type(self, metric: str | None = None) -> dict[str, dict[str, float]]:
         """Each configuration's score on each kind of question.
 
         Where the interesting results live. A chunker can win overall and lose badly on
         every question about a table, and one number per configuration will never show it.
         """
-        return {run.label: run.by_type.get(metric, {}) for run in self.runs if run.by_type}
+        wanted = self._metric(metric)
+        return {run.label: run.by_type.get(wanted, {}) for run in self.runs if run.by_type}
 
-    def summary(self, metric: str = "recall@5") -> str:
+    def summary(self, metric: str | None = None) -> str:
         """The result in one plain-English paragraph.
 
         Every tool in this space outputs a table and leaves the reader to interpret it.
         Writing the conclusion in words is the part a reader without an IR background
         actually takes away -- and stating what the winner is *worst* at keeps it honest.
         """
+        # Resolved once, into the same name, because the paragraph below both *ranks* on this
+        # metric and *prints* it -- and those two have to be the same string. They were not:
+        # the ranking used the signature's `recall@5` default while the sweep had been run on
+        # something else, and the sentence then named recall@5 with every appearance of having
+        # been asked for it.
+        metric = self._metric(metric)
         if not self.runs:
             return "No configurations were run."
 

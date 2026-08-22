@@ -102,7 +102,7 @@ which installs `chonkie`, `langchain-text-splitters` and `litellm`. Constructing
 without it does **not** raise `MissingExtraError` the way a parser does — it raises
 `cg.ChunkerError` instead, from inside `.chunk()` itself: `"chonkie chunkers need chonkie.
 Install it with: pip install 'context-grid[chunk]'"` / `"langchain chunkers need
-langchain-text-splitters. Install with: pip install 'context-grid[chunk]'"`. This package's
+langchain-text-splitters. Install it with: pip install 'context-grid[chunk]'"`. This package's
 sizes are what get counted, not chonkie's or LangChain's own — a `_TokenizerBridge` is
 injected under the hood so `chonkie:recursive:512` and `recursive:512` mean the same 512
 tokens.

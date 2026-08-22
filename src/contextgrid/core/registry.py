@@ -13,11 +13,12 @@ raise `ModuleNotFoundError: No module named 'docling'` from four frames down.
 
 from __future__ import annotations
 
+import difflib
 import importlib
 import inspect
 import types
 import typing
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
@@ -183,7 +184,28 @@ class Registry(Generic[T]):
         """
         name, params = self.parse_spec(spec)
         params.update(overrides)
-        return self.registration(name).load()(**params)  # type: ignore[no-any-return]
+        factory = self.registration(name).load()
+        try:
+            return factory(**params)  # type: ignore[no-any-return]
+        except TypeError as error:
+            # A parameter the plugin does not take reached `__init__` and came back as
+            # `RecursiveChunker.__init__() got an unexpected keyword argument 'overlop'` -- the
+            # name of a class from a tool whose whole premise is that nobody has to read its
+            # source, and a builtins exception from a package that documents a
+            # `ContextGridError` family. `_check_param_types` catches a bad *value* already;
+            # only a bad *key* fell through, in every family at once.
+            #
+            # The replacement is written from the signature rather than wrapped around
+            # Python's sentence. Keeping Python's text and appending to it read as two errors
+            # glued together -- and where it ends in "Did you mean 'overlap'?" the appended
+            # full stop produced `?.`.
+            #
+            # Narrow on purpose. A `TypeError` raised from inside a plugin's own body is a
+            # different bug and has to keep its own traceback, so only the two messages Python
+            # produces at the call boundary are rewritten.
+            if not _is_signature_mismatch(error):
+                raise
+            raise SpecValueError(_signature_error(self.family, spec, factory, params)) from error
 
     def parse_spec(self, spec: str) -> tuple[str, dict[str, Any]]:
         """Split a spec string into a plugin name and its parameters."""
@@ -329,6 +351,84 @@ _SIMPLE: frozenset[type] = frozenset({int, float, str, bool, type(None)})
 #: module's namespace, and `from __future__ import annotations` means it has to; doing that on
 #: every spec in a sweep would be a measurable cost for an answer that cannot change.
 _HINTS: dict[Any, Mapping[str, Any]] = {}
+
+
+#: The two things Python says when a call does not match a signature.
+#:
+#: Matched on the message because that is the only thing a `TypeError` carries. Matching on the
+#: traceback frame instead would be stricter and would also rewrite a `TypeError` raised by a
+#: `__post_init__` running inside that same frame, which is a real bug and has to stay raw.
+_SIGNATURE_MISMATCH = ("unexpected keyword argument", "required positional argument")
+
+
+def _is_signature_mismatch(error: TypeError) -> bool:
+    """True when Python refused the call itself, rather than the plugin refusing its input."""
+    message = str(error)
+    return any(phrase in message for phrase in _SIGNATURE_MISMATCH)
+
+
+def _accepted(factory: Factory) -> list[str] | None:
+    """The parameter names a plugin takes, or `None` when the signature cannot be read."""
+    try:
+        return [
+            name
+            for name, parameter in inspect.signature(factory).parameters.items()
+            if parameter.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
+    except (TypeError, ValueError):  # pragma: no cover - a builtin or C factory, which none are
+        return None
+
+
+def _signature_error(family: str, spec: str, factory: Factory, params: Mapping[str, Any]) -> str:
+    """What to say when a spec named a parameter the plugin does not have.
+
+    Written from the signature rather than from the `TypeError`, so the sentence a reader needs
+    comes first and the Python internals -- the class name, `__init__`, the parenthesised
+    argument list -- never appear. Somebody who mistyped `overlop` wants the right spelling and
+    the list of real names; `RecursiveChunker.__init__()` tells them only that this package is
+    made of classes.
+
+    The "did you mean" suggestion is computed here rather than lifted out of Python's message.
+    Python only offers one from 3.12 onwards, and its text already ends in a question mark --
+    appending a full stop to it is where the `?.` came from.
+    """
+    accepted = _accepted(factory)
+    if accepted is None:  # pragma: no cover - only for a factory with no readable signature
+        return f"{family} {spec!r}: that is not a parameter this {family} takes"
+
+    unknown = [key for key in params if key not in accepted]
+
+    # A missing *required* argument rather than a surplus one. No registered plugin needs one
+    # today -- every field has a default -- so this is the branch that keeps a future one from
+    # falling back through to a bare TypeError.
+    if not unknown:  # pragma: no cover - no in-tree plugin has a required parameter
+        return (
+            f"{family} {spec!r}: this {family} needs a value the spec did not give it. "
+            f"It takes {', '.join(accepted)}."
+        )
+
+    if not accepted:
+        return (
+            f"{family} {spec!r}: this {family} takes no parameters, but "
+            f"{_and_list(unknown)} {'was' if len(unknown) == 1 else 'were'} given."
+        )
+
+    noun = "parameter" if len(unknown) == 1 else "parameters"
+    sentence = f"{family} {spec!r}: unknown {noun} {_and_list(unknown)}."
+    if len(unknown) == 1:
+        close = difflib.get_close_matches(unknown[0], accepted, n=1, cutoff=0.6)
+        if close:
+            sentence += f" Did you mean {close[0]!r}?"
+    return f"{sentence} This {family} takes {', '.join(accepted)}."
+
+
+def _and_list(names: Sequence[str]) -> str:
+    """`'a'`, `'a' and 'b'`, `'a', 'b' and 'c'` -- quoted, because these are literal keys."""
+    quoted = [repr(name) for name in names]
+    if len(quoted) == 1:
+        return quoted[0]
+    return f"{', '.join(quoted[:-1])} and {quoted[-1]}"
 
 
 def _parameter_types(factory: Factory) -> Mapping[str, Any]:

@@ -259,11 +259,15 @@ Every PDF parser raises `DocumentError` if the `SourceFile` it's given has no by
 loading the extra is necessary but not sufficient. Load your files through
 [`Corpus`](/concepts/corpus), which reads the bytes for you:
 
+The directory below is called `parser-demo` rather than `corpus` on purpose: running this
+block writes a file into whatever directory you are sitting in, and a stray `policy.md` dropped
+into a real corpus quietly joins it and shows up in every sweep you run afterwards.
+
 ```python
 from pathlib import Path
 
-Path("corpus").mkdir(exist_ok=True)
-Path("corpus/policy.md").write_text(
+Path("parser-demo").mkdir(exist_ok=True)
+Path("parser-demo/policy.md").write_text(
     "# Termination\n\n"
     "## Notice period\n\n"
     "Either party may end this agreement with thirty days written notice, or "
@@ -281,7 +285,7 @@ Path("corpus/policy.md").write_text(
 ```python
 import contextgrid as cg
 
-corpus = cg.Corpus.from_dir("corpus")   # a directory with one policy.md in it
+corpus = cg.Corpus.from_dir("parser-demo")   # the directory written just above
 parser = cg.get_parser("markdown")
 doc = parser.parse(corpus.files[0])
 
@@ -293,13 +297,16 @@ ParsedDocument policy.md
 '# Termination\n\n## Notice period\n\nEither party may end this agreement with thirty'
 ```
 
-Parsing an empty `SourceFile` directly shows the failure mode:
+Parsing an empty `SourceFile` directly shows the failure mode. This one block needs
+`pip install "context-grid[parse]"`, because `pymupdf` is one of the six parsers that need an
+extra — on a bare install you get `MissingExtraError` naming the extra instead, which is the
+earlier of the two failures and not the one being shown here:
 
 ```python
 from contextgrid.core.documents import SourceFile, MediaType
 import contextgrid as cg
 
-parser = cg.get_parser("pymupdf")
+parser = cg.get_parser("pymupdf")   # needs: pip install "context-grid[parse]"
 empty = SourceFile(id="no-bytes.pdf", media_type=MediaType.PDF)
 try:
     parser.parse(empty)

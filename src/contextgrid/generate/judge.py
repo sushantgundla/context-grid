@@ -92,7 +92,7 @@ def _deepeval() -> Any:
         import deepeval  # noqa: F401
         from deepeval import metrics
     except ImportError as exc:  # pragma: no cover - exercised by the extras test
-        raise MissingExtraError("Generation metrics", "judge", package="deepeval") from exc
+        raise MissingExtraError("Generation scoring", "judge", package="deepeval") from exc
     return metrics
 
 
@@ -105,7 +105,7 @@ def build_judge(llm: Any) -> Any:
     try:
         from deepeval.models.base_model import DeepEvalBaseLLM
     except ImportError as exc:  # pragma: no cover - exercised by the extras test
-        raise MissingExtraError("Generation metrics", "judge", package="deepeval") from exc
+        raise MissingExtraError("Generation scoring", "judge", package="deepeval") from exc
 
     # The ignore list covers both toolchains deliberately. With DeepEval installed the base
     # class is real and mypy wants `no-untyped-call`; without it the class is `Any` and mypy

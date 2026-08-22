@@ -200,7 +200,7 @@ def _run_config(args: argparse.Namespace) -> int:
     # report most people read. It printed "no results" and "No configurations were run."
     # with the reason on stderr, so a redirect, a pipe or a scrollback lost it.
     measured = _measured_something(results)
-    reasons = _why_nothing_ran(config, results) if not measured else []
+    reasons = _why_nothing_ran(results) if not measured else []
 
     print()
     # Over the table, on stdout, because this is the one place the reader has both in front of
@@ -276,7 +276,7 @@ def _print_if_partial(results: Results) -> None:
         print()
 
 
-def _why_nothing_ran(config: ExperimentConfig, results: Results) -> list[str]:
+def _why_nothing_ran(results: Results) -> list[str]:
     """The reasons the sweep measured nothing, in the words the runner already used for them.
 
     The reasons are recorded as warnings, and warnings only reach the written report and
@@ -300,8 +300,10 @@ def _why_nothing_ran(config: ExperimentConfig, results: Results) -> list[str]:
     a budget at all before it dared quote one. The other two now have their own codes
     (`MODEL_NOT_PRICED`, `NO_COST_CEILING`), so every one of these is the sweep saying where it
     stopped.
+
+    Everything here is read off the results, and nothing off the config -- which is what lets
+    `sweep`, which has no `ExperimentConfig` to hand, use the same reasons as `run`.
     """
-    del config
     from contextgrid.core.warnings import WarningCode
 
     seen: set[str] = set()
@@ -743,11 +745,18 @@ def _sweep(args: argparse.Namespace) -> int:
         ),
     )
 
+    # Worked out before anything is printed, for the reason `_run` gives: the reasons belong
+    # next to the empty leaderboard they explain, not only in the error stream.
+    measured = _measured_something(results)
+    reasons = _why_nothing_ran(results) if not measured else []
+
     print()
     _print_if_partial(results)
     print(format_leaderboard(results, args.metric))
     print()
     print(results.summary(args.metric))
+    for reason in reasons:
+        print(f"  {reason}")
     print()
     print(f"cache: {results.cache_summary}")
 
@@ -789,7 +798,26 @@ def _sweep(args: argparse.Namespace) -> int:
 
     # `sweep --budget-seconds 0.001` was the worst case of all: no bundle is written unless
     # `--bundle` is passed, so the warning saying the leaderboard is partial had nowhere to go.
-    _print_warnings(results)
+    _print_warnings(results, already_shown=reasons)
+
+    if not measured:
+        # The same rule `_run` applies, and for the same reason. `_measured_something` was
+        # written for it and wired into `run` alone, so `contextgrid sweep ./docs empty.jsonl`
+        # printed a leaderboard of `NOT_MEASURED` rows and exited 0 while the identical
+        # experiment through `contextgrid run` exited 1. `sweep` is the flags-only one-shot,
+        # which is the one more likely to be sitting in a CI job.
+        #
+        # The budget carve-out comes free: a sweep stopped partway did score questions, so it
+        # measured something and still exits 0. Only *nothing* is non-zero.
+        headline = (
+            "no configurations were run, so nothing was measured"
+            if not results.runs
+            else "no configuration scored a single question, so nothing was measured"
+        )
+        print(f"error: {headline}", file=sys.stderr)
+        for reason in reasons:
+            print(f"error: {reason}", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -92,7 +92,7 @@ class LiteLLMChat:
         try:
             import litellm
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise MissingExtraError("Model calls", "llm", package="litellm") from exc
+            raise MissingExtraError("Calling a model", "llm", package="litellm") from exc
 
         kwargs: dict[str, Any] = {
             "model": self.model,

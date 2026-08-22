@@ -22,7 +22,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar, Protocol, runtime_checkable
 
-from contextgrid.core.registry import Registry
+from contextgrid.core.registry import Registry, SpecValueError
 from contextgrid.evalset.llm import LLM, LLMError, parse_json_reply
 
 _SENTENCE_SPLIT = re.compile(r"\s*\n+\s*|\s*;\s*")
@@ -279,6 +279,39 @@ class ExpandAcronyms:
         return TransformedQuery(original=query, queries=(expanded,))
 
 
+#: The spec form that works, quoted in every error this module raises about the wrong one.
+EXPAND_SPEC_EXAMPLE = "expand:RPO=recovery point objective"
+
+
+def _expand_from_spec(expansions: dict[str, str] | None = None, **pairs: object) -> ExpandAcronyms:
+    """Build `ExpandAcronyms` from a spec string, where each `key=value` is one acronym.
+
+    `ExpandAcronyms` takes a `dict`, and a spec string has no way to write one. So the axis had
+    no working spelling at all: `expand` alone built an empty table, which is the identity, and
+    the sweep ran it as an arm anyway. `expand:RPO=recovery point objective` parsed into exactly
+    the right pair and then hit `__init__() got an unexpected keyword argument 'RPO'`, and
+    `expand:expansions=RPO` put a `str` where the `dict` goes and survived until something
+    called `.items()` on it. Three spellings, no error worth reading, and nothing that worked.
+
+    The keyword pairs *are* the table, which is the only grammar the registry can carry and the
+    one a reader would guess. `expansions=` stays accepted for Python callers building the
+    dataclass directly -- it is the field's real name -- and is refused from a spec, where it
+    cannot be written as anything but a string.
+    """
+    if expansions is not None and not isinstance(expansions, dict):
+        raise SpecValueError(
+            f"transform 'expand': each acronym is its own key=value pair, so there is no "
+            f"single value to give 'expansions'. Got {expansions!r}. Write it as "
+            f"{EXPAND_SPEC_EXAMPLE!r}."
+        )
+
+    table: dict[str, str] = dict(expansions or {})
+    # `_coerce` reads `3 business days` as text and a bare `3` as an int, because that is all a
+    # spec string can tell it. An acronym table is text either way.
+    table.update({short: str(long) for short, long in pairs.items()})
+    return ExpandAcronyms(expansions=table)
+
+
 # ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
@@ -288,7 +321,7 @@ TRANSFORMS: Registry[QueryTransform] = Registry(family="transform")
 TRANSFORMS.register("none", doc="Search with the question as asked. The arm to beat.")(NoTransform)
 TRANSFORMS.register(
     "expand", doc="Spell out acronyms. Free, and it moves BM25 more than most of the rest."
-)(ExpandAcronyms)
+)(_expand_from_spec)
 
 
 #: Transforms that need a model, and cannot be registered because of it.

@@ -283,7 +283,7 @@ class LiteLLMEmbedder(_RemoteEmbedder):
             import litellm
         except ImportError as error:  # pragma: no cover - exercised by the extras test
             raise EmbedderError(
-                "litellm embedders need litellm. Install with: pip install 'context-grid[llm]'"
+                "litellm embedders need litellm. Install it with: pip install 'context-grid[llm]'"
             ) from error
 
         kwargs: dict[str, Any] = {

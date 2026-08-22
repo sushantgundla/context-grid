@@ -10,6 +10,15 @@ keyword arguments of `Lab().grid(...)` in Python.
 Nine of the ten pick a plugin by name (a **spec string** like `"recursive:512"` — see
 [Chunkers](/axes/chunkers) for the grammar). The tenth, `candidates`, is a plain integer.
 
+<Note>
+`Lab().grid(...)` takes one more keyword than the ten below: `k`, how many chunks a search
+returns, which defaults to `10`. It is deliberately not an axis. Everything here can be given a
+list and swept; `k` takes a single integer and is held across the whole sweep, because it sets
+what the metrics are measured *at* — sweeping it would change the ruler and the thing being
+measured at the same time. To compare cut-offs, run once and read `recall@1` beside `recall@5`
+on the same leaderboard.
+</Note>
+
 | Axis | What it is | Options that ship | Need an extra |
 |---|---|---|---|
 | [`ingestion`](/axes/ingestion) | What goes into the index, and what a hit on it returns | 8 | none |

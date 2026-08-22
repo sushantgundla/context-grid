@@ -44,7 +44,7 @@ cat results-a/manifest.json
   "evalset_version": 1,
   "evalset_hash": "e33ddae2a06fe4ea14a13f05bf4820d8b0dbbb17ad0592aad7cdf4d3583a93df",
   "resolution": {"policy": "coverage", "threshold": 0.5},
-  "versions": {"contextgrid": "0.9.4", "python": "3.13.5", "platform": "darwin", "numpy": "2.4.6"},
+  "versions": {"contextgrid": "0.9.5", "python": "3.13.5", "platform": "darwin", "numpy": "2.4.6"},
   "seeds": {"run": 0},
   "created_at": "2026-08-06T04:27:36+00:00",
   "notes": ""

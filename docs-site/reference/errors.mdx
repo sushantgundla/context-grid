@@ -38,10 +38,28 @@ print(str(exc))
 The 'docling' parser requires the 'parse-ml' extra (needs docling). Install it with: pip install "context-grid[parse-ml]"
 ```
 
-The message is built as `f"{feature} requires the '{extra}' extra{detail}. Install it with: {hint}"`
-where `hint` is always `pip install "context-grid[{extra}]"`. Run that exact command, then
-retry — nothing else about your code needs to change, since the plugin registers lazily and is
-only imported on first use.
+The message is built as `f"{feature} requires the '{extra}' extra{needs}. Install it with: {hint}"`
+where `hint` is always `pip install "context-grid[{extra}]"` and `needs` is `" (needs {package})"`
+when a package was named. Run that exact command, then retry — nothing else about your code needs
+to change, since the plugin registers lazily and is only imported on first use.
+
+`feature` is the subject of that sentence, so it is always a short noun phrase — `The 'docling'
+parser`, `The faiss index`. A few sites have more to say than that; they pass an optional
+`detail=` and it is appended after the install hint, where a whole sentence reads correctly:
+
+```python
+from contextgrid.core.errors import MissingExtraError
+
+exc = MissingExtraError(
+    "The 'cl100k' encoding", "embed", package="tiktoken",
+    detail="tiktoken downloads its vocabulary on first use, so this needs network once.",
+)
+print(str(exc))
+```
+
+```
+The 'cl100k' encoding requires the 'embed' extra (needs tiktoken). Install it with: pip install "context-grid[embed]". tiktoken downloads its vocabulary on first use, so this needs network once.
+```
 
 `MissingExtraError` is also an `ImportError`, so `except ImportError` catches it too.
 

@@ -38,16 +38,27 @@ def _encoding(name: str) -> Any:
     try:
         import tiktoken
     except ImportError as exc:  # pragma: no cover - exercised by the extras test
-        raise MissingExtraError("Exact tokenizers", "embed", package="tiktoken") from exc
+        raise MissingExtraError("Exact token counting", "embed", package="tiktoken") from exc
 
     try:
         return tiktoken.get_encoding(name)
     except Exception as error:
+        # tiktoken imported fine, so the extra is present and the failure is the encoding
+        # itself -- a name tiktoken does not know, or a first use with no network. The subject
+        # of the message stays a noun phrase and the explanation goes in `detail`; jamming it
+        # into `feature` used to render "...so this needs network once requires the 'embed'
+        # extra".
         raise MissingExtraError(
-            f"The {name!r} encoding could not be loaded ({error}). tiktoken downloads its "
-            "vocabulary on first use, so this needs network once",
+            f"The {name!r} encoding",
             "embed",
             package="tiktoken",
+            detail=(
+                # tiktoken's own message runs to several lines; flattened, so the whole thing
+                # is still one line in a log.
+                f"tiktoken is installed here but could not load that encoding "
+                f"({' '.join(str(error).split())}). Check the encoding name, and note that "
+                "tiktoken downloads its vocabulary on first use, so this needs network once."
+            ),
         ) from error
 
 

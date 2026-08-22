@@ -154,7 +154,7 @@ def _faiss() -> Any:
         # hand out -- and the `except ImportError` they say also works -- both missed this,
         # which is the worst way to be wrong: the user reads a perfect message, writes the
         # handler the documentation told them to write, and it never fires.
-        raise MissingExtraError("faiss indexes", "index", package="faiss-cpu") from error
+        raise MissingExtraError("The faiss index", "index", package="faiss-cpu") from error
     return faiss
 
 
@@ -436,7 +436,7 @@ class USearchIndex(_ANNIndex):
         try:
             from usearch.index import Index as USearch
         except ImportError as error:
-            raise MissingExtraError("usearch indexes", "index", package="usearch") from error
+            raise MissingExtraError("The usearch index", "index", package="usearch") from error
 
         index = USearch(
             ndim=int(matrix.shape[1]),

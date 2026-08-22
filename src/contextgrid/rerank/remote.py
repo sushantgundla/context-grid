@@ -253,7 +253,7 @@ class LiteLLMReranker(_RemoteReranker):
             import litellm
         except ImportError as error:  # pragma: no cover - exercised by the extras test
             raise RerankerError(
-                "hosted rerankers need litellm. Install with: pip install 'context-grid[llm]'"
+                "hosted rerankers need litellm. Install it with: pip install 'context-grid[llm]'"
             ) from error
 
         kwargs: dict[str, Any] = {

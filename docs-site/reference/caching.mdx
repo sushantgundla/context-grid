@@ -105,6 +105,34 @@ A `DiskCache` entry that cannot be read back — a partial write, or a value pic
 different `CACHE_FORMAT` — is treated as a miss and deleted, never as a hard failure.
 Recomputing is cheap; crashing on someone's stale cache directory is not.
 
+## Where `run.cache: disk` puts the cache
+
+You choose the root yourself when you build a `DiskCache` in Python. `contextgrid run` has no
+such argument, so it picks one: **`<report.out>/.contextgrid-cache`**, or
+`<the corpus's parent directory>/.contextgrid-cache` when `report.out` is not set.
+
+<Warning>
+**The cache lives inside your results directory, so `rm -rf ./results` throws it away.** That
+is the same directory the starter config writes reports into, and clearing out an old run's
+report is the ordinary thing to do before a new one. It also deletes the work the report sat
+next to:
+
+```
+contextgrid run cg.yaml   # cache: 8 of 34 lookups reused (24%)
+contextgrid run cg.yaml   # cache: 34 of 34 lookups reused (100%)
+rm -rf ./results
+contextgrid run cg.yaml   # cache: 8 of 34 lookups reused (24%)
+```
+
+This is the one thing that can quietly falsify the `Ctrl-C` message. Stopping a `run.cache:
+disk` sweep prints *"Everything parsed, chunked and embedded so far is in the cache on disk,
+so re-running this command picks up from there"* — true when you re-run it, and no longer true
+if you tidied the results directory in between.
+
+Point `report.out` somewhere disposable and leave the cache alone, or set a `report.out` you do
+not clear between runs.
+</Warning>
+
 ## Sharing one cache directory between processes
 
 Two `contextgrid run` processes can point at the same output directory, and therefore at the

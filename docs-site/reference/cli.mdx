@@ -36,7 +36,7 @@ options:
 ```
 
 Running `contextgrid` with no command prints this same help and exits `1`. `contextgrid
---version` prints `context-grid <version>` (e.g. `context-grid 0.9.4`) and exits `0`.
+--version` prints `context-grid <version>` (e.g. `context-grid 0.9.5`) and exits `0`.
 
 Every command catches its own exceptions and prints `error: <message>` to stderr rather than a
 Python traceback, then exits `1`. **`Ctrl-C` counts** — it prints one line and exits `130`, the
@@ -208,12 +208,22 @@ writes the formats named under `report.formats` there and prints `wrote N files 
 |---|---|
 | `0` | At least one configuration ran **and** scored at least one question. |
 | `1` | The config file itself is invalid (same errors `check` would catch), or the sweep measured nothing — no configuration ran at all, or every one of them ran and scored zero questions. |
+| `2` | The command line itself did not parse — an unknown flag, an unknown subcommand, a missing positional. `argparse` prints the usage message to stderr and exits before any config file is read. |
 | `130` | Stopped by `Ctrl-C`. One line on stderr, no traceback, and no report written. |
 
 That `1` case matters for CI: a matrix whose only cell can't be built, a `run.budget_usd: 0.0`
 that leaves nothing to spend, and an eval set with no questions in it all used to print a
-leaderboard and still exit `0` — a green build for a sweep that measured nothing. `run` treats
-*nothing measured* as a failure, whichever way it got there.
+leaderboard and still exit `0` — a green build for a sweep that measured nothing. Both `run`
+and `sweep` now treat *nothing measured* as a failure, whichever way it got there.
+
+<Note>
+  **`sweep` uses this same table**, and it did not always. The check that turns *nothing
+  measured* into exit `1` was wired into `run` alone, so the same empty eval set exited `1`
+  through a config file and `0` through the flags-only command — the one more likely to be
+  sitting in a CI job. `sweep` now prints the same `error:` lines and returns the same code.
+  A partial sweep stopped by `--budget-seconds` still exits `0`: it measured something, just
+  not everything.
+</Note>
 
 The reasons go to **stdout**, under the empty leaderboard they explain, and to stderr as
 `error:` lines. Both, deliberately: `contextgrid run contextgrid.yaml > leaderboard.txt` is the
@@ -262,7 +272,7 @@ what it's for.
 | Command | For |
 |---|---|
 | `contextgrid profile <corpus> [--parser markdown]` | Measure a corpus's shape (file count, size, structure) and print hints about which axis values it rules out, before you spend a sweep finding out. |
-| `contextgrid sweep <corpus> <evalset.jsonl> [--parser ...] [--chunker ...] ...` | A one-shot sweep from flags alone, no YAML file — the CLI equivalent of building a `cg.Lab` and calling `.grid()` in Python. See [The Lab](/lab/overview). |
+| `contextgrid sweep <corpus> <evalset.jsonl> [--parser ...] [--chunker ...] ...` | A one-shot sweep from flags alone, no YAML file — the CLI equivalent of building a `cg.Lab` and calling `.grid()` in Python. Same exit codes as `run`, including `1` for a sweep that measured nothing. See [The Lab](/lab/overview). |
 | `contextgrid plugins [--family parser]` | List every registered name on every axis, for this installation specifically — a name whose optional package is missing is marked `-` and the `pip install` line that fixes it is printed underneath. |
 | `contextgrid evalset <path>` | Load a JSONL or CSV eval set and print its quality summary and question-type distribution, without running a sweep. See [Eval Set Quality](/evalsets/quality). |
 | `contextgrid diff <before.json> <after.json>` | Explain what changed between two `manifest.json` files from earlier bundled runs. Two spellings of one configuration are not a change: `retrieval: simple` and no retrieval at all run the same search, so they are folded before anything is compared, along with `ingestion: plain`, `transform: none` and `reranker: none`. |
